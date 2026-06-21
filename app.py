@@ -376,6 +376,38 @@ def restore():
 #  STARTUP
 # ══════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════
+#  ADMIN — DEDUP
+# ══════════════════════════════════════════════════════
+
+@app.route('/api/admin/dedup/<module>', methods=['POST'])
+def dedup_module(module):
+    records = GenericRecord.query.filter_by(module=module).order_by(GenericRecord.id.asc()).all()
+    seen = set()
+    deleted = 0
+    key_fields = {
+        'hrSkillDefs': ['category','skillName'],
+        'qmsPfmea': ['step','failure'],
+        'qmsCp': ['step','parameter'],
+        'qmsCsMaster': ['step','checkItem'],
+        'mktFeasQns': ['section','question'],
+    }
+    fields = key_fields.get(module, ['id'])
+    for r in records:
+        try:
+            d = json.loads(r.data)
+            key = '|'.join(str(d.get(f,'')) for f in fields)
+            if key in seen:
+                db.session.delete(r)
+                deleted += 1
+            else:
+                seen.add(key)
+        except: pass
+    db.session.commit()
+    remaining = GenericRecord.query.filter_by(module=module).count()
+    return jsonify({'ok':True,'deleted':deleted,'remaining':remaining})
+
+
 def seed_users():
     if User.query.count() == 0:
         for username,password,role,name in [
