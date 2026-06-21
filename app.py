@@ -317,6 +317,81 @@ def backup():
 @app.route('/api/restore', methods=['POST'])
 def restore():
     data = request.json
+    if not data:
+        return jsonify({'error': 'No data'}), 400
+
+    # Handle documents
+    for d in data.get('documents', []):
+        existing = Document.query.filter_by(doc_number=d.get('docNumber')).first()
+        if not existing:
+            doc = Document(
+                doc_number=d.get('docNumber'),
+                title=d.get('title'),
+                doc_type=d.get('docType'),
+                revision=d.get('revision'),
+                status=d.get('status'),
+                content=d.get('content',''),
+                created_by=d.get('createdBy',''),
+                approved_by=d.get('approvedBy',''),
+                created_date=d.get('createdDate',''),
+                approved_date=d.get('approvedDate',''),
+                extra=json.dumps(d.get('extra', {}))
+            )
+            db.session.add(doc)
+
+    # Handle versions
+    for v in data.get('versions', []):
+        r = GenericRecord(module='versions', data=json.dumps(v))
+        db.session.add(r)
+
+    # Handle audit log
+    for a in data.get('audit', []):
+        r = GenericRecord(module='audit_import', data=json.dumps(a))
+        db.session.add(r)
+
+    # Handle custom doc types
+    custom_types = data.get('customDocTypes', [])
+    if custom_types:
+        existing = GenericRecord.query.filter_by(module='setting_customDocTypes').first()
+        if not existing:
+            r = GenericRecord(module='setting_customDocTypes', data=json.dumps(custom_types))
+            db.session.add(r)
+
+    # Handle company info
+    company = data.get('company', {})
+    if company:
+        existing = GenericRecord.query.filter_by(module='setting_company').first()
+        if not existing:
+            r = GenericRecord(module='setting_company', data=json.dumps(company))
+            db.session.add(r)
+
+    # Handle rm_lots if present
+    for l in data.get('rm_lots', []):
+        existing = RMLot.query.filter_by(lot_number=l.get('lotNumber')).first()
+        if not existing:
+            lot = RMLot(
+                lot_number=l.get('lotNumber'),
+                date=l.get('date',''),
+                grade=l.get('grade',''),
+                supplier=l.get('supplier',''),
+                invoice=l.get('invoice',''),
+                approved_by=l.get('approvedBy',''),
+                spectro=l.get('spectro',''),
+                bundles=l.get('bundles',1)
+            )
+            db.session.add(lot)
+
+    # Handle any other module records
+    for module, records in data.get('records', {}).items():
+        if isinstance(records, list):
+            for rec in records:
+                r = GenericRecord(module=module, data=json.dumps(rec))
+                db.session.add(r)
+
+    db.session.commit()
+    return jsonify({'ok': True, 'documents': len(data.get('documents', [])), 'versions': len(data.get('versions', []))})
+def restore():
+    data = request.json
     for d in data.get('documents', []):
         existing = Document.query.filter_by(doc_number=d['docNumber']).first()
         if not existing:
