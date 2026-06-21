@@ -1777,7 +1777,6 @@ async function renderBackup(){
     purDeliveries:await db.purDeliveries.count().catch(()=>0),
   };
   const totalRecords=Object.values(counts).reduce((s,v)=>s+v,0);
-  const totalRecords=Object.values(counts).reduce((s,v)=>s+v,0);
   setC(`
   <div class="ph"><h2>💾 Backup & Restore</h2></div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
