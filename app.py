@@ -7,6 +7,7 @@ import json
 
 app = Flask(__name__, static_folder='static')
 CORS(app)
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB limitCORS(app)
 
 # Database
 db_url = os.environ.get('DATABASE_URL', 'sqlite:///vra_dms.db')
