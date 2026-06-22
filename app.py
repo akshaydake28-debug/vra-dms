@@ -383,6 +383,11 @@ def restore():
     for key, value in data.items():
         if key in skip_keys: continue
         if not isinstance(value, list): continue
+        # Skip if module already has data — prevent duplicate restore
+        existing_count = GenericRecord.query.filter_by(module=key).count()
+        if existing_count > 0:
+            print(f"Skipping {key} — already has {existing_count} records")
+            continue
         for rec in value:
             nr = {k:v for k,v in rec.items() if k != 'id'}
             db.session.add(GenericRecord(module=key, data=json.dumps(nr)))
@@ -444,8 +449,11 @@ def seed_users():
         db.session.commit()
 
 with app.app_context():
-    db.create_all()
-    seed_users()
+    try:
+        db.create_all()
+        seed_users()
+    except Exception as e:
+        print(f"Startup warning: {e}")
 
 if __name__ == '__main__':
     app.run(debug=True)
