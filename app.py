@@ -104,6 +104,31 @@ def delete_user(uid):
     db.session.commit()
     return jsonify({'ok': True})
 
+@app.route('/api/auth/password', methods=['POST'])
+def change_password():
+    d = request.json
+    username = d.get('username','')
+    new_password = d.get('newPassword','')
+    if not username or not new_password:
+        return jsonify({'error': 'Missing fields'}), 400
+    if len(new_password) < 6:
+        return jsonify({'error': 'Password too short'}), 400
+    u = User.query.filter_by(username=username).first()
+    if not u:
+        return jsonify({'error': 'User not found'}), 404
+    u.password = new_password
+    db.session.commit()
+    return jsonify({'ok': True})
+
+@app.route('/api/auth/users/<int:uid>/reset', methods=['POST'])
+def reset_user_password(uid):
+    d = request.json
+    new_password = d.get('newPassword','vra@2025')
+    u = User.query.get_or_404(uid)
+    u.password = new_password
+    db.session.commit()
+    return jsonify({'ok': True})
+
 # ══════════════════════════════════════════════════════
 #  DOCUMENTS
 # ══════════════════════════════════════════════════════
