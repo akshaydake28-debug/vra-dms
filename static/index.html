@@ -158,7 +158,7 @@ select.fc{cursor:pointer}
       <div class="fg"><label class="lbl">Username</label><input class="fc" id="l-user" placeholder="Username" autofocus></div>
       <div class="fg"><label class="lbl">Password</label><input class="fc" id="l-pass" type="password" placeholder="Password"></div>
       <button class="btn btn-p" style="width:100%;padding:9px;font-size:13px;margin-top:3px" onclick="Auth.login()">Sign In →</button>
-      <p style="font-size:11px;color:#9ca3af;text-align:center;margin-top:10px">akshay / admin123</p>
+      <p style="font-size:11px;color:#9ca3af;text-align:center;margin-top:10px">Contact admin if you forgot your password</p>
     </div>
   </div>
 </div>
@@ -1724,13 +1724,38 @@ async function renderAudit(){
 // ══════════════════════════════════════════════════════
 async function renderUsers(){
   const users=await DB.getUsers();
+  const isApprover = Auth.user?.role === 'APPROVER';
   setC(`
-  <div class="ph"><h2>👥 Users</h2></div>
+  <div class="ph"><h2>👥 User Management</h2></div>
+
+  <!-- CHANGE OWN PASSWORD — visible to ALL users -->
+  <div class="card" style="margin-bottom:14px">
+    <div class="ch"><h5>🔑 Change My Password</h5></div>
+    <div class="cb" style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:10px;align-items:end">
+      <div class="fg">
+        <label class="lbl">Current Password</label>
+        <input class="fc" id="cp-old" type="password" placeholder="Current password">
+      </div>
+      <div class="fg">
+        <label class="lbl">New Password</label>
+        <input class="fc" id="cp-new" type="password" placeholder="New password">
+      </div>
+      <div class="fg">
+        <label class="lbl">Confirm New Password</label>
+        <input class="fc" id="cp-confirm" type="password" placeholder="Confirm new password">
+      </div>
+      <button class="btn btn-p" onclick="changeMyPassword()">Update Password</button>
+    </div>
+    <div id="cp-msg" style="margin-top:8px;font-size:12px;display:none"></div>
+  </div>
+
+  ${isApprover ? `
+  <!-- ALL USERS TABLE — only for APPROVER -->
   <div style="display:grid;grid-template-columns:2fr 1fr;gap:14px;align-items:start">
     <div class="card">
       <div class="ch"><h5>All Users</h5></div>
       <div class="tw"><table>
-        <thead><tr><th>#</th><th>Name</th><th>Username</th><th>Role</th></tr></thead>
+        <thead><tr><th>#</th><th>Name</th><th>Username</th><th>Role</th><th>Action</th></tr></thead>
         <tbody>${users.map(u=>`<tr>
           <td class="mono muted">${u.id}</td>
           <td><div style="display:flex;align-items:center;gap:7px">
@@ -1738,31 +1763,96 @@ async function renderUsers(){
             <span style="font-weight:600">${esc(u.name)}</span></div></td>
           <td class="mono" style="color:#6b7280">${esc(u.username)}</td>
           <td>${u.role==='APPROVER'?'<span class="badge ba">APPROVER</span>':'<span class="badge bd">CREATOR</span>'}</td>
+          <td>${u.username !== Auth.user.username ? `<button class="btn btn-r btn-sm" onclick="deleteUser(${u.id},'${esc(u.name)}')">Remove</button>` : '<span class="muted">You</span>'}</td>
         </tr>`).join('')}</tbody>
       </table></div>
     </div>
     <div class="card">
-      <div class="ch"><h5>Add User</h5></div>
+      <div class="ch"><h5>Add New User</h5></div>
       <div class="cb">
         <div class="fg"><label class="lbl">Full Name</label><input class="fc" id="nu-n" placeholder="e.g. Ravi Kumar"></div>
-        <div class="fg"><label class="lbl">Username</label><input class="fc" id="nu-u" placeholder="e.g. ravi_k"></div>
-        <div class="fg"><label class="lbl">Password</label><input class="fc" id="nu-p" type="password"></div>
-        <div class="fg"><label class="lbl">Role</label>
+        <div class="fg"><label class="lbl">Username</label><input class="fc" id="nu-u" placeholder="e.g. ravi_k (no spaces)"></div>
+        <div class="fg"><label class="lbl">Password</label><input class="fc" id="nu-p" type="password" placeholder="Set initial password"></div>
+        <div class="fg"><label class="lbl">Department / Role</label>
           <select class="fc" id="nu-r">
-            <option value="CREATOR">Creator</option>
-            <option value="APPROVER">Approver</option>
-          </select></div>
+            <option value="CREATOR">Production / Quality (Creator)</option>
+            <option value="APPROVER">Management (Approver)</option>
+          </select>
+        </div>
         <button class="btn btn-p" style="width:100%" onclick="addUser()">➕ Add User</button>
       </div>
     </div>
-  </div>`);
+  </div>
+  ` : `<div class="card"><div class="cb" style="color:#6b7280;font-size:13px;text-align:center;padding:20px">Contact Akshay to manage other user accounts.</div></div>`}
+  `);
 }
+
+async function changeMyPassword(){
+  const oldP = document.getElementById('cp-old').value;
+  const newP = document.getElementById('cp-new').value;
+  const confirmP = document.getElementById('cp-confirm').value;
+  const msg = document.getElementById('cp-msg');
+
+  if(!oldP||!newP||!confirmP){
+    msg.textContent = '⚠ All fields required.';
+    msg.style.color = '#dc2626'; msg.style.display = 'block'; return;
+  }
+  if(newP !== confirmP){
+    msg.textContent = '⚠ New passwords do not match.';
+    msg.style.color = '#dc2626'; msg.style.display = 'block'; return;
+  }
+  if(newP.length < 6){
+    msg.textContent = '⚠ Password must be at least 6 characters.';
+    msg.style.color = '#dc2626'; msg.style.display = 'block'; return;
+  }
+  try {
+    // Verify current password first
+    const verify = await fetch(window.location.origin+'/api/auth/login',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({username: Auth.user.username, password: oldP})
+    });
+    if(!verify.ok){
+      msg.textContent = '⚠ Current password is incorrect.';
+      msg.style.color = '#dc2626'; msg.style.display = 'block'; return;
+    }
+    // Update password
+    const res = await fetch(window.location.origin+'/api/auth/password',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({username: Auth.user.username, newPassword: newP})
+    });
+    if(!res.ok) throw new Error('Server error');
+    msg.textContent = '✓ Password updated successfully. Please remember your new password.';
+    msg.style.color = '#15803d'; msg.style.display = 'block';
+    document.getElementById('cp-old').value = '';
+    document.getElementById('cp-new').value = '';
+    document.getElementById('cp-confirm').value = '';
+  } catch(e){
+    msg.textContent = '⚠ Failed to update password. Try again.';
+    msg.style.color = '#dc2626'; msg.style.display = 'block';
+  }
+}
+
+async function deleteUser(id, name){
+  if(!confirm(`Remove user ${name}? This cannot be undone.`)) return;
+  try {
+    await fetch(window.location.origin+`/api/auth/users/${id}`, {method:'DELETE'});
+    toast(`User ${name} removed.`,'s');
+    renderUsers();
+  } catch(e){ toast('Failed to remove user','d'); }
+}
+
 async function addUser(){
-  const n=document.getElementById('nu-n').value.trim(),u=document.getElementById('nu-u').value.trim(),p=document.getElementById('nu-p').value,r=document.getElementById('nu-r').value;
+  const n=document.getElementById('nu-n').value.trim();
+  const u=document.getElementById('nu-u').value.trim().toLowerCase().replace(/\s+/g,'_');
+  const p=document.getElementById('nu-p').value;
+  const r=document.getElementById('nu-r').value;
   if(!n||!u||!p){toast('All fields required','d');return}
-  if(await DB.getUser(u)){toast('Username already exists','d');return}
-  await DB.addUser({username:u,password:await hashPw(p),role:r,name:n});
-  toast(`User ${n} added!`,'s'); renderUsers();
+  const existing = await DB.getUser(u);
+  if(existing){toast('Username already exists — choose another','d');return}
+  if(p.length < 6){toast('Password must be at least 6 characters','d');return}
+  await DB.addUser({username:u, password:p, role:r, name:n});
+  toast(`User ${n} added successfully!`,'s');
+  renderUsers();
 }
 
 // ══════════════════════════════════════════════════════
