@@ -356,20 +356,20 @@ def restore():
     data = request.json
     if not data: return jsonify({'error':'No data'}),400
 
-    # Documents
+    # Documents — clear all and restore fresh
+    Document.query.delete()
     doc_count = 0
     for d in data.get('documents',[]):
-        if not Document.query.filter_by(doc_number=d.get('docNumber','')).first():
-            doc = Document(
-                doc_number=d.get('docNumber'), title=d.get('title'),
-                doc_type=d.get('docType'), revision=d.get('revision'),
-                status=d.get('status'), content=d.get('content',''),
-                created_by=d.get('createdBy',''), approved_by=d.get('approvedBy',''),
-                created_date=d.get('createdDate',''), approved_date=d.get('approvedDate',''),
-                extra=json.dumps(d.get('extra',{}))
-            )
-            db.session.add(doc)
-            doc_count += 1
+        doc = Document(
+            doc_number=d.get('docNumber'), title=d.get('title'),
+            doc_type=d.get('docType'), revision=d.get('revision'),
+            status=d.get('status'), content=d.get('content',''),
+            created_by=d.get('createdBy',''), approved_by=d.get('approvedBy',''),
+            created_date=d.get('createdDate',''), approved_date=d.get('approvedDate',''),
+            extra=json.dumps(d.get('extra',{}))
+        )
+        db.session.add(doc)
+        doc_count += 1
 
     # Settings
     for key, value in data.get('settings',{}).items():
@@ -383,11 +383,8 @@ def restore():
     for key, value in data.items():
         if key in skip_keys: continue
         if not isinstance(value, list): continue
-        # Skip if module already has data — prevent duplicate restore
-        existing_count = GenericRecord.query.filter_by(module=key).count()
-        if existing_count > 0:
-            print(f"Skipping {key} — already has {existing_count} records")
-            continue
+        # Clear existing records for this module and restore fresh
+        GenericRecord.query.filter_by(module=key).delete()
         for rec in value:
             nr = {k:v for k,v in rec.items() if k != 'id'}
             db.session.add(GenericRecord(module=key, data=json.dumps(nr)))
@@ -512,7 +509,7 @@ with app.app_context():
     try:
         db.create_all()
         seed_users()
-        seed_defaults()
+        # Note: seed_defaults() removed — default data comes from backup restore
     except Exception as e:
         print(f"Startup warning: {e}")
 
