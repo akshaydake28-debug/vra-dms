@@ -6395,6 +6395,7 @@ async function mktSeedDefaults(){
     {section:'RISK ASSESSMENT',question:'Is Payment in time?',order:3},
   ];
   for(const q of seed) await db.mktFeasQns.add(q);
+  } catch(e) { console.log('mktSeed skipped:', e.message); }
 }
 
 // ── HELPERS ───────────────────────────────────────────
