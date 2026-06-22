@@ -42,6 +42,18 @@ class Document(db.Model):
     approved_date = db.Column(db.String(30))
     extra = db.Column(db.Text)
 
+class RMLot(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    lot_number = db.Column(db.String(50), unique=True)
+    date = db.Column(db.String(20))
+    grade = db.Column(db.String(20))
+    supplier = db.Column(db.String(100))
+    invoice = db.Column(db.String(50))
+    approved_by = db.Column(db.String(100))
+    spectro = db.Column(db.String(20))
+    bundles = db.Column(db.Integer)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
 class GenericRecord(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     module = db.Column(db.String(50), index=True)
@@ -268,49 +280,42 @@ def save_setting(key):
 #  All other modules: complaints, capas, gauges, HR, etc.
 # ══════════════════════════════════════════════════════
 
-@app.route('/api/<module>', methods=['GET'])
-def list_generic(module):
-    records = GenericRecord.query.filter_by(module=module).order_by(GenericRecord.id.desc()).all()
-    return jsonify([{'id':r.id,'data':json.loads(r.data),'createdAt':str(r.created_at)} for r in records])
+# ══════════════════════════════════════════════════════
+#  RAW MATERIAL LOTS
+# ══════════════════════════════════════════════════════
 
-@app.route('/api/<module>', methods=['POST'])
-def save_generic(module):
+@app.route('/api/rm/lots', methods=['GET'])
+def list_rm_lots():
+    lots = RMLot.query.order_by(RMLot.id.desc()).all()
+    return jsonify([{
+        'id':l.id,'lotNumber':l.lot_number,'date':l.date,
+        'grade':l.grade,'supplier':l.supplier,'invoice':l.invoice,
+        'approvedBy':l.approved_by,'spectro':l.spectro,'bundles':l.bundles
+    } for l in lots])
+
+@app.route('/api/rm/lots', methods=['POST'])
+def save_rm_lot():
     d = request.json
-    r = GenericRecord(module=module, data=json.dumps(d))
-    db.session.add(r)
+    existing = RMLot.query.filter_by(lot_number=d.get('lotNumber','')).first()
+    if existing:
+        return jsonify({'id': existing.id})
+    lot = RMLot(
+        lot_number=d.get('lotNumber'), date=d.get('date',''),
+        grade=d.get('grade',''), supplier=d.get('supplier',''),
+        invoice=d.get('invoice',''), approved_by=d.get('approvedBy',''),
+        spectro=d.get('spectro',''), bundles=d.get('bundles',1)
+    )
+    db.session.add(lot)
     db.session.commit()
-    return jsonify({'id': r.id})
+    return jsonify({'id': lot.id})
 
-@app.route('/api/<module>/<int:rid>', methods=['GET'])
-def get_generic_one(module, rid):
-    r = GenericRecord.query.get(rid)
-    if not r: return jsonify(None), 404
-    return jsonify({'id':r.id,'data':json.loads(r.data),'createdAt':str(r.created_at)})
-
-@app.route('/api/<module>/<int:rid>', methods=['POST'])
-def update_generic_one(module, rid):
-    r = GenericRecord.query.get(rid)
-    if r:
-        r.data = json.dumps(request.json)
-        r.updated_at = datetime.utcnow()
-        db.session.commit()
-        return jsonify({'id': r.id})
-    r = GenericRecord(module=module, data=json.dumps(request.json))
-    db.session.add(r)
-    db.session.commit()
-    return jsonify({'id': r.id})
-
-@app.route('/api/<module>/<int:rid>', methods=['DELETE'])
-def delete_generic_one(module, rid):
-    r = GenericRecord.query.get(rid)
-    if r:
-        db.session.delete(r)
+@app.route('/api/rm/lots/<int:lid>', methods=['DELETE'])
+def delete_rm_lot(lid):
+    l = RMLot.query.get(lid)
+    if l:
+        db.session.delete(l)
         db.session.commit()
     return jsonify({'ok': True})
-
-# ══════════════════════════════════════════════════════
-#  BACKUP & RESTORE
-# ══════════════════════════════════════════════════════
 
 @app.route('/api/backup', methods=['GET'])
 def backup():
@@ -336,6 +341,9 @@ def backup():
             'user':l.user,'notes':l.notes,'timestamp':str(l.timestamp)})
     for u in User.query.all():
         data['users'].append({'id':u.id,'username':u.username,'role':u.role,'name':u.name})
+    data['rm_lots'] = [{'lotNumber':l.lot_number,'date':l.date,'grade':l.grade,
+        'supplier':l.supplier,'invoice':l.invoice,'approvedBy':l.approved_by,
+        'spectro':l.spectro,'bundles':l.bundles} for l in RMLot.query.all()]
     # All generic modules
     modules = {}
     for r in GenericRecord.query.all():
@@ -396,8 +404,64 @@ def restore():
             db.session.add(GenericRecord(module='setting_customDocTypes',
                 data=json.dumps(data['customDocTypes'])))
 
+    # RM Lots
+    if data.get('rm_lots'):
+        RMLot.query.delete()
+        for l in data.get('rm_lots',[]):
+            lot = RMLot(
+                lot_number=l.get('lotNumber'), date=l.get('date',''),
+                grade=l.get('grade',''), supplier=l.get('supplier',''),
+                invoice=l.get('invoice',''), approved_by=l.get('approvedBy',''),
+                spectro=l.get('spectro',''), bundles=l.get('bundles',1)
+            )
+            db.session.add(lot)
+
     db.session.commit()
     return jsonify({'ok':True,'documents':doc_count,'records':module_count})
+
+@app.route('/api/<module>', methods=['GET'])
+def list_generic(module):
+    records = GenericRecord.query.filter_by(module=module).order_by(GenericRecord.id.desc()).all()
+    return jsonify([{'id':r.id,'data':json.loads(r.data),'createdAt':str(r.created_at)} for r in records])
+
+@app.route('/api/<module>', methods=['POST'])
+def save_generic(module):
+    d = request.json
+    r = GenericRecord(module=module, data=json.dumps(d))
+    db.session.add(r)
+    db.session.commit()
+    return jsonify({'id': r.id})
+
+@app.route('/api/<module>/<int:rid>', methods=['GET'])
+def get_generic_one(module, rid):
+    r = GenericRecord.query.get(rid)
+    if not r: return jsonify(None), 404
+    return jsonify({'id':r.id,'data':json.loads(r.data),'createdAt':str(r.created_at)})
+
+@app.route('/api/<module>/<int:rid>', methods=['POST'])
+def update_generic_one(module, rid):
+    r = GenericRecord.query.get(rid)
+    if r:
+        r.data = json.dumps(request.json)
+        r.updated_at = datetime.utcnow()
+        db.session.commit()
+        return jsonify({'id': r.id})
+    r = GenericRecord(module=module, data=json.dumps(request.json))
+    db.session.add(r)
+    db.session.commit()
+    return jsonify({'id': r.id})
+
+@app.route('/api/<module>/<int:rid>', methods=['DELETE'])
+def delete_generic_one(module, rid):
+    r = GenericRecord.query.get(rid)
+    if r:
+        db.session.delete(r)
+        db.session.commit()
+    return jsonify({'ok': True})
+
+# ══════════════════════════════════════════════════════
+#  BACKUP & RESTORE
+# ══════════════════════════════════════════════════════
 
 # ══════════════════════════════════════════════════════
 #  STARTUP
