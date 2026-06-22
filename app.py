@@ -448,10 +448,71 @@ def seed_users():
             db.session.add(User(username=username,password=password,role=role,name=name))
         db.session.commit()
 
+def seed_defaults():
+    """Seed default data for HR skills, MKT feasibility questions.
+    Only runs if no data exists for that module."""
+
+    # HR Skill Definitions
+    if GenericRecord.query.filter_by(module='hrSkillDefs').count() == 0:
+        staff_skills = [
+            'Education Qualification','Work Experience','Computer Awareness',
+            'ISO/IATF Awareness','Drawing Reading','Man Power Handling',
+            'PDC Knowledge','Communication Skill','Die Setting',
+            'Instrument Handling','Inspection Knowledge','Accounts Knowledge',
+            'Marketing Knowledge','Maintenance Knowledge',
+            'Stores / Purchase Knowledge','5S & Housekeeping','Safety Knowledge'
+        ]
+        worker_skills = [
+            'ISO Awareness','CNC/VMC Machining','Job Setting',
+            'Instrument / Gauge Reading','On Time Reporting','5S Awareness',
+            'CNC/VMC Offset','Record Keeping','Control Plan Reading',
+            'Daily Preventive Maintenance','Material Handling',
+            'Communication Skills','Discipline','Conventional Machine Operating',
+            'Inspection Knowledge','Packing & Dispatch','Safety Knowledge'
+        ]
+        for s in staff_skills:
+            db.session.add(GenericRecord(module='hrSkillDefs',
+                data=json.dumps({'category':'Staff','skillName':s})))
+        for s in worker_skills:
+            db.session.add(GenericRecord(module='hrSkillDefs',
+                data=json.dumps({'category':'Worker','skillName':s})))
+        db.session.commit()
+
+    # Marketing Feasibility Questions
+    if GenericRecord.query.filter_by(module='mktFeasQns').count() == 0:
+        feas_qns = [
+            {'section':'TECHNICAL','question':'Is Material feasible for Manufacturing?','order':1},
+            {'section':'TECHNICAL','question':'Scope of Supply Clear?','order':2},
+            {'section':'TECHNICAL','question':'Is machinery suitable for this Grade?','order':3},
+            {'section':'TECHNICAL','question':'Is specification / Tolerance achievable?','order':4},
+            {'section':'TECHNICAL','question':'Is there any other process or treatment required?','order':5},
+            {'section':'TECHNICAL','question':'Are available machines adequate for demanded quantities?','order':6},
+            {'section':'TECHNICAL','question':'Are inspection and testing facilities adequate?','order':7},
+            {'section':'TECHNICAL','question':'Is development cost paid by Customer?','order':8},
+            {'section':'TECHNICAL','question':'Is Tooling given by Customer?','order':9},
+            {'section':'COMMERCIAL','question':'Application of Part Clear?','order':1},
+            {'section':'COMMERCIAL','question':'Monthly Requirement Clear?','order':2},
+            {'section':'COMMERCIAL','question':'Weight of Casting?','order':3},
+            {'section':'COMMERCIAL','question':'Delivery Charges? (Paid by Us or Customer)','order':4},
+            {'section':'COMMERCIAL','question':'Is any Specific requirement of Packing?','order':5},
+            {'section':'CAPACITY','question':'Which Type of Machines Required?','order':1},
+            {'section':'CAPACITY','question':'How Many Machines required?','order':2},
+            {'section':'CAPACITY','question':'Is Current Spare Capacity Available?','order':3},
+            {'section':'CAPACITY','question':'Is any New Machine Required?','order':4},
+            {'section':'CAPACITY','question':'Is any Process required to be Outsourced?','order':5},
+            {'section':'RISK ASSESSMENT','question':'Is Customer Reliable?','order':1},
+            {'section':'RISK ASSESSMENT','question':'Market Status of Customer?','order':2},
+            {'section':'RISK ASSESSMENT','question':'Is Payment in time?','order':3},
+        ]
+        for q in feas_qns:
+            db.session.add(GenericRecord(module='mktFeasQns', data=json.dumps(q)))
+        db.session.commit()
+
 with app.app_context():
     try:
         db.create_all()
         seed_users()
+        seed_defaults()
     except Exception as e:
         print(f"Startup warning: {e}")
 
