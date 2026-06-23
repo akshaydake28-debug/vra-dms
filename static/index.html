@@ -768,7 +768,7 @@ function nav(view,params=''){
   };
   document.getElementById('topbar-title').textContent=titles[view]||'VRA DMS';
   const p=Object.fromEntries((params||'').split('&').filter(Boolean).map(s=>s.split('=')));
-  const views={dashboard:renderDashboard,registry:renderRegistry,create:renderCreate,
+  window.views={dashboard:renderDashboard,registry:renderRegistry,create:renderCreate,
     approvals:renderApprovals,audit:renderAudit,users:renderUsers,backup:renderBackup,
     settings:renderSettings,doctypes:renderDocTypes,
     complaints:renderComplaints,qualAlerts:renderQualAlerts,capas:renderCapas,
@@ -790,7 +790,7 @@ function nav(view,params=''){
     'rm-labels':rmRenderLabels,
     'rm-register':rmRenderRegister,
   };
-  if(views[view]) views[view](p);
+  if(window.views[view]) window.views[view](p);
   if(!['create','edit'].includes(view)) setChatVisible(false);
 }
 function setC(html){document.getElementById('content').innerHTML=html}
@@ -868,7 +868,7 @@ async function renderDashboard(){
 
 <script>
 (function(){
-  Object.assign(views, {
+  Object.assign(window.views, {
     'hr-employees': typeof hrRenderEmployees !== 'undefined' ? hrRenderEmployees : undefined,
     'hr-skillmatrix': typeof hrRenderSkillMatrix !== 'undefined' ? hrRenderSkillMatrix : undefined,
     'hr-gap': typeof hrRenderGap !== 'undefined' ? hrRenderGap : undefined,
