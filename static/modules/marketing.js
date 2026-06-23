@@ -376,21 +376,21 @@ async function mktViewFeasibilityById(id){
               <div style="display:flex;align-items:center;gap:5px">
                 <label style="display:flex;align-items:center;gap:3px;cursor:pointer">
                   <input type="checkbox" class="feas-yn" data-qid="${q.id}" data-val="Y"
-                    ${ans.yn===\'Y\'?\'checked\':\'\'}
+                    ${ans.yn==='Y'?'checked':\'\'}
                     onchange="feasChk(this)"
                     style="width:15px;height:15px;accent-color:#15803d;cursor:pointer">
                   <span style="font-size:11px;color:#15803d;font-weight:700">Y</span>
                 </label>
                 <label style="display:flex;align-items:center;gap:3px;cursor:pointer">
                   <input type="checkbox" class="feas-yn" data-qid="${q.id}" data-val="N"
-                    ${ans.yn===\'N\'?\'checked\':\'\'}
+                    ${ans.yn==='N'?'checked':\'\'}
                     onchange="feasChk(this)"
                     style="width:15px;height:15px;accent-color:#dc2626;cursor:pointer">
                   <span style="font-size:11px;color:#dc2626;font-weight:700">N</span>
                 </label>
                 <label style="display:flex;align-items:center;gap:3px;cursor:pointer">
                   <input type="checkbox" class="feas-yn" data-qid="${q.id}" data-val="NA"
-                    ${ans.yn===\'NA\'?\'checked\':\'\'}
+                    ${ans.yn==='NA'?'checked':\'\'}
                     onchange="feasChk(this)"
                     style="width:15px;height:15px;accent-color:#6b7280;cursor:pointer">
                   <span style="font-size:11px;color:#6b7280;font-weight:700">N/A</span>

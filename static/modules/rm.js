@@ -10,15 +10,7 @@ const DEFAULT_GRADES = ['ADC12', 'ADC10', 'A380', 'LM24'];
 const DEFAULT_APPROVERS = ['Manish Yadav', 'Sagar Shirgure', 'Akshay Dake'];
 
 // ── INIT ──
-window.onload = () => {
-  loadFromStorage();
-  setTodayDate();
-  generateLotNumber();
-  populateGrades();
-  populateApprovers();
-  renderRegister();
-  updateSupplierList();
-};
+// rm module init removed
 
 function setTodayDate() {
   const d = new Date();

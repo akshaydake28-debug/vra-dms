@@ -1385,4 +1385,3 @@ async function hrPrintSchedule(){
   <script>window.onload=()=>window.print()<\/script></body></html>`);
   w.document.close();
 }
-
