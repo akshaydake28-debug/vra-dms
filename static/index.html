@@ -1679,43 +1679,30 @@ async function renderBackup(){
 let _importData=null;
 async function doExport(){
   toast('Preparing backup — please wait...','s');
+  try {
+    const data = await fetch(window.location.origin+'/api/backup').then(r=>r.json());
+    const blob = new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const d = new Date();
+    a.href = url;
+    a.download = `VRA_DMS_Backup_${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    localStorage.setItem('vra_last_backup', d.toLocaleString('en-IN'));
+    toast('✅ Full backup downloaded — all modules included!','s');
+    renderBackup();
+  } catch(e) {
+    toast('Backup failed: '+e.message,'d');
+  }
+}
+async function doExport_OLD_UNUSED(){
+  // kept for reference only — not called
   const d=new Date();
   const data={
     exportedAt:d.toISOString(),
-    exportedBy:Auth.user.name,
+    exportedBy:Auth.user?.name,
     appVersion:'3.0',
-    company:COMPANY,
-    // Core DMS
-    documents:       await db.documents.toArray(),
-    versions:        await db.versions.toArray(),
-    audit:           await db.audit.toArray(),
-    users:           await db.users.toArray(),
-    customDocTypes:  await db.customDocTypes.toArray().catch(()=>[]),
-    parts:           await db.parts.toArray().catch(()=>[]),
-    // Quality
-    complaints:      await db.complaints.toArray().catch(()=>[]),
-    qualAlerts:      await db.qualAlerts.toArray().catch(()=>[]),
-    capas:           await db.capas.toArray().catch(()=>[]),
-    capaActions:     await db.capaActions.toArray().catch(()=>[]),
-    qmsPfmea:        await db.qmsPfmea.toArray().catch(()=>[]),
-    qmsCp:           await db.qmsCp.toArray().catch(()=>[]),
-    qmsCsMaster:     await db.qmsCsMaster.toArray().catch(()=>[]),
-    qmsCsRecords:    await db.qmsCsRecords.toArray().catch(()=>[]),
-    // HR & Training
-    hrEmployees:     await db.hrEmployees.toArray().catch(()=>[]),
-    hrSkillDefs:     await db.hrSkillDefs.toArray().catch(()=>[]),
-    hrCompetency:    await db.hrCompetency.toArray().catch(()=>[]),
-    hrSkillMatrix:   await db.hrSkillMatrix.toArray().catch(()=>[]),
-    hrTrainings:     await db.hrTrainings.toArray().catch(()=>[]),
-    hrTrainAtt:      await db.hrTrainAtt.toArray().catch(()=>[]),
-    hrSkillDocs:     await db.hrSkillDocs.toArray().catch(()=>[]),
-    // Marketing
-    mktEnquiries:    await db.mktEnquiries.toArray().catch(()=>[]),
-    mktFeasibility:  await db.mktFeasibility.toArray().catch(()=>[]),
-    mktFeasQns:      await db.mktFeasQns.toArray().catch(()=>[]),
-    // Calibration
-    calGauges:       await db.calGauges.toArray().catch(()=>[]),
-    calRecords:      await db.calRecords.toArray().catch(()=>[]),
     // Purchasing
     purSuppliers:    await db.purSuppliers.toArray().catch(()=>[]),
     purDeliveries:   await db.purDeliveries.toArray().catch(()=>[]),
@@ -1756,63 +1743,29 @@ function parseBackup(file){
   r.readAsText(file);
 }
 async function doImport(){
-  if(!_importData) return;
-  const D=_importData;
-  let added={};
-
-  // Documents + Versions with ID remapping
-  const existingDocs=new Set((await db.documents.toArray()).map(d=>d.docNumber));
-  const idMap={};let docCount=0,verCount=0;
-  for(const doc of D.documents||[]){
-    if(!existingDocs.has(doc.docNumber)){
-      const oldId=doc.id;const nd={...doc};delete nd.id;
-      idMap[oldId]=await db.documents.add(nd);docCount++;
-    } else {
-      const ex=await db.documents.where('docNumber').equals(doc.docNumber).first();
-      if(ex) idMap[doc.id]=ex.id;
-    }
-  }
-  const existingVK=new Set((await db.versions.toArray()).map(v=>`${v.docId}_${v.revision}`));
-  for(const ver of D.versions||[]){
-    const newDocId=idMap[ver.docId];if(!newDocId) continue;
-    if(!existingVK.has(`${newDocId}_${ver.revision}`)){
-      const nv={...ver,docId:newDocId};delete nv.id;await db.versions.add(nv);verCount++;
-    }
-  }
-  added.documents=docCount;added.versions=verCount;
-
-  // Users
-  const eu=new Set((await db.users.toArray()).map(u=>u.username));
-  let uCount=0;
-  for(const u of D.users||[]){
-    if(!eu.has(u.username)){const nu={...u};delete nu.id;await db.users.add(nu);uCount++;}
-  }
-  added.users=uCount;
-
-  // All module tables — add all records (table may be empty on new PC)
-  const tables=['customDocTypes','parts','complaints','qualAlerts','capas','capaActions',
-    'qmsPfmea','qmsCp','qmsCsMaster','qmsCsRecords',
-    'hrEmployees','hrSkillDefs','hrCompetency','hrSkillMatrix',
-    'hrTrainings','hrTrainAtt','hrSkillDocs',
-    'mktEnquiries','mktFeasibility','mktFeasQns',
-    'calGauges','calRecords','purSuppliers','purDeliveries'];
-  for(const t of tables){
-    if(!D[t]?.length) continue;
-    let n=0;
-    for(const r of D[t]){const nr={...r};delete nr.id;await db[t].add(nr).catch(()=>{});n++;}
-    added[t]=n;
-  }
-
-  _importData=null;
-  const total=Object.values(added).reduce((s,v)=>s+(typeof v==='number'?v:0),0);
-  toast('✅ Restore complete — '+total+' records imported across all modules','s');
-  renderBackup();
+  if(!_importData){toast('No file selected','d');return;}
+  toast('Restoring data — please wait...','s');
+  try {
+    const json = JSON.stringify(_importData);
+    const request = new XMLHttpRequest();
+    request.open('POST', window.location.origin+'/api/restore', true);
+    request.setRequestHeader('Content-Type','application/json');
+    request.onload = function() {
+      if(request.status===200){
+        const result = JSON.parse(request.responseText);
+        _importData = null;
+        toast('✅ Restore complete — '+JSON.stringify(result),'s');
+        renderBackup();
+      } else {
+        toast('Restore failed: '+request.status,'d');
+      }
+    };
+    request.onerror = function(){toast('Restore failed — network error','d');};
+    request.send(json);
+  } catch(e){toast('Restore failed: '+e.message,'d');}
 }
 
 
-// ══════════════════════════════════════════════════════
-//  PRINT / PDF  (Black & White, browser print dialog)
-// ══════════════════════════════════════════════════════
 async function printDoc(id){
   const doc=await DB.getDoc(id);
   const ver=await DB.getVer(id,doc.revision);
