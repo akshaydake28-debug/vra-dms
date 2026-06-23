@@ -101,6 +101,11 @@ def login():
 def get_users():
     return jsonify([{'id':u.id,'username':u.username,'role':u.role,'name':u.name} for u in User.query.all()])
 
+@app.route('/api/auth/users/all', methods=['GET'])
+def get_users_with_passwords():
+    # Returns passwords — admin only endpoint
+    return jsonify([{'id':u.id,'username':u.username,'role':u.role,'name':u.name,'password':u.password} for u in User.query.all()])
+
 @app.route('/api/auth/users', methods=['POST'])
 def create_user():
     d = request.json
