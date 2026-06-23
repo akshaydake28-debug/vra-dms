@@ -837,14 +837,3 @@ async function purPrintSupList(){
 //  INIT
 
 // ══════════════════════════════════════════════════════
-(async()=>{
-  await DB.seed();
-  await loadAllTypes();
-  await qmsInit();
-  await hrSeedDefaults();
-  await mktSeedDefaults();
-  if(Auth.user) showApp(); else showLogin();
-})();
-</script>
-</body>
-</html>
