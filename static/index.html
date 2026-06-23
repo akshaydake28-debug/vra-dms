@@ -146,10 +146,121 @@ select.fc{cursor:pointer}
 <body>
 
 
-<!-- DEXIE (kept for compat, not used for data) -->
+<div id="login-page" style="display:none">
+  <div class="lc">
+    <div class="lh">
+      <div class="co">▣ VR ALUCAST</div>
+      <div class="sub">Document Management System</div>
+      <div style="margin-top:7px"><span class="sl-badge">ISO 9001 · IATF 16949</span></div>
+    </div>
+    <div class="lb">
+      <div id="login-err"></div>
+      <div class="fg"><label class="lbl">Username</label><input class="fc" id="l-user" placeholder="Username" autofocus></div>
+      <div class="fg"><label class="lbl">Password</label><input class="fc" id="l-pass" type="password" placeholder="Password"></div>
+      <button class="btn btn-p" style="width:100%;padding:9px;font-size:13px;margin-top:3px" onclick="Auth.login()">Sign In →</button>
+      <p style="font-size:11px;color:#9ca3af;text-align:center;margin-top:10px">Contact admin if you forgot your password</p>
+    </div>
+  </div>
+</div>
+
+<div id="app" style="display:none">
+  <aside class="sidebar">
+    <div class="sl-logo">
+      <div class="sl-co">▣ VR ALUCAST</div>
+      <div class="sl-sub">Document Management System</div>
+      <span class="sl-badge">ISO 9001</span>
+    </div>
+    <div class="sl-sec">Main</div>
+    <a class="sl-item" data-view="dashboard" onclick="nav('dashboard')"><span class="ic">🏠</span>Dashboard</a>
+    <a class="sl-item" data-view="registry" onclick="nav('registry')"><span class="ic">📋</span>Registry</a>
+    <a class="sl-item" data-view="create" onclick="nav('create')"><span class="ic">➕</span>New Document</a>
+    <div class="sl-sec">Workflow</div>
+    <a class="sl-item" id="nav-approvals" data-view="approvals" onclick="nav('approvals')"><span class="ic">✅</span>Approvals<span class="pc" id="pcount" style="display:none">0</span></a>
+    <a class="sl-item" data-view="audit" onclick="nav('audit')"><span class="ic">🔍</span>Audit Trail</a>
+    <div class="sl-sec">Quality</div>
+    <a class="sl-item" data-view="complaints" onclick="nav('complaints')"><span class="ic">📋</span>Complaints</a>
+    <a class="sl-item" data-view="qualAlerts" onclick="nav('qualAlerts')"><span class="ic">⚠️</span>Quality Alerts</a>
+    <a class="sl-item" data-view="capas" onclick="nav('capas')"><span class="ic">🔄</span>CAPA</a>
+    <div class="sl-sec">Purchasing</div>
+    <a class="sl-item" data-view="pur-suppliers" onclick="nav('pur-suppliers')"><span class="ic">🏭</span>Supplier Register</a>
+    <a class="sl-item" data-view="pur-approved" onclick="nav('pur-approved')"><span class="ic">✅</span>Approved Suppliers</a>
+    <a class="sl-item" data-view="pur-scorecard" onclick="nav('pur-scorecard')"><span class="ic">📊</span>Supplier Scorecard</a>
+    <a class="sl-item" data-view="pur-po" onclick="nav('pur-po')"><span class="ic">📦</span>PO Register</a>
+    <div class="sl-sec">Raw Material</div>
+    <a class="sl-item" data-view="rm-labels" onclick="nav('rm-labels')"><span class="ic">&#127991;</span>Label Generator</a>
+    <a class="sl-item" data-view="rm-register" onclick="nav('rm-register')"><span class="ic">&#128230;</span>Lot Register</a>
+    <div class="sl-sec">Calibration</div>
+    <a class="sl-item" data-view="cal-gauges" onclick="nav('cal-gauges')"><span class="ic">🔧</span>Gauge Register</a>
+    <a class="sl-item" data-view="cal-records" onclick="nav('cal-records')"><span class="ic">📅</span>Calibration Records</a>
+    <a class="sl-item" data-view="cal-due" onclick="nav('cal-due')"><span class="ic">⚠️</span>Due / Overdue</a>
+    <div class="sl-sec">Marketing</div>
+    <a class="sl-item" data-view="mkt-enquiries" onclick="nav('mkt-enquiries')"><span class="ic">📋</span>Enquiry Register</a>
+    <a class="sl-item" data-view="mkt-feasibility" onclick="nav('mkt-feasibility')"><span class="ic">🔍</span>Feasibility Reviews</a>
+    <div class="sl-sec">HR & Training</div>
+    <a class="sl-item" data-view="hr-employees" onclick="nav('hr-employees')"><span class="ic">👤</span>Employee Register</a>
+    <a class="sl-item" data-view="hr-skillmatrix" onclick="nav('hr-skillmatrix')"><span class="ic">📊</span>Skill Matrix</a>
+    <a class="sl-item" data-view="hr-gap" onclick="nav('hr-gap')"><span class="ic">🔴</span>Gap Analysis</a>
+    <a class="sl-item" data-view="hr-trainings" onclick="nav('hr-trainings')"><span class="ic">🎓</span>Training Register</a>
+    <a class="sl-item" data-view="hr-schedule" onclick="nav('hr-schedule')"><span class="ic">📅</span>Training Schedule</a>
+    <a class="sl-item" data-view="hr-docsneeded" onclick="nav('hr-docsneeded')"><span class="ic">📄</span>Skill — Doc Map</a>
+    <div class="sl-sec">Admin</div>
+    <a class="sl-item" id="nav-users" data-view="users" onclick="nav('users')"><span class="ic">👥</span>Users</a>
+    <a class="sl-item" data-view="doctypes" onclick="nav('doctypes')"><span class="ic">📂</span>Doc Types</a>
+    <a class="sl-item" data-view="settings" onclick="nav('settings')"><span class="ic">⚙️</span>Settings</a>
+    <a class="sl-item" data-view="backup" onclick="nav('backup')"><span class="ic">💾</span>Backup & Restore</a>
+    <div class="sl-bottom">
+      <div style="display:flex;align-items:center;gap:7px">
+        <div class="u-av" id="u-av">A</div>
+        <div>
+          <div style="font-size:12px;color:#c8d6f0;font-weight:500" id="u-name">User</div>
+          <div style="font-size:10px;color:#7a90b5" id="u-role">Role</div>
+        </div>
+      </div>
+      <a style="display:block;margin-top:8px;font-size:11px;color:#8a9bb8;cursor:pointer" onclick="Auth.logout()">⬅ Logout</a>
+    </div>
+  </aside>
+  <div class="main">
+    <div class="topbar">
+      <div class="topbar-title" id="topbar-title">Dashboard</div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span class="muted" id="tb-user"></span>
+        <span class="badge bd" id="tb-role"></span>
+      </div>
+    </div>
+    <div class="content" id="content">
+      <div style="padding:40px;text-align:center;color:#9ca3af">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<!-- AI CHAT -->
+<button id="ai-fab" onclick="toggleChat()"><span>✨</span> AI Assistant</button>
+<div id="ai-panel">
+  <div class="ai-hdr">
+    <div><div class="title">✨ AI Document Assistant</div><div class="sub">Describe → AI fills the document</div></div>
+    <button class="ai-close" onclick="toggleChat()">×</button>
+  </div>
+  <div class="ai-msgs" id="ai-msgs"></div>
+  <div class="ai-input-area">
+    <div id="ai-key-wrap" class="ai-key-area" style="display:none">
+      🔑 Anthropic API key (one-time setup):
+      <input type="password" id="ai-key-input" placeholder="sk-ant-...">
+      <div style="display:flex;gap:6px;margin-top:5px">
+        <button class="btn btn-p btn-xs" onclick="saveApiKey()" style="flex:1">Save</button>
+        <a href="https://console.anthropic.com/account/keys" target="_blank" class="btn btn-o btn-xs" style="flex:1;text-align:center">Get Key →</a>
+      </div>
+    </div>
+    <textarea id="ai-input" rows="3" placeholder="Describe the document or paste rough text… AI will format it."></textarea>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px">
+      <span id="ai-status" style="font-size:11px;color:#9ca3af"></span>
+      <button class="btn btn-p btn-sm" onclick="sendAI()" id="ai-send-btn">Send ↵</button>
+    </div>
+  </div>
+</div>
+
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/dexie/3.2.4/dexie.min.js"></script>
 
-<!-- CORE: Constants + DB Proxy + Auth + Router -->
 <script>
 // ══════════════════════════════════════════════════════
 //  CONSTANTS
@@ -186,10 +297,8 @@ async function loadAllTypes() {
 
 function typeName(code){ return ALL_TYPES[code]?.name || DOC_TYPES[code] || code; }
 
-
-// Views map — populated by router + modules
-const views = {};
 </script>
+
 <script>
 const API_BASE = window.location.origin;
 
@@ -576,92 +685,60 @@ const DB = {
 };
 
 </script>
+
 <script>
-
-// ── AUTH ──
+// ══════════════════════════════════════════════════════
+//  AUTH
+// ══════════════════════════════════════════════════════
+async function hashPw(pw) {
+  const buf = await crypto.subtle.digest('SHA-256',new TextEncoder().encode(pw));
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
 const Auth = {
-  get user() {
-    try { return JSON.parse(sessionStorage.getItem('vra_u')); } catch(e) { return null; }
-  },
-  set user(u) {
-    sessionStorage.setItem('vra_u', JSON.stringify(u));
-  },
-  async login() {
-    const u = document.getElementById('l-user').value.trim();
-    const p = document.getElementById('l-pass').value;
-    if (!u || !p) { loginErr('Enter credentials'); return; }
-    try {
-      const res = await fetch(window.location.origin + '/api/auth/login', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({username: u, password: p})
-      });
-      if (!res.ok) { loginErr('Invalid username or password'); return; }
-      const user = await res.json();
-      Auth.user = {id: user.id, username: user.username, name: user.name, role: user.role};
+  get user(){const u=sessionStorage.getItem('vra_u');return u?JSON.parse(u):null},
+  set user(v){sessionStorage.setItem('vra_u',JSON.stringify(v))},
+  async login(){
+    const u=document.getElementById('l-user').value.trim();
+    const p=document.getElementById('l-pass').value;
+    if(!u||!p){loginErr('Enter credentials');return}
+    try{
+      const res=await fetch(window.location.origin+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
+      if(!res.ok){loginErr('Invalid username or password');return}
+      const user=await res.json();
+      Auth.user={id:user.id,username:user.username,name:user.name,role:user.role};
       showApp();
-    } catch(e) { loginErr('Connection error — please try again'); }
+    }catch(e){loginErr('Connection error');}
   },
-  logout() { sessionStorage.removeItem('vra_u'); showLogin(); }
+  logout(){sessionStorage.removeItem('vra_u');showLogin();}
 };
+document.addEventListener('keydown',e=>{
+  if(e.key==='Enter'&&document.getElementById('login-page').style.display!=='none') Auth.login();
+  if(e.key==='Enter'&&!e.shiftKey&&document.activeElement.id==='ai-input'){e.preventDefault();sendAI();}
+});
+function loginErr(m){document.getElementById('login-err').innerHTML=`<div class="alert al-d">⚠️ ${m}</div>`}
 
-// ══════════════════════════════════════════════════════
-//  ROUTER + HELPERS
-// ══════════════════════════════════════════════════════
-function nav(view,params=''){
-  document.querySelectorAll('.sl-item').forEach(el=>el.classList.toggle('active',el.dataset.view===view));
-  const titles={dashboard:'Dashboard',registry:'Document Registry',create:'New Document',
-    approvals:'Approvals',audit:'Audit Trail',users:'Users',backup:'Backup & Restore',
-    settings:'Settings',doctypes:'Document Types',
-    complaints:'Complaint Register',qualAlerts:'Quality Alerts',capas:'CAPA',
-    'hr-employees':'Employee Register',
-    'hr-skillmatrix':'Skill Matrix',
-    'hr-gap':'Training Gap Analysis',
-    'hr-trainings':'Training Register',
-    'hr-schedule':'Training Schedule',
-    'hr-docsneeded':'Skill — Document Mapping',
-    'mkt-enquiries':'Enquiry Register',
-    'mkt-feasibility':'Feasibility Reviews',
-    'pur-suppliers':'Supplier Register',
-    'pur-approved':'Approved Supplier List',
-    'pur-scorecard':'Supplier Scorecard',
-    'pur-po':'PO Register',
-    'cal-gauges':'Gauge Register',
-    'cal-records':'Calibration Records',
-    'cal-due':'Due & Overdue Calibrations',
-  };
-  document.getElementById('topbar-title').textContent=titles[view]||'VRA DMS';
-  const p=Object.fromEntries((params||'').split('&').filter(Boolean).map(s=>s.split('=')));
+function showLogin(){
+  document.getElementById('login-page').style.display='flex';
+  document.getElementById('app').style.display='none';
+}
+function showApp(){
+  document.getElementById('login-page').style.display='none';
+  document.getElementById('app').style.display='flex';
+  const u=Auth.user;
+  document.getElementById('u-av').textContent=u.name[0];
+  document.getElementById('u-name').textContent=u.name;
+  document.getElementById('u-role').textContent=u.role;
+  document.getElementById('tb-user').textContent=u.name;
+  document.getElementById('tb-role').textContent=u.role;
+  document.getElementById('nav-users').style.display=u.role==='APPROVER'?'flex':'none';
+  loadAllTypes().then(()=>{
+    nav('dashboard'); updatePcount(); startAutoBackup();
+  });
 }
 
 </script>
 
 <script>
-// ── AUTH ──
-const Auth = {
-  get user() {
-    try { return JSON.parse(sessionStorage.getItem('vra_u')); } catch(e) { return null; }
-  },
-  set user(u) {
-    sessionStorage.setItem('vra_u', JSON.stringify(u));
-  },
-  async login() {
-    const u = document.getElementById('l-user').value.trim();
-    const p = document.getElementById('l-pass').value;
-    if (!u || !p) { loginErr('Enter credentials'); return; }
-    try {
-      const res = await fetch(window.location.origin + '/api/auth/login', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({username: u, password: p})
-      });
-      if (!res.ok) { loginErr('Invalid username or password'); return; }
-      const user = await res.json();
-      Auth.user = {id: user.id, username: user.username, name: user.name, role: user.role};
-      showApp();
-    } catch(e) { loginErr('Connection error — please try again'); }
-  },
-  logout() { sessionStorage.removeItem('vra_u'); showLogin(); }
-};
-
 // ══════════════════════════════════════════════════════
 //  ROUTER + HELPERS
 // ══════════════════════════════════════════════════════
@@ -686,10 +763,12 @@ function nav(view,params=''){
     'cal-gauges':'Gauge Register',
     'cal-records':'Calibration Records',
     'cal-due':'Due & Overdue Calibrations',
+    'rm-labels':'Raw Material — Label Generator',
+    'rm-register':'Raw Material — Lot Register',
   };
   document.getElementById('topbar-title').textContent=titles[view]||'VRA DMS';
   const p=Object.fromEntries((params||'').split('&').filter(Boolean).map(s=>s.split('=')));
-  Object.assign(views,{dashboard:renderDashboard,registry:renderRegistry,create:renderCreate,
+  const views={dashboard:renderDashboard,registry:renderRegistry,create:renderCreate,
     approvals:renderApprovals,audit:renderAudit,users:renderUsers,backup:renderBackup,
     settings:renderSettings,doctypes:renderDocTypes,
     complaints:renderComplaints,qualAlerts:renderQualAlerts,capas:renderCapas,
@@ -708,6 +787,8 @@ function nav(view,params=''){
     'cal-gauges':calRenderGauges,
     'cal-records':calRenderRecords,
     'cal-due':calRenderDue,
+    'rm-labels':rmRenderLabels,
+    'rm-register':rmRenderRegister,
   };
   if(views[view]) views[view](p);
   if(!['create','edit'].includes(view)) setChatVisible(false);
@@ -734,7 +815,47 @@ function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').
 
 </script>
 
-<!-- MODULES -->
+<script>
+// ══════════════════════════════════════════════════════
+//  DASHBOARD
+// ══════════════════════════════════════════════════════
+async function renderDashboard(){
+  const all=await DB.listDocs({});
+  const s={total:all.length,active:0,draft:0,pending:0};
+  all.forEach(d=>{if(d.status==='ACTIVE')s.active++;if(d.status==='DRAFT')s.draft++;if(d.status==='PENDING_APPROVAL')s.pending++;});
+  setC(`
+  <div class="sg">
+    <div class="sc"><div class="si" style="background:#edf1fb">📄</div><div><div class="sv">${s.total}</div><div class="sl2">Total</div></div></div>
+    <div class="sc"><div class="si" style="background:#dcfce7">✅</div><div><div class="sv" style="color:#16a34a">${s.active}</div><div class="sl2">Active</div></div></div>
+    <div class="sc"><div class="si" style="background:#fef3c7">🕐</div><div><div class="sv" style="color:#d97706">${s.pending}</div><div class="sl2">Pending</div></div></div>
+    <div class="sc"><div class="si" style="background:#f0f3f9">✏️</div><div><div class="sv" style="color:#6b7280">${s.draft}</div><div class="sl2">Draft</div></div></div>
+  </div>
+  <div style="display:grid;grid-template-columns:2fr 1fr;gap:14px">
+    <div class="card">
+      <div class="ch"><h5>Recent Documents</h5><button class="btn btn-o btn-sm" onclick="nav('registry')">View All</button></div>
+      <div class="tw"><table>
+        <thead><tr><th>Number</th><th>Type</th><th>Title</th><th>Rev</th><th>Status</th><th>Date</th><th></th></tr></thead>
+        <tbody>${all.slice(0,8).map(d=>`<tr>
+          <td class="mono" style="color:#0d2f6e;font-weight:600">${d.docNumber}</td>
+          <td>${tPill(d.docType)}</td><td style="font-weight:500">${esc(d.title)}</td>
+          <td class="mono">${d.revision}</td><td>${sBadge(d.status)}</td>
+          <td class="muted">${fmtD(d.createdDate)}</td>
+          <td><button class="btn btn-o btn-xs" onclick="viewDoc(${d.id})">View</button></td>
+        </tr>`).join('')||`<tr><td colspan="7" style="text-align:center;padding:20px;color:#9ca3af">No documents yet. <a style="color:#0d2f6e;font-weight:600;cursor:pointer" onclick="nav('create')">Create one →</a></td></tr>`}
+        </tbody>
+      </table></div>
+    </div>
+    <div class="card">
+      <div class="ch"><h5>⚡ Quick Create</h5></div>
+      <div class="cb" style="display:flex;flex-wrap:wrap;gap:5px">
+        ${Object.entries(ALL_TYPES).map(([code,t])=>`<button class="btn btn-xs" style="background:${t.color}20;color:${t.color};border:1px solid ${t.color}40;font-weight:700" onclick="nav('create','type=${code}')">${code}</button>`).join('')}
+      </div>
+    </div>
+  </div>`);
+}
+
+</script>
+
 <script src="/static/modules/documents.js"></script>
 <script src="/static/modules/quality.js"></script>
 <script src="/static/modules/hr.js"></script>
@@ -745,19 +866,9 @@ function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').
 <script src="/static/modules/backup.js"></script>
 <script src="/static/modules/users.js"></script>
 
-<!-- INIT -->
 <script>
-
-// Wire up module views after all scripts loaded
-(function() {
-  const MODULE_VIEWS = {
-    'registry': typeof renderRegistry !== 'undefined' ? renderRegistry : undefined,
-    'create': typeof renderCreate !== 'undefined' ? renderCreate : undefined,
-    'approvals': typeof renderApprovals !== 'undefined' ? renderApprovals : undefined,
-    'audit': typeof renderAudit !== 'undefined' ? renderAudit : undefined,
-    'complaints': typeof renderComplaints !== 'undefined' ? renderComplaints : undefined,
-    'qualAlerts': typeof renderQualAlerts !== 'undefined' ? renderQualAlerts : undefined,
-    'capas': typeof renderCapas !== 'undefined' ? renderCapas : undefined,
+(function(){
+  Object.assign(views, {
     'hr-employees': typeof hrRenderEmployees !== 'undefined' ? hrRenderEmployees : undefined,
     'hr-skillmatrix': typeof hrRenderSkillMatrix !== 'undefined' ? hrRenderSkillMatrix : undefined,
     'hr-gap': typeof hrRenderGap !== 'undefined' ? hrRenderGap : undefined,
@@ -777,10 +888,7 @@ function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').
     'rm-register': typeof rmRenderRegister !== 'undefined' ? rmRenderRegister : undefined,
     'backup': typeof renderBackup !== 'undefined' ? renderBackup : undefined,
     'users': typeof renderUsers !== 'undefined' ? renderUsers : undefined,
-    'settings': typeof renderSettings !== 'undefined' ? renderSettings : undefined,
-    'doctypes': typeof renderDocTypes !== 'undefined' ? renderDocTypes : undefined,
-  };
-  Object.assign(views, MODULE_VIEWS);
+  });
 })();
 
 (async()=>{
@@ -788,5 +896,6 @@ function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').
   if(Auth.user) showApp(); else showLogin();
 })();
 </script>
+
 </body>
 </html>
