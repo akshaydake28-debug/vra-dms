@@ -81,6 +81,14 @@ class AuditLog(db.Model):
 def index():
     return send_from_directory('static', 'index.html')
 
+@app.route('/static/modules/<path:filename>')
+def serve_module(filename):
+    return send_from_directory('static/modules', filename)
+
+@app.route('/static/core/<path:filename>')
+def serve_core(filename):
+    return send_from_directory('static/core', filename)
+
 # ══════════════════════════════════════════════════════
 #  AUTH
 # ══════════════════════════════════════════════════════
