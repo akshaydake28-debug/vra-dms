@@ -823,7 +823,7 @@ function nav(view,params=''){
     'cal-due':calRenderDue,
   };
   if(views[view]) views[view](p);
-  if(!['create','edit'].includes(view)) setChatVisible(false);
+  if(!['create','edit'].includes(view) && typeof setChatVisible !== 'undefined') setChatVisible(false);
 }
 function setC(html){document.getElementById('content').innerHTML=html}
 function toast(msg,type='s'){

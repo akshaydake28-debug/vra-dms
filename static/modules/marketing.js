@@ -1,3 +1,39 @@
+// VRA DMS — MARKETING HELPERS
+
+function mktStatusBadge(s){
+  const m={Open:'bp',Quoted:'ba','PO Received':'ba',Lost:'br',Cancelled:'bd',Hold:'bd'};
+  return`<span class="badge ${m[s]||'bd'}">${s}</span>`;
+}
+function mktResultBadge(r){
+  if(r==='FEASIBLE') return`<span class="badge ba">FEASIBLE</span>`;
+  if(r==='NOT FEASIBLE') return`<span class="badge br">NOT FEASIBLE</span>`;
+  return`<span class="badge bd">Pending</span>`;
+}
+function mktPrintCSS(){
+  return`*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Arial,sans-serif;font-size:8.5pt;color:#000;background:#fff}
+@page{size:A4;margin:12mm 13mm 14mm 13mm}
+.pg-hdr{border-bottom:2px solid #000;padding-bottom:5px;margin-bottom:8px;display:grid;grid-template-columns:2fr 1.5fr 1fr;gap:6px;align-items:end}
+.co-name{font-size:11pt;font-weight:bold}.co-sub{font-size:7pt;color:#555}
+.rpt-title{text-align:center;font-size:9.5pt;font-weight:bold}
+.rpt-sub{text-align:center;font-size:7.5pt;color:#444;margin-top:1px}
+.rpt-num{text-align:right;font-size:8pt;font-weight:bold}
+table.dt{width:100%;border-collapse:collapse;font-size:7.5pt}
+table.dt th{background:#ececec;border:1px solid #000;padding:4px 6px;text-align:left;font-weight:bold}
+table.dt td{border:1px solid #ccc;padding:3px 6px;vertical-align:top}
+table.dt tr:nth-child(even) td{background:#f7f7f7}
+.sec-bar{background:#ececec;border-left:3px solid #000;padding:3px 7px;font-size:7.5pt;font-weight:bold;text-transform:uppercase;letter-spacing:.4px;margin:7px 0 3px}
+.meta-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:0;margin-bottom:7px}
+.mc{border:1px solid #ccc;padding:3px 6px}
+.mc .ml{font-size:6.5pt;color:#777;text-transform:uppercase;font-weight:bold}
+.mc .mv{font-size:8.5pt;font-weight:600}
+.yn-cell{text-align:center;font-weight:bold;font-size:9pt}
+@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}`;
+}
+
+// ══════════════════════════════════════════════════════
+//  ENQUIRY REGISTER
+// ══════════════════════════════════════════════════════
 // VRA DMS — MARKETING MODULE
 
 function feasChk(cb) {
