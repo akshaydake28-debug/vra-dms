@@ -440,6 +440,12 @@ const auditTable = {
 // ── VERSIONS TABLE ──
 const versionsTable = {
   _cache: {},
+  async toArray() {
+    try { return await _api('GET', '/api/versions'); } catch(e) { return []; }
+  },
+  async count() {
+    try { return (await _api('GET', '/api/versions')).length; } catch(e) { return 0; }
+  },
   async add(obj) {
     try {
       const r = await _api('POST', '/api/versions', obj);
