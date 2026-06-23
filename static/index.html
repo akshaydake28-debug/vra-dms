@@ -1546,39 +1546,98 @@ async function renderAudit(){
 //  USERS
 // ══════════════════════════════════════════════════════
 async function renderUsers(){
-  const users=await DB.getUsers();
+  const users = await fetch(window.location.origin+'/api/auth/users/all').then(r=>r.json()).catch(()=>[]);
+  const isApprover = Auth.user?.role==='APPROVER';
   setC(`
-  <div class="ph"><h2>👥 Users</h2></div>
+  <div class="ph"><h2>👥 User Management</h2></div>
+
+  <!-- CHANGE OWN PASSWORD — all users see this -->
+  <div class="card" style="margin-bottom:14px">
+    <div class="ch"><h5>🔑 Change My Password</h5></div>
+    <div class="cb" style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:10px;align-items:end">
+      <div class="fg"><label class="lbl">Current Password</label><input class="fc" id="cp-old" type="password" placeholder="Current password"></div>
+      <div class="fg"><label class="lbl">New Password</label><input class="fc" id="cp-new" type="password" placeholder="New password (min 6 chars)"></div>
+      <div class="fg"><label class="lbl">Confirm New Password</label><input class="fc" id="cp-confirm" type="password" placeholder="Confirm new password"></div>
+      <button class="btn btn-p" onclick="changeMyPassword()">Update</button>
+    </div>
+    <div id="cp-msg" style="margin-top:8px;font-size:12px;display:none"></div>
+  </div>
+
+  ${isApprover ? `
+  <!-- ADMIN: ALL USERS TABLE -->
   <div style="display:grid;grid-template-columns:2fr 1fr;gap:14px;align-items:start">
     <div class="card">
       <div class="ch"><h5>All Users</h5></div>
       <div class="tw"><table>
-        <thead><tr><th>#</th><th>Name</th><th>Username</th><th>Role</th></tr></thead>
+        <thead><tr><th>Name</th><th>Username</th><th>Password</th><th>Role</th><th>Reset Password</th><th>Remove</th></tr></thead>
         <tbody>${users.map(u=>`<tr>
-          <td class="mono muted">${u.id}</td>
           <td><div style="display:flex;align-items:center;gap:7px">
-            <div style="width:25px;height:25px;border-radius:50%;background:#0d2f6e;color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700">${u.name[0]}</div>
+            <div style="width:28px;height:28px;border-radius:50%;background:#0d2f6e;color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0">${u.name[0]}</div>
             <span style="font-weight:600">${esc(u.name)}</span></div></td>
-          <td class="mono" style="color:#6b7280">${esc(u.username)}</td>
+          <td class="mono" style="color:#0d2f6e;font-weight:600">${esc(u.username)}</td>
+          <td>
+            <div style="display:flex;align-items:center;gap:6px">
+              <span id="pw-${u.id}" style="font-family:monospace;font-size:12px;background:#f3f4f6;padding:3px 8px;border-radius:5px;letter-spacing:1px">••••••••</span>
+              <button class="btn btn-o btn-xs" onclick="togglePw(${u.id},'${u.password}')">👁</button>
+            </div>
+          </td>
           <td>${u.role==='APPROVER'?'<span class="badge ba">APPROVER</span>':'<span class="badge bd">CREATOR</span>'}</td>
-        </tr>`).join('')}</tbody>
+          <td>
+            <div style="display:flex;gap:4px;align-items:center">
+              <input id="rp-${u.id}" type="text" placeholder="New password" style="height:28px;border:1px solid #e5e7eb;border-radius:5px;padding:0 8px;font-size:12px;width:120px">
+              <button class="btn btn-o btn-xs" onclick="adminResetPw(${u.id})">Reset</button>
+            </div>
+          </td>
+          <td>${u.username!==Auth.user.username?`<button class="btn btn-r btn-sm" onclick="deleteUser(${u.id},'${esc(u.name)}')">✕ Remove</button>`:'<span class="muted" style="font-size:11px">You</span>'}</td>
+        </tr>`).join('')}
+        </tbody>
       </table></div>
     </div>
     <div class="card">
-      <div class="ch"><h5>Add User</h5></div>
+      <div class="ch"><h5>➕ Add New User</h5></div>
       <div class="cb">
         <div class="fg"><label class="lbl">Full Name</label><input class="fc" id="nu-n" placeholder="e.g. Ravi Kumar"></div>
-        <div class="fg"><label class="lbl">Username</label><input class="fc" id="nu-u" placeholder="e.g. ravi_k"></div>
-        <div class="fg"><label class="lbl">Password</label><input class="fc" id="nu-p" type="password"></div>
-        <div class="fg"><label class="lbl">Role</label>
+        <div class="fg"><label class="lbl">Username</label><input class="fc" id="nu-u" placeholder="e.g. ravi_k (no spaces)"></div>
+        <div class="fg"><label class="lbl">Initial Password</label><input class="fc" id="nu-p" type="text" placeholder="Set initial password"></div>
+        <div class="fg"><label class="lbl">Department</label>
           <select class="fc" id="nu-r">
-            <option value="CREATOR">Creator</option>
-            <option value="APPROVER">Approver</option>
+            <option value="CREATOR">Production / Quality (Creator)</option>
+            <option value="APPROVER">Management (Approver)</option>
           </select></div>
-        <button class="btn btn-p" style="width:100%" onclick="addUser()">➕ Add User</button>
+        <button class="btn btn-p" style="width:100%;margin-top:4px" onclick="addUser()">➕ Add User</button>
       </div>
     </div>
-  </div>`);
+  </div>
+  ` : `<div class="card"><div style="padding:20px;text-align:center;color:#6b7280;font-size:13px">Contact Akshay Dake to manage user accounts.</div></div>`}
+  `);
+}
+
+function togglePw(id, pw) {
+  const el = document.getElementById('pw-'+id);
+  if (!el) return;
+  if (el.textContent === '••••••••') {
+    el.textContent = pw;
+    el.style.background = '#fef9c3';
+  } else {
+    el.textContent = '••••••••';
+    el.style.background = '#f3f4f6';
+  }
+}
+
+async function adminResetPw(id) {
+  const inp = document.getElementById('rp-'+id);
+  const newPw = inp?.value?.trim();
+  if (!newPw) { toast('Enter a new password first','d'); return; }
+  if (newPw.length < 6) { toast('Minimum 6 characters','d'); return; }
+  try {
+    await fetch(window.location.origin+'/api/auth/users/'+id+'/reset', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({newPassword: newPw})
+    });
+    toast('Password reset successfully','s');
+    inp.value = '';
+    renderUsers();
+  } catch(e) { toast('Reset failed','d'); }
 }
 async function addUser(){
   const n=document.getElementById('nu-n')?.value.trim();
