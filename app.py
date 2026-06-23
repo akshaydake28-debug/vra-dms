@@ -396,10 +396,12 @@ def restore():
     for key, value in data.items():
         if key in skip_keys: continue
         if not isinstance(value, list): continue
+        if not value: continue
         # Clear existing records for this module and restore fresh
         GenericRecord.query.filter_by(module=key).delete()
+        db.session.flush()
         for rec in value:
-            nr = {k:v for k,v in rec.items() if k != 'id'}
+            nr = {k:v for k,v in rec.items() if k not in ('id','_rid')}
             db.session.add(GenericRecord(module=key, data=json.dumps(nr)))
             module_count += 1
 
@@ -432,7 +434,19 @@ def list_generic(module):
 @app.route('/api/<module>', methods=['POST'])
 def save_generic(module):
     d = request.json
-    r = GenericRecord(module=module, data=json.dumps(d))
+    # If record has an id, update instead of insert
+    existing_id = d.get('id') or d.get('_rid')
+    if existing_id:
+        r = GenericRecord.query.get(existing_id)
+        if r and r.module == module:
+            clean = {k:v for k,v in d.items() if k not in ('id','_rid')}
+            r.data = json.dumps(clean)
+            r.updated_at = datetime.utcnow()
+            db.session.commit()
+            return jsonify({'id': r.id})
+    # New record — insert
+    clean = {k:v for k,v in d.items() if k not in ('id','_rid')}
+    r = GenericRecord(module=module, data=json.dumps(clean))
     db.session.add(r)
     db.session.commit()
     return jsonify({'id': r.id})
@@ -475,6 +489,29 @@ def delete_generic_one(module, rid):
 # ══════════════════════════════════════════════════════
 #  ADMIN — DEDUP
 # ══════════════════════════════════════════════════════
+
+@app.route('/api/admin/dedup/all', methods=['POST'])
+def dedup_all():
+    modules_to_dedup = ['hrSkillDefs','mktFeasQns','calGauges','purSuppliers']
+    results = {}
+    for module in modules_to_dedup:
+        records = GenericRecord.query.filter_by(module=module).order_by(GenericRecord.id.asc()).all()
+        seen = set()
+        deleted = 0
+        for r in records:
+            try:
+                d = json.loads(r.data)
+                # Use all values as key
+                key = json.dumps(d, sort_keys=True)
+                if key in seen:
+                    db.session.delete(r)
+                    deleted += 1
+                else:
+                    seen.add(key)
+            except: pass
+        db.session.commit()
+        results[module] = {'deleted': deleted, 'remaining': GenericRecord.query.filter_by(module=module).count()}
+    return jsonify(results)
 
 @app.route('/api/admin/dedup/<module>', methods=['POST'])
 def dedup_module(module):
@@ -547,28 +584,32 @@ def seed_defaults():
     # Marketing Feasibility Questions
     if GenericRecord.query.filter_by(module='mktFeasQns').count() == 0:
         feas_qns = [
-            {'section':'TECHNICAL','question':'Is Material feasible for Manufacturing?','order':1},
-            {'section':'TECHNICAL','question':'Scope of Supply Clear?','order':2},
-            {'section':'TECHNICAL','question':'Is machinery suitable for this Grade?','order':3},
-            {'section':'TECHNICAL','question':'Is specification / Tolerance achievable?','order':4},
-            {'section':'TECHNICAL','question':'Is there any other process or treatment required?','order':5},
-            {'section':'TECHNICAL','question':'Are available machines adequate for demanded quantities?','order':6},
-            {'section':'TECHNICAL','question':'Are inspection and testing facilities adequate?','order':7},
-            {'section':'TECHNICAL','question':'Is development cost paid by Customer?','order':8},
-            {'section':'TECHNICAL','question':'Is Tooling given by Customer?','order':9},
-            {'section':'COMMERCIAL','question':'Application of Part Clear?','order':1},
-            {'section':'COMMERCIAL','question':'Monthly Requirement Clear?','order':2},
-            {'section':'COMMERCIAL','question':'Weight of Casting?','order':3},
-            {'section':'COMMERCIAL','question':'Delivery Charges? (Paid by Us or Customer)','order':4},
-            {'section':'COMMERCIAL','question':'Is any Specific requirement of Packing?','order':5},
-            {'section':'CAPACITY','question':'Which Type of Machines Required?','order':1},
-            {'section':'CAPACITY','question':'How Many Machines required?','order':2},
-            {'section':'CAPACITY','question':'Is Current Spare Capacity Available?','order':3},
-            {'section':'CAPACITY','question':'Is any New Machine Required?','order':4},
-            {'section':'CAPACITY','question':'Is any Process required to be Outsourced?','order':5},
-            {'section':'RISK ASSESSMENT','question':'Is Customer Reliable?','order':1},
-            {'section':'RISK ASSESSMENT','question':'Market Status of Customer?','order':2},
-            {'section':'RISK ASSESSMENT','question':'Is Payment in time?','order':3},
+            # DRAWING & DESIGN
+            {'section':'DRAWING & DESIGN','question':'Is the 2D drawing available with complete dimensions and tolerances?','order':1},
+            {'section':'DRAWING & DESIGN','question':'Is the 3D model available?','order':2},
+            {'section':'DRAWING & DESIGN','question':'Are the specified tolerances and surface finish achievable through HPDC?','order':3},
+            {'section':'DRAWING & DESIGN','question':'Is this a new part development or an existing part?','order':4},
+            # MATERIAL & PROCESS
+            {'section':'MATERIAL & PROCESS','question':'Is the required material / alloy grade feasible for HPDC?','order':1},
+            {'section':'MATERIAL & PROCESS','question':'Is the estimated casting weight defined?','order':2},
+            {'section':'MATERIAL & PROCESS','question':'Are any specific customer requirements or special characteristics identified?','order':3},
+            # MACHINE & CAPACITY
+            {'section':'MACHINE & CAPACITY','question':'Is the part feasible on our available machines (280T / 400T)?','order':1},
+            {'section':'MACHINE & CAPACITY','question':'Is any new machine or additional setup required?','order':2},
+            {'section':'MACHINE & CAPACITY','question':'Is current capacity available for the required monthly volumes?','order':3},
+            {'section':'MACHINE & CAPACITY','question':'Are monthly volumes clearly defined by the customer?','order':4},
+            # TOOLING
+            {'section':'TOOLING','question':'Is tooling supplied by the customer or to be procured?','order':1},
+            # SECONDARY OPERATIONS
+            {'section':'SECONDARY OPERATIONS','question':'Is machining required after casting?','order':1},
+            {'section':'SECONDARY OPERATIONS','question':'Is any process required to be outsourced?','order':2},
+            {'section':'SECONDARY OPERATIONS','question':'If yes — is the vendor identified?','order':3},
+            {'section':'SECONDARY OPERATIONS','question':'Is the identified vendor feasible (location, capacity, quality)?','order':4},
+            # INSPECTION & PACKAGING
+            {'section':'INSPECTION & PACKAGING','question':'Are inspection and testing facilities available for this part?','order':1},
+            {'section':'INSPECTION & PACKAGING','question':'Is a packaging plan defined?','order':2},
+            # COMMERCIAL & RISK
+            {'section':'COMMERCIAL & RISK','question':'Is the customer reliable in terms of reputation and payment history?','order':1},
         ]
         for q in feas_qns:
             db.session.add(GenericRecord(module='mktFeasQns', data=json.dumps(q)))
