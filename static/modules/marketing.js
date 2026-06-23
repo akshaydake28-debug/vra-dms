@@ -1,28 +1,12 @@
+// VRA DMS — MARKETING MODULE
+
 function feasChk(cb) {
   const qid = cb.getAttribute('data-qid');
   document.querySelectorAll('.feas-yn[data-qid="' + qid + '"]').forEach(function(el) {
     if (el !== cb) el.checked = false;
   });
-  const val = cb.checked ? cb.getAttribute('data-val') : '';
-  // Find the feas-yn element and update
-  const allCbs = document.querySelectorAll('.feas-yn[data-qid="' + qid + '"]');
-  // Manually trigger save
-  feasSaveAnswer(parseInt(qid), val);
 }
 
-async function feasSaveAnswer(qid, val) {
-  if (!window._feasId) return;
-  try {
-    const feas = await db.mktFeasibility.get(window._feasId);
-    if (!feas) return;
-    const answers = feas.answers ? JSON.parse(feas.answers) : {};
-    if (!answers[qid]) answers[qid] = {rem:''};
-    answers[qid].yn = val;
-    await db.mktFeasibility.update(window._feasId, {answers: JSON.stringify(answers)});
-  } catch(e) { console.log('feasSaveAnswer error:', e); }
-}
-
-// VRA DMS — MARKETING MODULE
 
 // ══════════════════════════════════════════════════════
 //  MARKETING — ENQUIRY & FEASIBILITY MODULE
@@ -55,31 +39,24 @@ async function mktSeedDefaults(){
   try {
   if(await db.mktFeasQns.count().catch(()=>0)) return;
   const seed=[
-    // DRAWING & DESIGN
     {section:'DRAWING & DESIGN',question:'Is the 2D drawing available with complete dimensions and tolerances?',order:1},
     {section:'DRAWING & DESIGN',question:'Is the 3D model available?',order:2},
     {section:'DRAWING & DESIGN',question:'Are the specified tolerances and surface finish achievable through HPDC?',order:3},
     {section:'DRAWING & DESIGN',question:'Is this a new part development or an existing part?',order:4},
-    // MATERIAL & PROCESS
     {section:'MATERIAL & PROCESS',question:'Is the required material / alloy grade feasible for HPDC?',order:1},
     {section:'MATERIAL & PROCESS',question:'Is the estimated casting weight defined?',order:2},
     {section:'MATERIAL & PROCESS',question:'Are any specific customer requirements or special characteristics identified?',order:3},
-    // MACHINE & CAPACITY
     {section:'MACHINE & CAPACITY',question:'Is the part feasible on our available machines (280T / 400T)?',order:1},
     {section:'MACHINE & CAPACITY',question:'Is any new machine or additional setup required?',order:2},
     {section:'MACHINE & CAPACITY',question:'Is current capacity available for the required monthly volumes?',order:3},
     {section:'MACHINE & CAPACITY',question:'Are monthly volumes clearly defined by the customer?',order:4},
-    // TOOLING
     {section:'TOOLING',question:'Is tooling supplied by the customer or to be procured?',order:1},
-    // SECONDARY OPERATIONS
     {section:'SECONDARY OPERATIONS',question:'Is machining required after casting?',order:1},
     {section:'SECONDARY OPERATIONS',question:'Is any process required to be outsourced?',order:2},
     {section:'SECONDARY OPERATIONS',question:'If yes — is the vendor identified?',order:3},
     {section:'SECONDARY OPERATIONS',question:'Is the identified vendor feasible (location, capacity, quality)?',order:4},
-    // INSPECTION & PACKAGING
     {section:'INSPECTION & PACKAGING',question:'Are inspection and testing facilities available for this part?',order:1},
     {section:'INSPECTION & PACKAGING',question:'Is a packaging plan defined?',order:2},
-    // COMMERCIAL & RISK
     {section:'COMMERCIAL & RISK',question:'Is the customer reliable in terms of reputation and payment history?',order:1},
   ];
   for(const q of seed) await db.mktFeasQns.add(q);
@@ -373,28 +350,10 @@ async function mktViewFeasibilityById(id){
             <td style="text-align:center;color:var(--muted)">${i+1}</td>
             <td style="font-size:12.5px">${esc(q.question)}</td>
             <td style="text-align:center;padding:4px">
-              <div style="display:flex;align-items:center;gap:5px">
-                <label style="display:flex;align-items:center;gap:3px;cursor:pointer">
-                  <input type="checkbox" class="feas-yn" data-qid="${q.id}" data-val="Y"
-                    ${ans.yn==='Y'?'checked':\'\'}
-                    onchange="feasChk(this)"
-                    style="width:15px;height:15px;accent-color:#15803d;cursor:pointer">
-                  <span style="font-size:11px;color:#15803d;font-weight:700">Y</span>
-                </label>
-                <label style="display:flex;align-items:center;gap:3px;cursor:pointer">
-                  <input type="checkbox" class="feas-yn" data-qid="${q.id}" data-val="N"
-                    ${ans.yn==='N'?'checked':\'\'}
-                    onchange="feasChk(this)"
-                    style="width:15px;height:15px;accent-color:#dc2626;cursor:pointer">
-                  <span style="font-size:11px;color:#dc2626;font-weight:700">N</span>
-                </label>
-                <label style="display:flex;align-items:center;gap:3px;cursor:pointer">
-                  <input type="checkbox" class="feas-yn" data-qid="${q.id}" data-val="NA"
-                    ${ans.yn==='NA'?'checked':\'\'}
-                    onchange="feasChk(this)"
-                    style="width:15px;height:15px;accent-color:#6b7280;cursor:pointer">
-                  <span style="font-size:11px;color:#6b7280;font-weight:700">N/A</span>
-                </label>
+              <div style="display:flex;align-items:center;gap:4px">
+                <label style="display:flex;align-items:center;gap:2px;cursor:pointer"><input type="checkbox" class="feas-yn" data-qid="${q.id}" data-val="Y" ${ans.yn==='Y'?'checked':''} onchange="feasChk(this)" style="width:14px;height:14px;accent-color:#15803d"><span style="font-size:11px;color:#15803d;font-weight:700">Y</span></label>
+                <label style="display:flex;align-items:center;gap:2px;cursor:pointer"><input type="checkbox" class="feas-yn" data-qid="${q.id}" data-val="N" ${ans.yn==='N'?'checked':''} onchange="feasChk(this)" style="width:14px;height:14px;accent-color:#dc2626"><span style="font-size:11px;color:#dc2626;font-weight:700">N</span></label>
+                <label style="display:flex;align-items:center;gap:2px;cursor:pointer"><input type="checkbox" class="feas-yn" data-qid="${q.id}" data-val="NA" ${ans.yn==='NA'?'checked':''} onchange="feasChk(this)" style="width:14px;height:14px;accent-color:#6b7280"><span style="font-size:11px;color:#6b7280;font-weight:700">N/A</span></label>
               </div>
             </td>
             <td style="padding:4px">
@@ -472,18 +431,6 @@ async function mktViewFeasibilityById(id){
     <button class="btn btn-g btn-sm" onclick="mktSaveFeasibility(${id})">💾 Save All Changes</button>
     <button class="btn btn-p btn-sm" onclick="mktPrintFeasibility(${id})">🖨️ Print</button>
   </div>`);
-}
-
-async function feasUpdateRemark(inp) {
-  const qid = parseInt(inp.getAttribute('data-qid'));
-  const remark = inp.value.trim();
-  const feas = window._currentFeas;
-  if (!feas) return;
-  const answers = feas.answers ? JSON.parse(feas.answers) : {};
-  if (!answers[qid]) answers[qid] = {};
-  answers[qid].remark = remark;
-  feas.answers = JSON.stringify(answers);
-  await db.mktFeasibility.update(feas.id, {answers: feas.answers});
 }
 
 async function mktSaveFeasibility(id){
