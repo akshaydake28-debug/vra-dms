@@ -110,11 +110,14 @@ function renderManageList() {
 
 // Allow Enter key in add modal
 document.addEventListener('keydown', e => {
-  if (e.key === 'Enter' && document.getElementById('add-modal').classList.contains('open')) {
-    confirmAddItem();
+  const addModal = document.getElementById('rm-add-modal') || document.getElementById('add-modal');
+  if (addModal && e.key === 'Enter' && addModal.classList.contains('open')) {
+    if(typeof rmConfirmAdd !== 'undefined') rmConfirmAdd();
+    else if(typeof confirmAddItem !== 'undefined') confirmAddItem();
   }
-  if (e.key === 'Escape' && document.getElementById('add-modal').classList.contains('open')) {
-    closeAddModal();
+  if (addModal && e.key === 'Escape' && addModal.classList.contains('open')) {
+    if(typeof rmCloseAddModal !== 'undefined') rmCloseAddModal();
+    else if(typeof closeAddModal !== 'undefined') closeAddModal();
   }
 });
 
