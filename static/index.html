@@ -186,6 +186,9 @@ async function loadAllTypes() {
 
 function typeName(code){ return ALL_TYPES[code]?.name || DOC_TYPES[code] || code; }
 
+
+// Views map — populated by router + modules
+const views = {};
 </script>
 <script>
 const API_BASE = window.location.origin;
@@ -628,7 +631,62 @@ function nav(view,params=''){
   };
   document.getElementById('topbar-title').textContent=titles[view]||'VRA DMS';
   const p=Object.fromEntries((params||'').split('&').filter(Boolean).map(s=>s.split('=')));
-  const views={dashboard:renderDashboard,registry:renderRegistry,create:renderCreate,
+  ript>
+
+// ── AUTH ──
+const Auth = {
+  get user() {
+    try { return JSON.parse(sessionStorage.getItem('vra_u')); } catch(e) { return null; }
+  },
+  set user(u) {
+    sessionStorage.setItem('vra_u', JSON.stringify(u));
+  },
+  async login() {
+    const u = document.getElementById('l-user').value.trim();
+    const p = document.getElementById('l-pass').value;
+    if (!u || !p) { loginErr('Enter credentials'); return; }
+    try {
+      const res = await fetch(window.location.origin + '/api/auth/login', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({username: u, password: p})
+      });
+      if (!res.ok) { loginErr('Invalid username or password'); return; }
+      const user = await res.json();
+      Auth.user = {id: user.id, username: user.username, name: user.name, role: user.role};
+      showApp();
+    } catch(e) { loginErr('Connection error — please try again'); }
+  },
+  logout() { sessionStorage.removeItem('vra_u'); showLogin(); }
+};
+
+// ══════════════════════════════════════════════════════
+//  ROUTER + HELPERS
+// ══════════════════════════════════════════════════════
+function nav(view,params=''){
+  document.querySelectorAll('.sl-item').forEach(el=>el.classList.toggle('active',el.dataset.view===view));
+  const titles={dashboard:'Dashboard',registry:'Document Registry',create:'New Document',
+    approvals:'Approvals',audit:'Audit Trail',users:'Users',backup:'Backup & Restore',
+    settings:'Settings',doctypes:'Document Types',
+    complaints:'Complaint Register',qualAlerts:'Quality Alerts',capas:'CAPA',
+    'hr-employees':'Employee Register',
+    'hr-skillmatrix':'Skill Matrix',
+    'hr-gap':'Training Gap Analysis',
+    'hr-trainings':'Training Register',
+    'hr-schedule':'Training Schedule',
+    'hr-docsneeded':'Skill — Document Mapping',
+    'mkt-enquiries':'Enquiry Register',
+    'mkt-feasibility':'Feasibility Reviews',
+    'pur-suppliers':'Supplier Register',
+    'pur-approved':'Approved Supplier List',
+    'pur-scorecard':'Supplier Scorecard',
+    'pur-po':'PO Register',
+    'cal-gauges':'Gauge Register',
+    'cal-records':'Calibration Records',
+    'cal-due':'Due & Overdue Calibrations',
+  };
+  document.getElementById('topbar-title').textContent=titles[view]||'VRA DMS';
+  const p=Object.fromEntries((params||'').split('&').filter(Boolean).map(s=>s.split('=')));
+  Object.assign(views,{dashboard:renderDashboard,registry:renderRegistry,create:renderCreate,
     approvals:renderApprovals,audit:renderAudit,users:renderUsers,backup:renderBackup,
     settings:renderSettings,doctypes:renderDocTypes,
     complaints:renderComplaints,qualAlerts:renderQualAlerts,capas:renderCapas,
@@ -686,6 +744,7 @@ function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').
 
 <!-- INIT -->
 <script>
+
 // Wire up module views after all scripts loaded
 (function() {
   const MODULE_VIEWS = {
