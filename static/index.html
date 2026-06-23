@@ -763,12 +763,41 @@ function nav(view,params=''){
     'cal-gauges':'Gauge Register',
     'cal-records':'Calibration Records',
     'cal-due':'Due & Overdue Calibrations',
-    'rm-labels':'Raw Material — Label Generator',
-    'rm-register':'Raw Material — Lot Register',
+    'rm-labels':'Raw Material - Label Generator',
+    'rm-register':'Raw Material - Lot Register',
   };
   document.getElementById('topbar-title').textContent=titles[view]||'VRA DMS';
   const p=Object.fromEntries((params||'').split('&').filter(Boolean).map(s=>s.split('=')));
-  window.views={dashboard:renderDashboard,registry:renderRegistry,create:renderCreate,
+  ══════════════════════════════════════════════════════
+//  ROUTER + HELPERS
+// ══════════════════════════════════════════════════════
+function nav(view,params=''){
+  document.querySelectorAll('.sl-item').forEach(el=>el.classList.toggle('active',el.dataset.view===view));
+  const titles={dashboard:'Dashboard',registry:'Document Registry',create:'New Document',
+    approvals:'Approvals',audit:'Audit Trail',users:'Users',backup:'Backup & Restore',
+    settings:'Settings',doctypes:'Document Types',
+    complaints:'Complaint Register',qualAlerts:'Quality Alerts',capas:'CAPA',
+    'hr-employees':'Employee Register',
+    'hr-skillmatrix':'Skill Matrix',
+    'hr-gap':'Training Gap Analysis',
+    'hr-trainings':'Training Register',
+    'hr-schedule':'Training Schedule',
+    'hr-docsneeded':'Skill — Document Mapping',
+    'mkt-enquiries':'Enquiry Register',
+    'mkt-feasibility':'Feasibility Reviews',
+    'pur-suppliers':'Supplier Register',
+    'pur-approved':'Approved Supplier List',
+    'pur-scorecard':'Supplier Scorecard',
+    'pur-po':'PO Register',
+    'cal-gauges':'Gauge Register',
+    'cal-records':'Calibration Records',
+    'cal-due':'Due & Overdue Calibrations',
+    'rm-labels':'Raw Material - Label Generator',
+    'rm-register':'Raw Material - Lot Register',
+  };
+  document.getElementById('topbar-title').textContent=titles[view]||'VRA DMS';
+  const p=Object.fromEntries((params||'').split('&').filter(Boolean).map(s=>s.split('=')));
+  const views={dashboard:renderDashboard,registry:renderRegistry,create:renderCreate,
     approvals:renderApprovals,audit:renderAudit,users:renderUsers,backup:renderBackup,
     settings:renderSettings,doctypes:renderDocTypes,
     complaints:renderComplaints,qualAlerts:renderQualAlerts,capas:renderCapas,
@@ -787,10 +816,8 @@ function nav(view,params=''){
     'cal-gauges':calRenderGauges,
     'cal-records':calRenderRecords,
     'cal-due':calRenderDue,
-    'rm-labels':rmRenderLabels,
-    'rm-register':rmRenderRegister,
   };
-  if(window.views[view]) window.views[view](p);
+  if(views[view]) views[view](p);
   if(!['create','edit'].includes(view)) setChatVisible(false);
 }
 function setC(html){document.getElementById('content').innerHTML=html}
@@ -867,29 +894,38 @@ async function renderDashboard(){
 <script src="/static/modules/users.js"></script>
 
 <script>
-(function(){
-  Object.assign(window.views, {
-    'hr-employees': typeof hrRenderEmployees !== 'undefined' ? hrRenderEmployees : undefined,
-    'hr-skillmatrix': typeof hrRenderSkillMatrix !== 'undefined' ? hrRenderSkillMatrix : undefined,
-    'hr-gap': typeof hrRenderGap !== 'undefined' ? hrRenderGap : undefined,
-    'hr-trainings': typeof hrRenderTrainings !== 'undefined' ? hrRenderTrainings : undefined,
-    'hr-schedule': typeof hrRenderSchedule !== 'undefined' ? hrRenderSchedule : undefined,
-    'hr-docsneeded': typeof hrRenderDocsNeeded !== 'undefined' ? hrRenderDocsNeeded : undefined,
-    'pur-suppliers': typeof purRenderSuppliers !== 'undefined' ? purRenderSuppliers : undefined,
-    'pur-approved': typeof purRenderApproved !== 'undefined' ? purRenderApproved : undefined,
-    'pur-scorecard': typeof purRenderScorecard !== 'undefined' ? purRenderScorecard : undefined,
-    'pur-po': typeof purRenderPO !== 'undefined' ? purRenderPO : undefined,
-    'cal-gauges': typeof calRenderGauges !== 'undefined' ? calRenderGauges : undefined,
-    'cal-records': typeof calRenderRecords !== 'undefined' ? calRenderRecords : undefined,
-    'cal-due': typeof calRenderDue !== 'undefined' ? calRenderDue : undefined,
-    'mkt-enquiries': typeof mktRenderEnquiries !== 'undefined' ? mktRenderEnquiries : undefined,
-    'mkt-feasibility': typeof mktRenderFeasibility !== 'undefined' ? mktRenderFeasibility : undefined,
-    'rm-labels': typeof rmRenderLabels !== 'undefined' ? rmRenderLabels : undefined,
-    'rm-register': typeof rmRenderRegister !== 'undefined' ? rmRenderRegister : undefined,
-    'backup': typeof renderBackup !== 'undefined' ? renderBackup : undefined,
-    'users': typeof renderUsers !== 'undefined' ? renderUsers : undefined,
-  });
-})();
+// Declare views map here — after all module scripts have loaded
+window.views = {
+  'dashboard':    typeof renderDashboard    !== 'undefined' ? renderDashboard    : null,
+  'registry':     typeof renderRegistry     !== 'undefined' ? renderRegistry     : null,
+  'create':       typeof renderCreate       !== 'undefined' ? renderCreate       : null,
+  'approvals':    typeof renderApprovals    !== 'undefined' ? renderApprovals    : null,
+  'audit':        typeof renderAudit        !== 'undefined' ? renderAudit        : null,
+  'users':        typeof renderUsers        !== 'undefined' ? renderUsers        : null,
+  'backup':       typeof renderBackup       !== 'undefined' ? renderBackup       : null,
+  'settings':     typeof renderSettings     !== 'undefined' ? renderSettings     : null,
+  'doctypes':     typeof renderDocTypes     !== 'undefined' ? renderDocTypes     : null,
+  'complaints':   typeof renderComplaints   !== 'undefined' ? renderComplaints   : null,
+  'qualAlerts':   typeof renderQualAlerts   !== 'undefined' ? renderQualAlerts   : null,
+  'capas':        typeof renderCapas        !== 'undefined' ? renderCapas        : null,
+  'hr-employees': typeof hrRenderEmployees  !== 'undefined' ? hrRenderEmployees  : null,
+  'hr-skillmatrix':typeof hrRenderSkillMatrix !== 'undefined' ? hrRenderSkillMatrix : null,
+  'hr-gap':       typeof hrRenderGap        !== 'undefined' ? hrRenderGap        : null,
+  'hr-trainings': typeof hrRenderTrainings  !== 'undefined' ? hrRenderTrainings  : null,
+  'hr-schedule':  typeof hrRenderSchedule   !== 'undefined' ? hrRenderSchedule   : null,
+  'hr-docsneeded':typeof hrRenderDocsNeeded !== 'undefined' ? hrRenderDocsNeeded : null,
+  'pur-suppliers':typeof purRenderSuppliers !== 'undefined' ? purRenderSuppliers : null,
+  'pur-approved': typeof purRenderApproved  !== 'undefined' ? purRenderApproved  : null,
+  'pur-scorecard':typeof purRenderScorecard !== 'undefined' ? purRenderScorecard : null,
+  'pur-po':       typeof purRenderPO        !== 'undefined' ? purRenderPO        : null,
+  'cal-gauges':   typeof calRenderGauges    !== 'undefined' ? calRenderGauges    : null,
+  'cal-records':  typeof calRenderRecords   !== 'undefined' ? calRenderRecords   : null,
+  'cal-due':      typeof calRenderDue       !== 'undefined' ? calRenderDue       : null,
+  'mkt-enquiries':typeof mktRenderEnquiries !== 'undefined' ? mktRenderEnquiries : null,
+  'mkt-feasibility':typeof mktRenderFeasibility !== 'undefined' ? mktRenderFeasibility : null,
+  'rm-labels':    typeof rmRenderLabels     !== 'undefined' ? rmRenderLabels     : null,
+  'rm-register':  typeof rmRenderRegister   !== 'undefined' ? rmRenderRegister   : null,
+};
 
 (async()=>{
   await loadAllTypes();
