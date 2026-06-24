@@ -436,6 +436,22 @@ def restore():
         'hrSkillDocs':  [('skillId',     'hrSkillDefs')],           # scalar
     }
 
+    # ── Versions (remap docId using docNumber as stable key) ─────────
+    doc_number_to_new_id = {d.doc_number: d.id for d in Document.query.all()}
+    old_doc_id_to_new = {}
+    for old_doc in data.get('documents', []):
+        doc_num = old_doc.get('docNumber')
+        old_id = old_doc.get('id')
+        if doc_num and old_id and doc_num in doc_number_to_new_id:
+            old_doc_id_to_new[old_id] = doc_number_to_new_id[doc_num]
+    GenericRecord.query.filter_by(module='versions').delete()
+    db.session.flush()
+    for v in data.get('versions', []):
+        nv = {k: val for k, val in v.items() if k not in ('id', '_rid')}
+        if nv.get('docId') in old_doc_id_to_new:
+            nv['docId'] = old_doc_id_to_new[nv['docId']]
+        db.session.add(GenericRecord(module='versions', data=json.dumps(nv)))
+
     skip_keys = {'exportedAt','exportedBy','appVersion','company','documents',
                  'versions','audit','users','customDocTypes','settings','records',
                  'rm_lots'}
