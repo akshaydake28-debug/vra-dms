@@ -374,10 +374,24 @@ def backup():
 
 @app.route('/api/restore', methods=['POST'])
 def restore():
+    """
+    Restore from backup JSON.
+
+    Key improvement over previous version:
+    Cross-reference fields (attendeeIds, empId, skillId, gaugeId) are
+    rewritten using the old-id → new-db-id maps built during import so
+    that Training / Skill Matrix / Calibration relationships survive a
+    restore without requiring a separate migration script.
+
+    The backup JSON carries the old IDs that each record *had at export
+    time* inside its `id` field.  After inserting the master records
+    (employees, skill defs, gauges) we know what new DB id each old id
+    maps to, and we patch every dependent record before inserting it.
+    """
     data = request.json
     if not data: return jsonify({'error':'No data'}),400
 
-    # Documents — clear all and restore fresh
+    # ── Documents ────────────────────────────────────────────────────
     Document.query.delete()
     doc_count = 0
     for d in data.get('documents',[]):
@@ -392,37 +406,103 @@ def restore():
         db.session.add(doc)
         doc_count += 1
 
-    # Settings
+    # ── Settings ─────────────────────────────────────────────────────
     for key, value in data.get('settings',{}).items():
-        if not GenericRecord.query.filter_by(module='setting_'+key).first():
+        r = GenericRecord.query.filter_by(module='setting_'+key).first()
+        if r:
+            r.data = json.dumps(value)
+        else:
             db.session.add(GenericRecord(module='setting_'+key, data=json.dumps(value)))
 
-    # All array-type module data
-    skip_keys = {'exportedAt','exportedBy','appVersion','company','documents',
-                 'versions','audit','users','customDocTypes','settings','records'}
-    module_count = 0
-    for key, value in data.items():
-        if key in skip_keys: continue
-        if not isinstance(value, list): continue
-        if not value: continue
-        # Clear existing records for this module and restore fresh
-        GenericRecord.query.filter_by(module=key).delete()
-        db.session.flush()
-        for rec in value:
-            nr = {k:v for k,v in rec.items() if k not in ('id','_rid')}
-            db.session.add(GenericRecord(module=key, data=json.dumps(nr)))
-            module_count += 1
-
-    # customDocTypes as setting
     if data.get('customDocTypes'):
-        if not GenericRecord.query.filter_by(module='setting_customDocTypes').first():
+        r = GenericRecord.query.filter_by(module='setting_customDocTypes').first()
+        if r:
+            r.data = json.dumps(data['customDocTypes'])
+        else:
             db.session.add(GenericRecord(module='setting_customDocTypes',
                 data=json.dumps(data['customDocTypes'])))
 
-    # RM Lots
+    # ── Master modules first (order matters for remap building) ──────
+    #    We insert hrEmployees, hrSkillDefs, calGauges first so we can
+    #    capture old_id → new_db_id maps before inserting dependents.
+
+    MASTER_MODULES = ['hrEmployees', 'hrSkillDefs', 'calGauges']
+    DEPENDENT_MODULES = {
+        # module : list of (field, remap_source)
+        'hrTrainings':  [('attendeeIds', 'hrEmployees')],          # list field
+        'hrSkillMatrix':[('empId',       'hrEmployees'),            # scalar
+                         ('skillId',     'hrSkillDefs')],           # scalar
+        'calRecords':   [('gaugeId',     'calGauges')],             # scalar
+        'hrSkillDocs':  [('skillId',     'hrSkillDefs')],           # scalar
+    }
+
+    skip_keys = {'exportedAt','exportedBy','appVersion','company','documents',
+                 'versions','audit','users','customDocTypes','settings','records',
+                 'rm_lots'}
+
+    # old_id_to_new_db_id[module][old_id] = new_db_id
+    id_maps = {}
+
+    module_count = 0
+
+    def insert_module(key, records):
+        nonlocal module_count
+        GenericRecord.query.filter_by(module=key).delete()
+        db.session.flush()
+        old_to_new = {}
+        for rec in records:
+            old_id = rec.get('id') or rec.get('_rid')
+            nr = {k: v for k, v in rec.items() if k not in ('id', '_rid')}
+            r = GenericRecord(module=key, data=json.dumps(nr))
+            db.session.add(r)
+            db.session.flush()   # get r.id immediately
+            if old_id is not None:
+                old_to_new[old_id] = r.id
+            module_count += 1
+        return old_to_new
+
+    # Insert master modules and capture ID maps
+    for key in MASTER_MODULES:
+        records = data.get(key, [])
+        if records:
+            id_maps[key] = insert_module(key, records)
+
+    # Insert all other modules, patching cross-references where needed
+    for key, value in data.items():
+        if key in skip_keys or key in MASTER_MODULES:
+            continue
+        if not isinstance(value, list) or not value:
+            continue
+
+        patches = DEPENDENT_MODULES.get(key, [])
+
+        GenericRecord.query.filter_by(module=key).delete()
+        db.session.flush()
+
+        for rec in value:
+            nr = {k: v for k, v in rec.items() if k not in ('id', '_rid')}
+
+            # Apply cross-reference patches
+            for field, src_module in patches:
+                remap = id_maps.get(src_module, {})
+                if not remap:
+                    continue
+                v = nr.get(field)
+                if v is None:
+                    continue
+                if isinstance(v, list):
+                    # e.g. attendeeIds
+                    nr[field] = [remap.get(a, a) for a in v]
+                else:
+                    nr[field] = remap.get(v, v)
+
+            db.session.add(GenericRecord(module=key, data=json.dumps(nr)))
+            module_count += 1
+
+    # ── RM Lots ───────────────────────────────────────────────────────
     if data.get('rm_lots'):
         RMLot.query.delete()
-        for l in data.get('rm_lots',[]):
+        for l in data.get('rm_lots', []):
             lot = RMLot(
                 lot_number=l.get('lotNumber'), date=l.get('date',''),
                 grade=l.get('grade',''), supplier=l.get('supplier',''),
@@ -432,7 +512,7 @@ def restore():
             db.session.add(lot)
 
     db.session.commit()
-    return jsonify({'ok':True,'documents':doc_count,'records':module_count})
+    return jsonify({'ok': True, 'documents': doc_count, 'records': module_count})
 
 @app.route('/api/<module>', methods=['GET'])
 def list_generic(module):
@@ -497,6 +577,84 @@ def delete_generic_one(module, rid):
 # ══════════════════════════════════════════════════════
 #  ADMIN — DEDUP
 # ══════════════════════════════════════════════════════
+
+@app.route('/api/admin/migrate/fix-ids', methods=['POST'])
+def migrate_fix_ids():
+    """
+    One-time migration to fix broken cross-reference IDs caused by the
+    IndexedDB → PostgreSQL migration.  Safe to run multiple times —
+    already-correct records are skipped.
+    """
+    results = {}
+
+    # ── Build remaps from live DB ──────────────────────────────────────
+    emps = sorted(
+        [{'_db_id': r.id, **json.loads(r.data)}
+         for r in GenericRecord.query.filter_by(module='hrEmployees').all()],
+        key=lambda x: x.get('empCode', '')
+    )
+    emp_remap = {i + 1: emps[i]['_db_id'] for i in range(len(emps))}
+    valid_emp_ids = set(emp_remap.values())
+
+    sdefs_sorted = sorted(
+        r.id for r in GenericRecord.query.filter_by(module='hrSkillDefs').all()
+    )
+    skill_remap = {i + 1: sdefs_sorted[i] for i in range(len(sdefs_sorted))}
+    valid_skill_ids = set(skill_remap.values())
+
+    gauges = sorted(
+        [{'_db_id': r.id, **json.loads(r.data)}
+         for r in GenericRecord.query.filter_by(module='calGauges').all()],
+        key=lambda x: x.get('gaugeId', '')
+    )
+    gauge_remap = {i + 1: gauges[i]['_db_id'] for i in range(len(gauges))}
+    valid_gauge_ids = set(gauge_remap.values())
+
+    # ── Fix hrTrainings.attendeeIds ────────────────────────────────────
+    tr_fixed = 0
+    for r in GenericRecord.query.filter_by(module='hrTrainings').all():
+        d = json.loads(r.data)
+        orig = d.get('attendeeIds', [])
+        if not orig or all(a in valid_emp_ids for a in orig):
+            continue
+        d['attendeeIds'] = [emp_remap.get(a, a) for a in orig]
+        r.data = json.dumps(d)
+        r.updated_at = datetime.utcnow()
+        tr_fixed += 1
+    results['hrTrainings'] = tr_fixed
+
+    # ── Fix hrSkillMatrix.empId + skillId ──────────────────────────────
+    sm_fixed = 0
+    for r in GenericRecord.query.filter_by(module='hrSkillMatrix').all():
+        d = json.loads(r.data)
+        changed = False
+        if d.get('empId') not in valid_emp_ids:
+            d['empId'] = emp_remap.get(d['empId'], d['empId'])
+            changed = True
+        if d.get('skillId') not in valid_skill_ids:
+            d['skillId'] = skill_remap.get(d['skillId'], d['skillId'])
+            changed = True
+        if changed:
+            r.data = json.dumps(d)
+            r.updated_at = datetime.utcnow()
+            sm_fixed += 1
+    results['hrSkillMatrix'] = sm_fixed
+
+    # ── Fix calRecords.gaugeId ─────────────────────────────────────────
+    cal_fixed = 0
+    for r in GenericRecord.query.filter_by(module='calRecords').all():
+        d = json.loads(r.data)
+        if d.get('gaugeId') in valid_gauge_ids:
+            continue
+        d['gaugeId'] = gauge_remap.get(d['gaugeId'], d['gaugeId'])
+        r.data = json.dumps(d)
+        r.updated_at = datetime.utcnow()
+        cal_fixed += 1
+    results['calRecords'] = cal_fixed
+
+    db.session.commit()
+    return jsonify({'ok': True, 'fixed': results})
+
 
 @app.route('/api/admin/dedup/all', methods=['POST'])
 def dedup_all():
