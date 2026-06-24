@@ -837,6 +837,11 @@ function nav(view,params=''){
 
 'rm-labels': typeof rmRenderLabels !== 'undefined' ? rmRenderLabels : null,
 'rm-register': typeof rmRenderRegister !== 'undefined' ? rmRenderRegister : null,
+'qms2':    ()=>QMS2.renderDashboard(),
+'qms2-cp': ()=>QMS2.renderCpList(),
+'qms2-cs': ()=>QMS2.renderChecksheets(null),
+  };
+  if(views[view]) views[view](p);
   };
   if(views[view]) views[view](p);
   if(!['create','edit'].includes(view) && typeof setChatVisible !== 'undefined') setChatVisible(false);
