@@ -819,8 +819,11 @@ function nav(view,params=''){
     'pur-scorecard':purRenderScorecard,
     'pur-po':purRenderPO,
     'cal-gauges':calRenderGauges,
-    'cal-records':calRenderRecords,
-    'cal-due':calRenderDue,
+'cal-records':calRenderRecords,
+'cal-due':calRenderDue,
+
+'rm-labels': typeof rmRenderLabels !== 'undefined' ? rmRenderLabels : null,
+'rm-register': typeof rmRenderRegister !== 'undefined' ? rmRenderRegister : null,
   };
   if(views[view]) views[view](p);
   if(!['create','edit'].includes(view) && typeof setChatVisible !== 'undefined') setChatVisible(false);
