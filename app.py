@@ -801,9 +801,426 @@ with app.app_context():
     try:
         db.create_all()
         seed_users()
+        seed_qms2()
         # Note: seed_defaults() removed — default data comes from backup restore
     except Exception as e:
         print(f"Startup warning: {e}")
 
 if __name__ == '__main__':
     app.run(debug=True)
+
+# ══════════════════════════════════════════════════════
+#  QMS v2 — PFMEA + CONTROL PLAN + CHECKSHEET
+# ══════════════════════════════════════════════════════
+
+# ── Grade Master ──────────────────────────────────────────────────────
+
+@app.route('/api/qms2/grades', methods=['GET'])
+def qms2_list_grades():
+    recs = GenericRecord.query.filter_by(module='qms2_grades').order_by(GenericRecord.id.asc()).all()
+    return jsonify([{**json.loads(r.data), 'id': r.id} for r in recs])
+
+@app.route('/api/qms2/grades', methods=['POST'])
+def qms2_save_grade():
+    d = request.json
+    existing_id = d.get('id')
+    if existing_id:
+        r = GenericRecord.query.get(existing_id)
+        if r and r.module == 'qms2_grades':
+            clean = {k:v for k,v in d.items() if k != 'id'}
+            r.data = json.dumps(clean); r.updated_at = datetime.utcnow()
+            db.session.commit(); return jsonify({'id': r.id})
+    clean = {k:v for k,v in d.items() if k != 'id'}
+    r = GenericRecord(module='qms2_grades', data=json.dumps(clean))
+    db.session.add(r); db.session.commit()
+    return jsonify({'id': r.id})
+
+@app.route('/api/qms2/grades/<int:rid>', methods=['DELETE'])
+def qms2_delete_grade(rid):
+    r = GenericRecord.query.get(rid)
+    if r: db.session.delete(r); db.session.commit()
+    return jsonify({'ok': True})
+
+# ── PFMEA Templates ───────────────────────────────────────────────────
+
+@app.route('/api/qms2/pfmea_templates', methods=['GET'])
+def qms2_list_pfmea_templates():
+    grade = request.args.get('grade')
+    recs = GenericRecord.query.filter_by(module='qms2_pfmea_templates').order_by(GenericRecord.id.asc()).all()
+    result = []
+    for r in recs:
+        d = {**json.loads(r.data), 'id': r.id}
+        if grade and d.get('grade') != grade:
+            continue
+        result.append(d)
+    return jsonify(result)
+
+@app.route('/api/qms2/pfmea_templates', methods=['POST'])
+def qms2_save_pfmea_template():
+    d = request.json
+    existing_id = d.get('id')
+    if existing_id:
+        r = GenericRecord.query.get(existing_id)
+        if r and r.module == 'qms2_pfmea_templates':
+            clean = {k:v for k,v in d.items() if k != 'id'}
+            r.data = json.dumps(clean); r.updated_at = datetime.utcnow()
+            db.session.commit(); return jsonify({'id': r.id})
+    clean = {k:v for k,v in d.items() if k != 'id'}
+    r = GenericRecord(module='qms2_pfmea_templates', data=json.dumps(clean))
+    db.session.add(r); db.session.commit()
+    return jsonify({'id': r.id})
+
+@app.route('/api/qms2/pfmea_templates/<int:rid>', methods=['DELETE'])
+def qms2_delete_pfmea_template(rid):
+    r = GenericRecord.query.get(rid)
+    if r: db.session.delete(r); db.session.commit()
+    return jsonify({'ok': True})
+
+# ── PFMEA Parts ───────────────────────────────────────────────────────
+
+@app.route('/api/qms2/pfmea_parts', methods=['GET'])
+def qms2_list_pfmea_parts():
+    recs = GenericRecord.query.filter_by(module='qms2_pfmea_parts').order_by(GenericRecord.id.desc()).all()
+    return jsonify([{**json.loads(r.data), 'id': r.id} for r in recs])
+
+@app.route('/api/qms2/pfmea_parts', methods=['POST'])
+def qms2_save_pfmea_part():
+    d = request.json
+    existing_id = d.get('id')
+    if existing_id:
+        r = GenericRecord.query.get(existing_id)
+        if r and r.module == 'qms2_pfmea_parts':
+            clean = {k:v for k,v in d.items() if k != 'id'}
+            r.data = json.dumps(clean); r.updated_at = datetime.utcnow()
+            db.session.commit(); return jsonify({'id': r.id})
+    clean = {k:v for k,v in d.items() if k != 'id'}
+    r = GenericRecord(module='qms2_pfmea_parts', data=json.dumps(clean))
+    db.session.add(r); db.session.commit()
+    return jsonify({'id': r.id})
+
+@app.route('/api/qms2/pfmea_parts/<int:rid>', methods=['DELETE'])
+def qms2_delete_pfmea_part(rid):
+    r = GenericRecord.query.get(rid)
+    if r: db.session.delete(r); db.session.commit()
+    return jsonify({'ok': True})
+
+# ── PFMEA Rows ────────────────────────────────────────────────────────
+
+@app.route('/api/qms2/pfmea_rows', methods=['GET'])
+def qms2_list_pfmea_rows():
+    part_id = request.args.get('partId', type=int)
+    recs = GenericRecord.query.filter_by(module='qms2_pfmea_rows').order_by(GenericRecord.id.asc()).all()
+    result = []
+    for r in recs:
+        d = {**json.loads(r.data), 'id': r.id}
+        if part_id and d.get('partId') != part_id:
+            continue
+        result.append(d)
+    return jsonify(result)
+
+@app.route('/api/qms2/pfmea_rows', methods=['POST'])
+def qms2_save_pfmea_row():
+    d = request.json
+    existing_id = d.get('id')
+    if existing_id:
+        r = GenericRecord.query.get(existing_id)
+        if r and r.module == 'qms2_pfmea_rows':
+            clean = {k:v for k,v in d.items() if k != 'id'}
+            r.data = json.dumps(clean); r.updated_at = datetime.utcnow()
+            db.session.commit(); return jsonify({'id': r.id})
+    clean = {k:v for k,v in d.items() if k != 'id'}
+    r = GenericRecord(module='qms2_pfmea_rows', data=json.dumps(clean))
+    db.session.add(r); db.session.commit()
+    return jsonify({'id': r.id})
+
+@app.route('/api/qms2/pfmea_rows/<int:rid>', methods=['DELETE'])
+def qms2_delete_pfmea_row(rid):
+    r = GenericRecord.query.get(rid)
+    if r: db.session.delete(r); db.session.commit()
+    return jsonify({'ok': True})
+
+# ── Control Plan Parts ────────────────────────────────────────────────
+
+@app.route('/api/qms2/cp_parts', methods=['GET'])
+def qms2_list_cp_parts():
+    recs = GenericRecord.query.filter_by(module='qms2_cp_parts').order_by(GenericRecord.id.desc()).all()
+    return jsonify([{**json.loads(r.data), 'id': r.id} for r in recs])
+
+@app.route('/api/qms2/cp_parts', methods=['POST'])
+def qms2_save_cp_part():
+    d = request.json
+    existing_id = d.get('id')
+    if existing_id:
+        r = GenericRecord.query.get(existing_id)
+        if r and r.module == 'qms2_cp_parts':
+            clean = {k:v for k,v in d.items() if k != 'id'}
+            r.data = json.dumps(clean); r.updated_at = datetime.utcnow()
+            db.session.commit(); return jsonify({'id': r.id})
+    clean = {k:v for k,v in d.items() if k != 'id'}
+    r = GenericRecord(module='qms2_cp_parts', data=json.dumps(clean))
+    db.session.add(r); db.session.commit()
+    return jsonify({'id': r.id})
+
+@app.route('/api/qms2/cp_parts/<int:rid>', methods=['DELETE'])
+def qms2_delete_cp_part(rid):
+    r = GenericRecord.query.get(rid)
+    if r: db.session.delete(r); db.session.commit()
+    return jsonify({'ok': True})
+
+# ── Control Plan Characteristics ──────────────────────────────────────
+
+@app.route('/api/qms2/cp_chars', methods=['GET'])
+def qms2_list_cp_chars():
+    cp_id = request.args.get('cpId', type=int)
+    recs = GenericRecord.query.filter_by(module='qms2_cp_chars').order_by(GenericRecord.id.asc()).all()
+    result = []
+    for r in recs:
+        d = {**json.loads(r.data), 'id': r.id}
+        if cp_id and d.get('cpId') != cp_id:
+            continue
+        result.append(d)
+    return jsonify(result)
+
+@app.route('/api/qms2/cp_chars', methods=['POST'])
+def qms2_save_cp_char():
+    d = request.json
+    existing_id = d.get('id')
+    if existing_id:
+        r = GenericRecord.query.get(existing_id)
+        if r and r.module == 'qms2_cp_chars':
+            clean = {k:v for k,v in d.items() if k != 'id'}
+            r.data = json.dumps(clean); r.updated_at = datetime.utcnow()
+            db.session.commit(); return jsonify({'id': r.id})
+    clean = {k:v for k,v in d.items() if k != 'id'}
+    r = GenericRecord(module='qms2_cp_chars', data=json.dumps(clean))
+    db.session.add(r); db.session.commit()
+    return jsonify({'id': r.id})
+
+@app.route('/api/qms2/cp_chars/<int:rid>', methods=['DELETE'])
+def qms2_delete_cp_char(rid):
+    r = GenericRecord.query.get(rid)
+    if r: db.session.delete(r); db.session.commit()
+    return jsonify({'ok': True})
+
+# ── Control Plan Revisions ────────────────────────────────────────────
+
+@app.route('/api/qms2/cp_revisions', methods=['GET'])
+def qms2_list_cp_revisions():
+    cp_id = request.args.get('cpId', type=int)
+    recs = GenericRecord.query.filter_by(module='qms2_cp_revisions').order_by(GenericRecord.id.asc()).all()
+    result = []
+    for r in recs:
+        d = {**json.loads(r.data), 'id': r.id}
+        if cp_id and d.get('cpId') != cp_id:
+            continue
+        result.append(d)
+    return jsonify(result)
+
+@app.route('/api/qms2/cp_revisions', methods=['POST'])
+def qms2_save_cp_revision():
+    d = request.json
+    clean = {k:v for k,v in d.items() if k != 'id'}
+    r = GenericRecord(module='qms2_cp_revisions', data=json.dumps(clean))
+    db.session.add(r); db.session.commit()
+    return jsonify({'id': r.id})
+
+# ── Image Attachments ─────────────────────────────────────────────────
+
+@app.route('/api/qms2/images', methods=['POST'])
+def qms2_save_image():
+    d = request.json
+    existing_id = d.get('id')
+    if existing_id:
+        r = GenericRecord.query.get(existing_id)
+        if r and r.module == 'qms2_images':
+            clean = {k:v for k,v in d.items() if k != 'id'}
+            r.data = json.dumps(clean); r.updated_at = datetime.utcnow()
+            db.session.commit(); return jsonify({'id': r.id})
+    clean = {k:v for k,v in d.items() if k != 'id'}
+    r = GenericRecord(module='qms2_images', data=json.dumps(clean))
+    db.session.add(r); db.session.commit()
+    return jsonify({'id': r.id})
+
+@app.route('/api/qms2/images/<int:rid>', methods=['GET'])
+def qms2_get_image(rid):
+    r = GenericRecord.query.get(rid)
+    if not r: return jsonify(None), 404
+    return jsonify({**json.loads(r.data), 'id': r.id})
+
+@app.route('/api/qms2/images/<int:rid>', methods=['DELETE'])
+def qms2_delete_image(rid):
+    r = GenericRecord.query.get(rid)
+    if r: db.session.delete(r); db.session.commit()
+    return jsonify({'ok': True})
+
+# ── Checksheet Records ────────────────────────────────────────────────
+
+@app.route('/api/qms2/cs_records', methods=['GET'])
+def qms2_list_cs_records():
+    cp_id = request.args.get('cpId', type=int)
+    cs_type = request.args.get('type')
+    recs = GenericRecord.query.filter_by(module='qms2_cs_records').order_by(GenericRecord.id.desc()).all()
+    result = []
+    for r in recs:
+        d = {**json.loads(r.data), 'id': r.id}
+        if cp_id and d.get('cpId') != cp_id: continue
+        if cs_type and d.get('type') != cs_type: continue
+        result.append(d)
+    return jsonify(result)
+
+@app.route('/api/qms2/cs_records', methods=['POST'])
+def qms2_save_cs_record():
+    d = request.json
+    existing_id = d.get('id')
+    if existing_id:
+        r = GenericRecord.query.get(existing_id)
+        if r and r.module == 'qms2_cs_records':
+            clean = {k:v for k,v in d.items() if k != 'id'}
+            r.data = json.dumps(clean); r.updated_at = datetime.utcnow()
+            db.session.commit(); return jsonify({'id': r.id})
+    clean = {k:v for k,v in d.items() if k != 'id'}
+    r = GenericRecord(module='qms2_cs_records', data=json.dumps(clean))
+    db.session.add(r); db.session.commit()
+    return jsonify({'id': r.id})
+
+@app.route('/api/qms2/cs_records/<int:rid>', methods=['DELETE'])
+def qms2_delete_cs_record(rid):
+    r = GenericRecord.query.get(rid)
+    if r: db.session.delete(r); db.session.commit()
+    return jsonify({'ok': True})
+
+# ── Seed Grade Master + PFMEA Templates on first run ─────────────────
+
+
+@app.route('/api/qms2/cp_templates', methods=['GET'])
+def qms2_list_cp_templates():
+    step = request.args.get('processStep')
+    recs = GenericRecord.query.filter_by(module='qms2_cp_templates').order_by(GenericRecord.id.asc()).all()
+    result = []
+    for r in recs:
+        d = {**json.loads(r.data), 'id': r.id}
+        if step and d.get('processStep') != step:
+            continue
+        result.append(d)
+    return jsonify(result)
+
+def seed_qms2():
+    if GenericRecord.query.filter_by(module='qms2_grades').count() > 0:
+        return
+
+    GRADES = [
+        {'grade':'ADC12','standard':'JIS H 5302','composition':{'Si':'9.6–12.0','Cu':'1.5–3.5','Mg':'≤0.30','Zn':'≤1.0','Fe':'≤1.3','Mn':'≤0.50','Ni':'≤0.50','Sn':'≤0.20','Al':'Balance'},'tensileStrength':'≥310 MPa','hardness':'75–105 HB','meltingRange':'515–585°C','metalTempRange':'640–680°C','acceptanceCriteria':'Within spectro limits per JIS H 5302'},
+        {'grade':'A380','standard':'ASTM B85','composition':{'Si':'7.5–9.5','Cu':'3.0–4.0','Mg':'≤0.10','Zn':'≤3.0','Fe':'≤1.3','Mn':'≤0.50','Ni':'≤0.50','Sn':'≤0.35','Al':'Balance'},'tensileStrength':'≥317 MPa','hardness':'80 HB','meltingRange':'540–595°C','metalTempRange':'650–690°C','acceptanceCriteria':'Within spectro limits per ASTM B85'},
+        {'grade':'A383','standard':'ASTM B85','composition':{'Si':'9.5–11.5','Cu':'2.0–3.0','Mg':'≤0.10','Zn':'≤3.0','Fe':'≤1.3','Mn':'≤0.50','Ni':'≤0.30','Sn':'≤0.15','Al':'Balance'},'tensileStrength':'≥310 MPa','hardness':'75 HB','meltingRange':'516–582°C','metalTempRange':'635–675°C','acceptanceCriteria':'Within spectro limits per ASTM B85'},
+        {'grade':'LM6','standard':'BS 1490','composition':{'Si':'10.0–13.0','Cu':'≤0.10','Mg':'≤0.10','Zn':'≤0.10','Fe':'≤0.60','Mn':'≤0.50','Ni':'≤0.10','Sn':'≤0.05','Al':'Balance'},'tensileStrength':'≥160 MPa','hardness':'45–65 HB','meltingRange':'575–615°C','metalTempRange':'650–700°C','acceptanceCriteria':'Within spectro limits per BS 1490'},
+        {'grade':'LM24','standard':'BS 1490','composition':{'Si':'7.5–9.5','Cu':'3.0–4.0','Mg':'≤0.30','Zn':'≤1.0','Fe':'≤1.0','Mn':'≤0.30','Ni':'≤0.30','Sn':'≤0.20','Al':'Balance'},'tensileStrength':'≥280 MPa','hardness':'70–90 HB','meltingRange':'520–580°C','metalTempRange':'640–680°C','acceptanceCriteria':'Within spectro limits per BS 1490'},
+    ]
+    for g in GRADES:
+        db.session.add(GenericRecord(module='qms2_grades', data=json.dumps(g)))
+
+    PROCESS_STEPS = ['Receiving Inspection','Melting','Die Casting','Trimming/Fettling','Shot Blasting','Machining','Final Inspection','Packing & Dispatch']
+
+    PFMEA_TEMPLATES = [
+        # ── Receiving Inspection ──
+        {'processStep':'Receiving Inspection','function':'Verify incoming raw material meets grade specification','failureMode':'Wrong grade received','failureEffect':'Non-conforming castings — customer rejection','severity':9,'failureCause':'Supplier error / no cert verification','occurrence':2,'currentControls':'Visual check, supplier certificate review','detection':3,'recommendedAction':'Spectro verify every heat','responsibility':'QC Inspector'},
+        {'processStep':'Receiving Inspection','function':'Verify incoming raw material meets grade specification','failureMode':'Material contamination','failureEffect':'Porosity, inclusions in castings','severity':8,'failureCause':'Mixed material in storage','occurrence':2,'currentControls':'Colour coding, segregation','detection':4,'recommendedAction':'Dedicated storage per grade','responsibility':'Stores'},
+        {'processStep':'Receiving Inspection','function':'Verify incoming raw material meets grade specification','failureMode':'Incorrect weight / quantity','failureEffect':'Production shortage','severity':5,'failureCause':'Supplier packing error','occurrence':2,'currentControls':'Weight check on receipt','detection':2,'recommendedAction':'Weigh every lot','responsibility':'Stores'},
+        # ── Melting ──
+        {'processStep':'Melting','function':'Melt aluminium ingot to correct temperature and composition','failureMode':'Low metal temperature','failureEffect':'Cold shut, misrun in casting','severity':8,'failureCause':'Thermocouple failure / operator error','occurrence':3,'currentControls':'Pyrometer check before casting','detection':2,'recommendedAction':'Alarm at min temp threshold','responsibility':'Production In-charge'},
+        {'processStep':'Melting','function':'Melt aluminium ingot to correct temperature and composition','failureMode':'Excessive metal temperature','failureEffect':'Oxide inclusions, porosity','severity':7,'failureCause':'Overheating, long holding time','occurrence':2,'currentControls':'Temperature log every 30 min','detection':2,'recommendedAction':'Max temp alarm, holding time limit','responsibility':'Production In-charge'},
+        {'processStep':'Melting','function':'Melt aluminium ingot to correct temperature and composition','failureMode':'Inadequate degassing','failureEffect':'Hydrogen porosity in casting','severity':8,'failureCause':'Insufficient degassing time/flux','occurrence':3,'currentControls':'Flux addition per procedure','detection':5,'recommendedAction':'Timed degassing, reduced pressure test','responsibility':'Production In-charge'},
+        {'processStep':'Melting','function':'Melt aluminium ingot to correct temperature and composition','failureMode':'Slag / oxide carry-over','failureEffect':'Inclusions in casting','severity':7,'failureCause':'Skimming not done before casting','occurrence':3,'currentControls':'Skimming procedure','detection':3,'recommendedAction':'Mandatory skim check before each shot','responsibility':'Operator'},
+        # ── Die Casting ──
+        {'processStep':'Die Casting','function':'Produce casting to drawing dimensions and surface quality','failureMode':'Short fill','failureEffect':'Incomplete casting — scrap','severity':8,'failureCause':'Low metal temp, low shot pressure, gate blockage','occurrence':3,'currentControls':'Process parameter log, first-off inspection','detection':2,'recommendedAction':'Min temp interlock, pressure monitoring','responsibility':'Production In-charge'},
+        {'processStep':'Die Casting','function':'Produce casting to drawing dimensions and surface quality','failureMode':'Cold shut','failureEffect':'Weak joint line visible — rejection','severity':8,'failureCause':'Low metal temp, slow fill speed','occurrence':3,'currentControls':'Visual inspection, process control','detection':3,'recommendedAction':'Increase metal temp, review gate design','responsibility':'Production In-charge'},
+        {'processStep':'Die Casting','function':'Produce casting to drawing dimensions and surface quality','failureMode':'Porosity','failureEffect':'Leak, structural weakness — customer rejection','severity':9,'failureCause':'Trapped air, shrinkage, excessive hydrogen','occurrence':4,'currentControls':'Vacuum, gate/vent design, degassing','detection':5,'recommendedAction':'Intensification pressure, vacuum die casting','responsibility':'Production In-charge'},
+        {'processStep':'Die Casting','function':'Produce casting to drawing dimensions and surface quality','failureMode':'Flash','failureEffect':'Extra material — trimming required, dimensional risk','severity':5,'failureCause':'Low clamping force, worn parting line','deviation':3,'currentControls':'Die condition check, clamping force verify','detection':2,'recommendedAction':'Parting line inspection, clamping calibration','responsibility':'Die Setter'},
+        {'processStep':'Die Casting','function':'Produce casting to drawing dimensions and surface quality','failureMode':'Die soldering','failureEffect':'Surface defect, dimension shift','severity':6,'failureCause':'Insufficient die lubricant, overheating','occurrence':3,'currentControls':'Die temp monitoring, lubrication schedule','detection':3,'recommendedAction':'Die spray program review','responsibility':'Operator'},
+        {'processStep':'Die Casting','function':'Produce casting to drawing dimensions and surface quality','failureMode':'Dimension out of tolerance','failureEffect':'Assembly failure at customer end','severity':9,'failureCause':'Die wear, thermal expansion, incorrect setup','occurrence':2,'currentControls':'First-off + periodic dimensional check','detection':3,'recommendedAction':'SPC on critical dims, die life tracking','responsibility':'QC Inspector'},
+        # ── Trimming/Fettling ──
+        {'processStep':'Trimming/Fettling','function':'Remove runners, gates and flash without damaging casting','failureMode':'Incomplete runner removal','failureEffect':'Assembly interference at customer','severity':7,'failureCause':'Operator skip, worn trim die','occurrence':2,'currentControls':'Visual check after trimming','detection':2,'recommendedAction':'100% visual gate check','responsibility':'Operator'},
+        {'processStep':'Trimming/Fettling','function':'Remove runners, gates and flash without damaging casting','failureMode':'Casting damage during fettling','failureEffect':'Surface damage, dimensional distortion','severity':6,'failureCause':'Excessive force, wrong tool','occurrence':2,'currentControls':'Work instruction for fettling','detection':3,'recommendedAction':'Tool condition check, operator training','responsibility':'Operator'},
+        # ── Shot Blasting ──
+        {'processStep':'Shot Blasting','function':'Clean casting surface and achieve required surface finish','failureMode':'Insufficient coverage','failureEffect':'Corrosion risk, poor paint adhesion','severity':6,'failureCause':'Low exposure time, blocked nozzle','occurrence':2,'currentControls':'Timer, visual surface check','detection':2,'recommendedAction':'Coverage check procedure','responsibility':'Operator'},
+        {'processStep':'Shot Blasting','function':'Clean casting surface and achieve required surface finish','failureMode':'Surface damage / dent','failureEffect':'Cosmetic rejection','severity':5,'failureCause':'Excessive blasting time, wrong shot size','occurrence':2,'currentControls':'Visual inspection after blasting','detection':2,'recommendedAction':'Process parameter control','responsibility':'Operator'},
+        # ── Machining ──
+        {'processStep':'Machining','function':'Machine casting to final drawing dimensions','failureMode':'Dimension out of tolerance','failureEffect':'Assembly failure at customer','severity':9,'failureCause':'Tool wear, wrong program, fixture error','occurrence':3,'currentControls':'First-off + periodic gauge check','detection':2,'recommendedAction':'SPC, tool life management','responsibility':'Operator / QC'},
+        {'processStep':'Machining','function':'Machine casting to final drawing dimensions','failureMode':'Wrong program loaded','failureEffect':'All parts in batch non-conforming','severity':10,'failureCause':'Setup error','occurrence':1,'currentControls':'Program verification before run','detection':1,'recommendedAction':'Program lock, job card verification','responsibility':'Operator'},
+        {'processStep':'Machining','function':'Machine casting to final drawing dimensions','failureMode':'Burr on machined surface','failureEffect':'Assembly issue, injury risk','severity':6,'failureCause':'Tool wear, feed rate high','occurrence':3,'currentControls':'Visual check, deburring WI','detection':2,'recommendedAction':'Deburring step mandatory','responsibility':'Operator'},
+        # ── Final Inspection ──
+        {'processStep':'Final Inspection','function':'Verify all dimensions and appearance before dispatch','failureMode':'Non-conforming part dispatched','failureEffect':'Customer rejection, warranty claim','severity':10,'failureCause':'Inspection skip, measurement error','occurrence':2,'currentControls':'100% visual + sampling dimensional check','detection':3,'recommendedAction':'Outgoing inspection checklist, gauge MSA','responsibility':'QC Inspector'},
+        {'processStep':'Final Inspection','function':'Verify all dimensions and appearance before dispatch','failureMode':'Mixed part / wrong part dispatched','failureEffect':'Assembly line stoppage at customer','severity':10,'failureCause':'Storage mix-up, label error','occurrence':1,'currentControls':'Part identification, label check','detection':2,'recommendedAction':'Kanban, poka-yoke labelling','responsibility':'QC Inspector'},
+        # ── Packing & Dispatch ──
+        {'processStep':'Packing & Dispatch','function':'Pack and dispatch correct quantity to customer','failureMode':'Wrong quantity packed','failureEffect':'Customer line shortage','severity':7,'failureCause':'Count error','occurrence':2,'currentControls':'Count + packing slip verification','detection':2,'recommendedAction':'Weigh-count system','responsibility':'Stores'},
+        {'processStep':'Packing & Dispatch','function':'Pack and dispatch correct quantity to customer','failureMode':'Damage in transit','failureEffect':'Customer rejection','severity':7,'failureCause':'Inadequate packaging','occurrence':2,'currentControls':'Packaging standard, visual before dispatch','detection':3,'recommendedAction':'Packaging qualification test','responsibility':'Stores'},
+    ]
+
+    for t in PFMEA_TEMPLATES:
+        t['rpn'] = t.get('severity',1) * t.get('occurrence',1) * t.get('detection',1)
+        db.session.add(GenericRecord(module='qms2_pfmea_templates', data=json.dumps(t)))
+
+    # ── CP Templates (control characteristics per process step) ──────
+    CP_TEMPLATES = [
+        # Receiving Inspection
+        {'processStep':'Receiving Inspection','charName':'Material Grade Verification','specification':'As per order','method':'Certificate Review','frequency':'Every Lot','reaction':'Reject and return to supplier','source':'template','order':1},
+        {'processStep':'Receiving Inspection','charName':'Spectro Chemical Composition','specification':'As per grade limits','method':'Spectrometer','frequency':'Every Heat','reaction':'Reject lot','source':'template','order':2},
+        {'processStep':'Receiving Inspection','charName':'Visual Inspection — Ingots','specification':'No cracks, no contamination','method':'Visual','frequency':'Every Lot','reaction':'Segregate and inspect','source':'template','order':3},
+        {'processStep':'Receiving Inspection','charName':'Weight per Bundle','specification':'As per supplier invoice ±2%','method':'Weighing Scale','frequency':'Every Lot','reaction':'Raise discrepancy report','source':'template','order':4},
+        {'processStep':'Receiving Inspection','charName':'Supplier Certificate (CoC)','specification':'Present and valid','method':'Document Check','frequency':'Every Lot','reaction':'Hold material','source':'template','order':5},
+        # Melting
+        {'processStep':'Melting','charName':'Metal Temperature','specification':'Grade-specific range','method':'Pyrometer / Thermocouple','frequency':'Every Heat','reaction':'Adjust furnace, do not cast','source':'template','order':1},
+        {'processStep':'Melting','charName':'Holding Temperature','specification':'Grade-specific ±10°C','method':'Thermocouple','frequency':'Every 30 min','reaction':'Adjust holding furnace','source':'template','order':2},
+        {'processStep':'Melting','charName':'Degassing Time','specification':'≥10 min or per SOP','method':'Timer','frequency':'Every Heat','reaction':'Re-degas','source':'template','order':3},
+        {'processStep':'Melting','charName':'Flux Addition','specification':'As per SOP (g/kg metal)','method':'Weight check','frequency':'Every Heat','reaction':'Add as required','source':'template','order':4},
+        {'processStep':'Melting','charName':'Skimming Before Casting','specification':'Done — no visible slag','method':'Visual','frequency':'Every Heat','reaction':'Re-skim','source':'template','order':5},
+        {'processStep':'Melting','charName':'Ladle Condition','specification':'No cracks, clean, pre-heated','method':'Visual','frequency':'Before each use','reaction':'Replace ladle','source':'template','order':6},
+        {'processStep':'Melting','charName':'Crucible Condition','specification':'No cracks, no contamination','method':'Visual','frequency':'Daily','reaction':'Replace crucible','source':'template','order':7},
+        # Die Casting
+        {'processStep':'Die Casting','charName':'Machine Tonnage','specification':'As per die requirement','method':'Machine Display','frequency':'Start of shift','reaction':'Do not run if incorrect','source':'template','order':1},
+        {'processStep':'Die Casting','charName':'Metal Temperature at Shot','specification':'Grade-specific range','method':'Pyrometer','frequency':'Every 10 shots','reaction':'Stop, adjust, verify','source':'template','order':2},
+        {'processStep':'Die Casting','charName':'Die Temperature (Fixed Half)','specification':'150–250°C','method':'Pyrometer','frequency':'Every 10 shots','reaction':'Adjust die spray','source':'template','order':3},
+        {'processStep':'Die Casting','charName':'Die Temperature (Moving Half)','specification':'150–250°C','method':'Pyrometer','frequency':'Every 10 shots','reaction':'Adjust die spray','source':'template','order':4},
+        {'processStep':'Die Casting','charName':'Cycle Time','specification':'As per process sheet ±5s','method':'Timer / Machine log','frequency':'Every 10 shots','reaction':'Check machine settings','source':'template','order':5},
+        {'processStep':'Die Casting','charName':'Shot Weight (Gross)','specification':'As per process sheet ±50g','method':'Weighing scale','frequency':'First-off + every 25 shots','reaction':'Adjust plunger / metal level','source':'template','order':6},
+        {'processStep':'Die Casting','charName':'Biscuit Thickness','specification':'15–25 mm (or per process sheet)','method':'Vernier Caliper','frequency':'First-off + every 25 shots','reaction':'Adjust shot parameters','source':'template','order':7},
+        {'processStep':'Die Casting','charName':'Plunger Tip Condition','specification':'No wear, proper fit','method':'Visual','frequency':'Start of shift / die change','reaction':'Replace plunger tip','source':'template','order':8},
+        {'processStep':'Die Casting','charName':'Die Lubrication (Spray)','specification':'Even coverage, no pooling','method':'Visual','frequency':'Every shot','reaction':'Adjust spray nozzle','source':'template','order':9},
+        {'processStep':'Die Casting','charName':'Visual — Short Fill Check','specification':'No short fill','method':'Visual','frequency':'Every casting','reaction':'Scrap, check temp and pressure','source':'template','order':10},
+        {'processStep':'Die Casting','charName':'Visual — Flash Check','specification':'Flash ≤ 0.5 mm','method':'Visual','frequency':'Every casting','reaction':'Check die clamping force','source':'template','order':11},
+        {'processStep':'Die Casting','charName':'Visual — Cold Shut Check','specification':'No cold shut visible','method':'Visual','frequency':'Every casting','reaction':'Scrap, increase metal temp','source':'template','order':12},
+        {'processStep':'Die Casting','charName':'Visual — Surface Quality','specification':'No cracks, pits, inclusions','method':'Visual','frequency':'Every casting','reaction':'Scrap or rework','source':'template','order':13},
+        # Trimming/Fettling
+        {'processStep':'Trimming/Fettling','charName':'Runner / Gate Removal','specification':'Completely removed, flush','method':'Visual','frequency':'Every part','reaction':'Re-trim','source':'template','order':1},
+        {'processStep':'Trimming/Fettling','charName':'Flash Removal','specification':'No flash >0.3 mm','method':'Visual + Touch','frequency':'Every part','reaction':'Re-fettle','source':'template','order':2},
+        {'processStep':'Trimming/Fettling','charName':'Sharp Edge Check','specification':'No sharp edges on handling surfaces','method':'Visual + Touch','frequency':'Every part','reaction':'Deburr','source':'template','order':3},
+        {'processStep':'Trimming/Fettling','charName':'Surface Damage Check','specification':'No new damage introduced','method':'Visual','frequency':'Every part','reaction':'Segregate, raise NCR','source':'template','order':4},
+        # Shot Blasting
+        {'processStep':'Shot Blasting','charName':'Shot Size','specification':'Per SOP (S230 / S170 or as specified)','method':'Visual / Sieve check','frequency':'Weekly','reaction':'Change shot media','source':'template','order':1},
+        {'processStep':'Shot Blasting','charName':'Blasting Time','specification':'Per SOP (min)','method':'Timer','frequency':'Every batch','reaction':'Adjust timer','source':'template','order':2},
+        {'processStep':'Shot Blasting','charName':'Surface Coverage','specification':'≥95% coverage','method':'Visual','frequency':'Every batch','reaction':'Re-blast','source':'template','order':3},
+        {'processStep':'Shot Blasting','charName':'Surface Finish Check','specification':'No pitting, uniform finish','method':'Visual','frequency':'Every batch','reaction':'Re-blast or scrap','source':'template','order':4},
+        # Machining
+        {'processStep':'Machining','charName':'Fixture Verification','specification':'Correct fixture, properly clamped','method':'Visual check','frequency':'Setup + die change','reaction':'Re-set fixture','source':'template','order':1},
+        {'processStep':'Machining','charName':'Program Verification','specification':'Correct program number loaded','method':'Program check','frequency':'Every setup','reaction':'Load correct program','source':'template','order':2},
+        {'processStep':'Machining','charName':'Tool Condition','specification':'No visible wear, chipping','method':'Visual','frequency':'Every 50 pcs or shift start','reaction':'Replace tool','source':'template','order':3},
+        {'processStep':'Machining','charName':'Coolant Level and Flow','specification':'Level OK, flow adequate','method':'Visual','frequency':'Start of shift','reaction':'Top up / check pump','source':'template','order':4},
+        {'processStep':'Machining','charName':'First-off Dimensional Check','specification':'All dims within tolerance','method':'As per drawing','frequency':'Every setup / batch start','reaction':'Stop, adjust offsets','source':'template','order':5},
+        {'processStep':'Machining','charName':'Burr Check','specification':'No burrs on functional surfaces','method':'Visual + Touch','frequency':'Every part','reaction':'Deburr','source':'template','order':6},
+        # Final Inspection
+        {'processStep':'Final Inspection','charName':'Visual — Cracks','specification':'No cracks','method':'Visual','frequency':'100%','reaction':'Scrap','source':'template','order':1},
+        {'processStep':'Final Inspection','charName':'Visual — Surface Defects','specification':'No pits, cold shut, inclusions visible','method':'Visual','frequency':'100%','reaction':'Segregate, raise NCR','source':'template','order':2},
+        {'processStep':'Final Inspection','charName':'Visual — Identification Mark','specification':'Part number / grade marking present','method':'Visual','frequency':'100%','reaction':'Mark before dispatch','source':'template','order':3},
+        {'processStep':'Final Inspection','charName':'Quantity Count','specification':'As per order / packing list','method':'Count','frequency':'Every lot','reaction':'Recount','source':'template','order':4},
+        # Packing & Dispatch
+        {'processStep':'Packing & Dispatch','charName':'Packaging Type','specification':'As per customer packing standard','method':'Visual','frequency':'Every lot','reaction':'Re-pack','source':'template','order':1},
+        {'processStep':'Packing & Dispatch','charName':'Quantity per Box','specification':'As per packing standard','method':'Count','frequency':'Every box','reaction':'Correct quantity','source':'template','order':2},
+        {'processStep':'Packing & Dispatch','charName':'Customer Label','specification':'Correct part no., qty, lot no., date','method':'Visual','frequency':'Every box','reaction':'Reprint label','source':'template','order':3},
+        {'processStep':'Packing & Dispatch','charName':'Dispatch Document Check','specification':'Invoice, packing list, CoC present','method':'Document check','frequency':'Every shipment','reaction':'Arrange missing documents','source':'template','order':4},
+    ]
+
+    for c in CP_TEMPLATES:
+        db.session.add(GenericRecord(module='qms2_cp_templates', data=json.dumps(c)))
+
+    db.session.commit()
+    print("✅ QMS2 seed data inserted")
+
