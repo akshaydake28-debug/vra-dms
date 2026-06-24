@@ -773,8 +773,6 @@ function nav(view,params=''){
     'qms2-cp':'Process Quality — Control Plans',
     'qms2-cs':'Process Quality — Checksheets',
   };
-  document.getElementById('topbar-title')
-    };
   document.getElementById('topbar-title').textContent=titles[view]||'VRA DMS';
   const p=Object.fromEntries((params||'').split('&').filter(Boolean).map(s=>s.split('=')));
 }
