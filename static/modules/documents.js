@@ -1357,6 +1357,9 @@ td,th{border:1px solid #ccc;padding:5px 8px;text-align:left;vertical-align:top}
 th{background:#ececec;font-weight:bold}
 .rev-table th{background:#1e3a5f;color:#fff}
 @media print{.no-print{display:none}}
+@page{counter-increment:page}
+@page{@bottom-right{content:counter(page)}}
+.page-num::after{content:" " counter(page) " of " counter(pages)}
 </style>
 </head><body>
 <button class="no-print" onclick="window.print()" style="position:fixed;top:10px;right:10px;padding:8px 16px;background:#1e3a5f;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px">🖨 Print / Save PDF</button>
@@ -1365,15 +1368,15 @@ th{background:#ececec;font-weight:bold}
 <thead><tr><td>
   <table class="hdr">
     <tr>
-      <td style="width:40%">
+      <td style="width:33%;vertical-align:middle">
         <div class="hdr-co">V R ALUCAST</div>
         <div style="font-size:7.5pt;color:#555">Aluminium High Pressure Die Casting</div>
       </td>
-      <td style="width:35%;text-align:center">
+      <td style="width:34%;text-align:center;vertical-align:middle">
         <div class="hdr-title">${esc(doc.title)}</div>
         <div class="hdr-type">${typeName_}</div>
       </td>
-      <td style="width:25%" class="hdr-meta">
+      <td style="width:33%;text-align:right;vertical-align:middle" class="hdr-meta">
         <div><b>Doc No:</b> ${esc(doc.docNumber)}</div>
         <div><b>Rev:</b> ${esc(doc.revision)}</div>
         <div><b>Status:</b> ${esc(doc.status)}</div>
@@ -1392,7 +1395,7 @@ th{background:#ececec;font-weight:bold}
     <tr>
       <td style="border:none">${esc(doc.docNumber)} Rev ${esc(doc.revision)}</td>
       <td style="border:none;text-align:center">V R ALUCAST — Confidential</td>
-      <td style="border:none;text-align:right">Page <span class="pagenum"></span></td>
+      <td style="border:none;text-align:right" class="page-num">Page</td>
     </tr>
   </table>
 </td></tr></tfoot>
