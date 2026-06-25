@@ -1408,12 +1408,7 @@ th{background:#ececec;font-weight:bold}
   </table>
 </div>
 
-<div style="margin-top:32px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:32px;text-align:center;font-size:9pt">
-  ${['Prepared by','Reviewed by','Approved by'].map(r=>`<div>
-    <div style="border-top:1px solid #000;padding-top:4px">${r}</div>
-    <div style="color:#555;font-size:8pt;margin-top:16px">Name &amp; Signature</div>
-  </div>`).join('')}
-</div>
+
 
 <script>window.onload=function(){window.print();}<\/script>
 </body></html>`);
