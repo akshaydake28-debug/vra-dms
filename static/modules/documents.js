@@ -1312,3 +1312,110 @@ hr{border:none;border-top:1px solid #ccc;margin:12px 0}
 </body></html>`);
   w.document.close();
 }
+
+// ══════════════════════════════════════════════════════
+//  PRINT DOCUMENT
+// ══════════════════════════════════════════════════════
+async function printDoc(id){
+  const doc = await DB.getDoc(id);
+  if(!doc){ toast('Document not found','d'); return; }
+  const ver = await DB.getVer(id, doc.revision);
+  const allVers = await DB.getAllVers(id);
+  const typeName_ = ALL_TYPES[doc.docType]?.name || doc.docType;
+
+  const revRows = allVers.map(v=>`<tr>
+    <td>${v.revision}</td><td>${fmtD(v.preparedDate||'')}</td>
+    <td>${esc(v.preparedBy||'')}</td><td>${esc(v.approvedBy||'Pending')}</td>
+    <td>${esc(v.changeSummary||'')}</td>
+  </tr>`).join('');
+
+  const w = window.open('','_blank','width=900,height=700');
+  w.document.write(`<!DOCTYPE html><html><head>
+<title>${doc.docNumber} — ${esc(doc.title)}</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Arial,sans-serif;font-size:10pt;color:#000;background:#fff}
+@page{size:A4;margin:14mm 15mm 18mm 15mm}
+table.wrap{width:100%;border-collapse:collapse}
+table.wrap>thead>tr>td{padding-bottom:7px;border-bottom:2px solid #000}
+table.wrap>tfoot>tr>td{padding-top:5px;border-top:1px solid #000;font-size:7.5pt;color:#444}
+table.wrap>tbody>tr>td{padding-top:10px;vertical-align:top}
+table.hdr{width:100%;border-collapse:collapse}
+table.hdr td{border:none;padding:2px 0;vertical-align:top}
+.hdr-co{font-size:12pt;font-weight:bold}
+.hdr-title{font-size:11pt;font-weight:bold;text-align:center}
+.hdr-type{font-size:8pt;color:#555;text-align:center;margin-top:2px}
+.hdr-meta{font-size:8.5pt;text-align:right;line-height:1.6}
+h1{font-size:14pt;margin:14px 0 7px}
+h2{font-size:12pt;font-weight:bold;margin:12px 0 5px;border-bottom:1px solid #bbb;padding-bottom:3px}
+h3{font-size:11pt;font-weight:bold;margin:10px 0 4px}
+p{margin-bottom:8px;line-height:1.75}
+ul,ol{margin:5px 0 10px 22px;line-height:1.75}
+li{margin-bottom:3px}
+table{width:100%;border-collapse:collapse;margin:10px 0;font-size:9.5pt}
+td,th{border:1px solid #ccc;padding:5px 8px;text-align:left;vertical-align:top}
+th{background:#ececec;font-weight:bold}
+.rev-table th{background:#1e3a5f;color:#fff}
+@media print{.no-print{display:none}}
+</style>
+</head><body>
+<button class="no-print" onclick="window.print()" style="position:fixed;top:10px;right:10px;padding:8px 16px;background:#1e3a5f;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px">🖨 Print / Save PDF</button>
+
+<table class="wrap">
+<thead><tr><td>
+  <table class="hdr">
+    <tr>
+      <td style="width:40%">
+        <div class="hdr-co">V R ALUCAST</div>
+        <div style="font-size:7.5pt;color:#555">Aluminium High Pressure Die Casting</div>
+      </td>
+      <td style="width:35%;text-align:center">
+        <div class="hdr-title">${esc(doc.title)}</div>
+        <div class="hdr-type">${typeName_}</div>
+      </td>
+      <td style="width:25%" class="hdr-meta">
+        <div><b>Doc No:</b> ${esc(doc.docNumber)}</div>
+        <div><b>Rev:</b> ${esc(doc.revision)}</div>
+        <div><b>Status:</b> ${esc(doc.status)}</div>
+        <div><b>Date:</b> ${fmtD(ver?.preparedDate||doc.createdDate||'')}</div>
+      </td>
+    </tr>
+  </table>
+</td></tr></thead>
+<tbody><tr><td>
+  <div style="font-size:10.5pt;line-height:1.8;padding:8px 0">
+    ${ver?.content||'<p style="color:#999">No content.</p>'}
+  </div>
+</td></tr></tbody>
+<tfoot><tr><td>
+  <table style="width:100%;font-size:7.5pt;color:#555;border:none">
+    <tr>
+      <td style="border:none">${esc(doc.docNumber)} Rev ${esc(doc.revision)}</td>
+      <td style="border:none;text-align:center">V R ALUCAST — Confidential</td>
+      <td style="border:none;text-align:right">Page <span class="pagenum"></span></td>
+    </tr>
+  </table>
+</td></tr></tfoot>
+</table>
+
+<div style="margin-top:24px">
+  <div style="font-size:9pt;font-weight:bold;margin-bottom:6px;color:#1e3a5f">REVISION HISTORY</div>
+  <table class="rev-table">
+    <thead><tr>
+      <th>Rev</th><th>Date</th><th>Prepared By</th><th>Approved By</th><th>Change Summary</th>
+    </tr></thead>
+    <tbody>${revRows}</tbody>
+  </table>
+</div>
+
+<div style="margin-top:32px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:32px;text-align:center;font-size:9pt">
+  ${['Prepared by','Reviewed by','Approved by'].map(r=>`<div>
+    <div style="border-top:1px solid #000;padding-top:4px">${r}</div>
+    <div style="color:#555;font-size:8pt;margin-top:16px">Name &amp; Signature</div>
+  </div>`).join('')}
+</div>
+
+<script>window.onload=function(){window.print();}<\/script>
+</body></html>`);
+  w.document.close();
+}
