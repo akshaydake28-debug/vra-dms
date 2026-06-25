@@ -933,6 +933,33 @@ async function renderCpEdit(cpId){
 
 // ── Checksheets ───────────────────────────────────────────────────────
 async function renderChecksheets(cpId){
+  // If called with no cpId (from sidebar), show list of approved CPs
+  if(!cpId){
+    const cps = await GET('/api/qms2/cp_parts');
+    const approved = cps.filter(c=>c.status==='Approved');
+    setContent(`
+    <div class="ph">
+      <div>
+        <h2 style="font-size:16px;font-weight:700;color:#0d2f6e">Checksheets</h2>
+        <p style="font-size:12px;color:#6b7280">Select an approved Control Plan to fill or print checksheets</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="cb" style="padding:0">
+        ${approved.length===0
+          ? '<p style="padding:20px;color:#9ca3af;font-size:13px">No approved Control Plans yet. Approve a Control Plan first.</p>'
+          : approved.map(c=>`
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid #f3f4f6">
+            <div>
+              <div style="font-weight:600;font-size:13px;font-family:monospace;color:#0d2f6e">${esc(c.cpNumber)}</div>
+              <div style="font-size:11px;color:#6b7280">${esc(c.partName)} · ${esc(c.customer)} · ${esc(c.grade)}</div>
+            </div>
+            <button class="btn btn-p btn-sm" onclick="QMS2.renderChecksheets(${c.id})">Open Checksheets →</button>
+          </div>`).join('')}
+      </div>
+    </div>`);
+    return;
+  }
   const cps = await GET('/api/qms2/cp_parts');
   const cp = cps.find(c=>c.id===cpId);
   if(!cp){ toast('CP not found','d'); return; }
