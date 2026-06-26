@@ -122,11 +122,25 @@ const SS_STYLE = `
 .ss-table tr.ss-expanded td.ss-col-step{background:#fef3c7!important}
 
 /* Editable cell */
-.ss-cell{width:100%;min-height:32px;padding:5px 7px;outline:none;cursor:text;
+.ss-cell{width:100%;min-height:40px;padding:6px 7px;outline:none;cursor:text;
   font-size:12px;font-family:inherit;color:#1e293b;white-space:pre-wrap;word-break:break-word;
-  line-height:1.5;box-sizing:border-box;resize:none;border:none;background:transparent;display:block}
+  word-wrap:break-word;overflow-wrap:break-word;
+  line-height:1.6;box-sizing:border-box;resize:none;border:none;background:transparent;display:block;
+  overflow:visible}
 .ss-cell:focus{background:#fffde7!important;outline:2px solid #f59e0b;outline-offset:-1px;z-index:1}
-.ss-cell.ss-num{text-align:center;font-weight:700;width:100%;min-height:32px}
+.ss-cell.ss-num{text-align:center;font-weight:700;width:100%;min-height:40px}
+/* Process step change divider */
+.ss-step-divider td{border-top:3px solid #0d2f6e!important}
+.ss-step-divider td:first-child{background:#e8eef9!important}
+.ss-step-divider td.ss-col-step{background:#dbe4f5!important;font-weight:700;color:#0d2f6e}
+.ss-step-label{font-size:9px;color:#0d2f6e;font-weight:700;letter-spacing:.5px;
+  text-transform:uppercase;display:block;padding:1px 0 3px}
+/* Source indicators for CP rows */
+.ss-pfmea-row td{background:#f0fdf4}
+.ss-pfmea-row td.ss-col-step{background:#dcfce7}
+.ss-pfmea-row:hover td{background:#dcfce7!important}
+.ss-custom-row td{background:#fefce8}
+.ss-custom-row td.ss-col-step{background:#fef9c3}
 .ss-cell[readonly],.ss-cell[disabled]{color:#6b7280;cursor:default}
 
 /* SOD color coding */
@@ -389,6 +403,7 @@ async function renderPfmea(partId) {
   STEPS.forEach(s=>{ grouped[s]=[]; });
   rows.forEach(r=>{ (grouped[r.processStep]||(grouped[r.processStep]=[])).push(r); });
 
+  const pfmeaDocNum = `PFMEA-${part.partNumber}-REV-A`;
   setC(`${SS_STYLE}
   <div class="ss-saving" id="ss-saving-ind">Saving…</div>
   <div class="part-header">
@@ -396,8 +411,10 @@ async function renderPfmea(partId) {
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:2px">
         <span style="font-family:monospace;font-weight:700;font-size:15px;color:#0d2f6e">${esc(part.partNumber)}</span>
         <span class="grade-pill">${esc(part.grade)}</span>
+        <span style="font-family:monospace;font-size:11px;color:#6b7280;background:#f1f5f9;
+          padding:2px 8px;border-radius:4px;border:1px solid #e2e8f0">${pfmeaDocNum}</span>
       </div>
-      <div style="font-size:12px;color:#6b7280">${esc(part.partName)} · ${esc(part.customer)}</div>
+      <div style="font-size:12px;color:#6b7280">${esc(part.partName)} · ${esc(part.customer)} · ${rows.length} failure modes</div>
     </div>
     <div style="display:flex;gap:7px;flex-wrap:wrap">
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.renderDashboard()">← Back</button>
@@ -469,15 +486,20 @@ async function renderPfmea(partId) {
 function _renderPfmeaRows(rows) {
   if(!rows.length) return `<tr><td colspan="16" style="padding:24px;text-align:center;color:#9ca3af">
     No rows yet. Click "+ Add Row" below or press Enter on any row.</td></tr>`;
-  return rows.map((row,i) => _renderPfmeaRow(row, i+1)).join('');
+  let lastStep = null;
+  return rows.map((row,i) => {
+    const stepChanged = row.processStep !== lastStep;
+    lastStep = row.processStep;
+    return _renderPfmeaRow(row, i+1, stepChanged);
+  }).join('');
 }
 
-function _renderPfmeaRow(row, num) {
+function _renderPfmeaRow(row, num, stepChanged=false) {
   const r = rpn(row.severity, row.occurrence, row.detection);
   const sc = sodClass(row.severity), oc = sodClass(row.occurrence), dc = sodClass(row.detection);
   const rc = rpnClass(r);
   const id = row.id;
-  return `<tr data-id="${id}" data-part="${row.partId}" ondblclick="QMS2._expandRow(event,${id})">
+  return `<tr data-id="${id}" data-part="${row.partId}" ondblclick="QMS2._expandRow(event,${id})" class="${stepChanged?'ss-step-divider':''}">
     <td class="ss-row-num-td">
       <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
         <span>${num}</span>
@@ -753,31 +775,52 @@ async function generateCP(partId) {
 
   let order = 1;
 
-  // 1. Load all template characteristics (standard controls)
+  // 1. Template characteristics — standard controls per process step
+  // Auto-fill grade composition in Receiving Inspection
+  const gradeComp = gradeData?.composition || {};
+  const compLines = Object.entries(gradeComp).map(([el,v])=>`${el}: ${v}`).join(', ');
+
   for(const t of templates){
-    const char = {
-      cpId:cp.id, processStep:t.processStep,
-      charName:t.charName,
-      specification: t.charName==='Metal Temperature'&&gradeData
-        ? (gradeData.metalTempRange||t.specification) : t.specification,
-      tolerance:'', method:t.method||'',
+    let spec = t.specification;
+    // Auto-populate grade-specific values
+    if(t.charName==='Metal Temperature' && gradeData) spec = gradeData.metalTempRange || spec;
+    if(t.charName==='Spectro Chemical Composition' && compLines) spec = compLines;
+    if(t.charName==='Material Grade Verification' && gradeData) spec = `${gradeData.grade} per ${gradeData.standard||'grade spec'}`;
+
+    await POST('/api/qms2/cp_chars',{
+      cpId:cp.id, processStep:t.processStep, charName:t.charName,
+      specification:spec, tolerance:'', method:t.method||'',
       frequency:t.frequency||'', reaction:t.reaction||'',
-      source:'template', order:order++, imageId:null,
-      charType:'process'
-    };
-    await POST('/api/qms2/cp_chars', char);
+      source:'template', order:order++, imageId:null, charType:'process'
+    });
   }
 
-  // 2. Add dimensional/custom characteristics from PFMEA rows that have specific characteristics
-  const customRows = rows.filter(r=>r.failureMode && r.failureMode.toLowerCase().includes('dimension'));
-  for(const r of customRows){
+  // 2. Map EVERY PFMEA row to a CP row
+  // Group by process step — one CP row per unique failure mode
+  const seen = new Set();
+  for(const r of rows){
+    const key = `${r.processStep}::${r.function}`;
+    if(seen.has(key)) continue;
+    seen.add(key);
+
+    // Map PFMEA fields to CP fields
     await POST('/api/qms2/cp_chars',{
-      cpId:cp.id, processStep:r.processStep,
-      charName: r.function||r.failureMode,
-      specification:'As per drawing', tolerance:'Per drawing',
-      method:'Vernier / CMM', frequency:'First-off + every 25 pcs',
-      reaction:r.recommendedAction||'Stop and adjust',
-      source:'pfmea', order:order++, imageId:null, charType:'product'
+      cpId:cp.id,
+      processStep: r.processStep,
+      charName: r.function || r.failureMode || 'Process Control',
+      specification: r.currentControls || 'As per process standard',
+      tolerance: '',
+      method: r.currentControls?.includes('Pyrometer')||r.currentControls?.includes('temp')
+        ? 'Pyrometer' : r.currentControls?.includes('visual')||r.currentControls?.includes('Visual')
+        ? 'Visual' : 'As specified',
+      frequency: 'Per Control Plan frequency',
+      reaction: r.recommendedAction || 'Stop and inform supervisor',
+      source: 'pfmea',
+      pfmeaRowId: r.id,
+      pfmeaRpn: r.rpn || 0,
+      order: order++,
+      imageId: null,
+      charType: 'process'
     });
   }
 
@@ -785,7 +828,7 @@ async function generateCP(partId) {
   await POST('/api/qms2/cp_revisions',{
     cpId:cp.id, revision:'A', date:today(),
     changedBy:Auth?.user?.name||'',
-    summary:`Generated from PFMEA (${rows.length} rows) — ${templates.length} standard controls`
+    summary:`Auto-generated: ${templates.length} standard controls + ${rows.length} PFMEA rows`
   });
 
   toast('Control Plan generated ✅','s');
@@ -805,6 +848,8 @@ async function renderCP(cpId) {
   _state.cpChars = chars;
 
   const isApproved = cp.status==='Approved';
+  // Ensure CP number includes doc number format
+  const displayCpNum = cp.cpNumber || `CP-${cp.partNumber}-REV-${cp.revision}`;
   const stepGroups = {};
   STEPS.forEach(s=>stepGroups[s]=[]);
   chars.forEach(c=>{ (stepGroups[c.processStep]||(stepGroups[c.processStep]=[])).push(c); });
@@ -814,7 +859,7 @@ async function renderCP(cpId) {
   <div class="part-header">
     <div>
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:2px">
-        <span style="font-family:monospace;font-weight:700;font-size:14px;color:#0d2f6e">${esc(cp.cpNumber)}</span>
+        <span style="font-family:monospace;font-weight:700;font-size:14px;color:#0d2f6e">${esc(displayCpNum)}</span>
         <span class="badge-status" style="background:${STATUS_COLOR[cp.status]||'#6b7280'}22;
           color:${STATUS_COLOR[cp.status]||'#6b7280'}">${cp.status}</span>
         <span class="grade-pill">${esc(cp.grade)}</span>
@@ -866,7 +911,7 @@ async function renderCP(cpId) {
       <div class="card" style="margin-bottom:12px">
         <div class="ch"><h5>Control Plan Info</h5></div>
         <div style="padding:12px;font-size:12px">
-          ${[['CP Number',cp.cpNumber],['Revision',cp.revision],['Part No.',cp.partNumber],
+          ${[['CP Number',displayCpNum],['Revision',cp.revision],['Part No.',cp.partNumber],
              ['Part Name',cp.partName],['Customer',cp.customer],['Grade',cp.grade],
              ['Machine',cp.machine||'—'],['Prepared by',cp.preparedBy||'—'],
              ['Date',fmtDate(cp.createdDate)],['Approved by',cp.approvedBy||'—'],
@@ -900,8 +945,13 @@ async function renderCP(cpId) {
 
 function _renderCpRows(chars, locked) {
   if(!chars.length) return `<tr><td colspan="10" style="padding:24px;text-align:center;color:#9ca3af">
-    No characteristics yet.</td></tr>`;
-  return chars.map((c,i)=>`<tr data-id="${c.id}" style="${c.source==='custom'?'background:#fefce8':''}">
+    No characteristics yet. Generate from PFMEA or add manually.</td></tr>`;
+  let lastCpStep = null;
+  return chars.map((c,i)=>{
+    const stepChanged2 = c.processStep !== lastCpStep;
+    lastCpStep = c.processStep;
+    const rowClass = [stepChanged2?'ss-step-divider':'', c.source==='custom'?'ss-custom-row':'', c.source==='pfmea'?'ss-pfmea-row':''].filter(Boolean).join(' ');
+    return `<tr data-id="${c.id}" class="${rowClass}">
     <td class="ss-row-num-td">
       <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
         <span>${i+1}</span>
@@ -942,7 +992,8 @@ function _renderCpRows(chars, locked) {
         list="dl-reaction" value="${esc(c.reaction||'')}"
         ${locked?'readonly':''} onblur="QMS2._cpCellBlur(this)" placeholder="Reaction…"></td>
     <td class="no-print" style="width:32px"></td>
-  </tr>`).join('');
+  </tr>`;
+  }).join('');
 }
 
 // CP cell events (same pattern as PFMEA)
@@ -1560,10 +1611,11 @@ async function renderGradeMaster(){
     <div>
       <button class="btn btn-o btn-sm" onclick="QMS2.renderDashboard()" style="margin-bottom:6px">← Back</button>
       <h2>Grade Master</h2>
-      <p style="font-size:12px;color:#6b7280">Material compositions and acceptance criteria</p>
+      <p style="font-size:12px;color:#6b7280">Material compositions and acceptance criteria — used for auto-population in Control Plans</p>
     </div>
+    <button class="btn btn-p btn-sm" onclick="QMS2.showGradeForm()">+ Add Grade</button>
   </div>
-  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px">
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px">
     ${grades.map(g=>{
       const comp=g.composition||{};
       return `<div class="card">
@@ -1572,23 +1624,136 @@ async function renderGradeMaster(){
             <span style="font-weight:700;font-size:15px;color:#0d2f6e">${esc(g.grade)}</span>
             <span style="font-size:11px;color:#6b7280">${esc(g.standard||'')}</span>
           </div>
+          <div style="display:flex;gap:5px">
+            <button class="btn btn-xs btn-o" onclick="QMS2.showGradeForm(${g.id})">✏️ Edit</button>
+            <button class="btn btn-xs" style="background:#fee2e2;color:#dc2626"
+              onclick="QMS2.deleteGrade(${g.id})">✕</button>
+          </div>
         </div>
         <div style="padding:12px">
           <table style="width:100%;font-size:11.5px;border-collapse:collapse;margin-bottom:10px">
-            <tr style="background:#f1f5f9"><th style="padding:4px 6px;text-align:left">Element</th>
-              <th style="padding:4px 6px;text-align:right">Range</th></tr>
+            <tr style="background:#f1f5f9">
+              <th style="padding:4px 6px;text-align:left">Element</th>
+              <th style="padding:4px 6px;text-align:right">Range / Limit</th>
+            </tr>
             ${Object.entries(comp).map(([el,v])=>`<tr style="border-bottom:1px solid #f3f4f6">
-              <td style="padding:3px 6px;font-weight:600">${el}</td>
-              <td style="padding:3px 6px;text-align:right">${v}</td></tr>`).join('')}
+              <td style="padding:3px 6px;font-weight:600">${esc(el)}</td>
+              <td style="padding:3px 6px;text-align:right">${esc(v)}</td>
+            </tr>`).join('')}
           </table>
-          <div style="font-size:11px;display:grid;gap:3px;color:#374151">
+          <div style="font-size:11px;display:grid;gap:4px;color:#374151">
             <div>🌡 Metal Temp: <b>${esc(g.metalTempRange||'—')}</b></div>
-            <div>💪 Tensile: <b>${esc(g.tensileStrength||'—')}</b></div>
+            <div>💪 Tensile Strength: <b>${esc(g.tensileStrength||'—')}</b></div>
             <div>⚙️ Hardness: <b>${esc(g.hardness||'—')}</b></div>
+            <div>📏 Melting Range: <b>${esc(g.meltingRange||'—')}</b></div>
+            <div style="margin-top:4px;color:#6b7280;font-size:10.5px">${esc(g.acceptanceCriteria||'')}</div>
           </div>
         </div>
-      </div>`;}).join('')}
+      </div>`;}).join('')||'<p style="padding:20px;color:#9ca3af">No grades yet. Click + Add Grade.</p>'}
   </div>`);
+}
+
+async function showGradeForm(editId){
+  const grades = editId ? await GET('/api/qms2/grades') : [];
+  const g = editId ? grades.find(x=>x.id===editId) : null;
+  const comp = g?.composition || {Si:'',Cu:'',Mg:'',Zn:'',Fe:'',Mn:'',Ni:'',Sn:'',Al:'Balance'};
+  const elements = ['Si','Cu','Mg','Zn','Fe','Mn','Ni','Sn','Pb','Al'];
+
+  const modal = document.createElement('div');
+  modal.id = 'grade-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:#0008;z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;overflow-y:auto';
+  modal.innerHTML = `
+  <div style="background:#fff;border-radius:12px;width:100%;max-width:700px;max-height:92vh;overflow-y:auto;box-shadow:0 20px 60px #0004">
+    <div style="padding:14px 18px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:#fff;z-index:1">
+      <h4 style="font-size:15px;font-weight:700;color:#0d2f6e">${editId?'Edit Grade':'Add New Grade'}</h4>
+      <button onclick="document.getElementById('grade-modal').remove()"
+        style="background:none;border:none;font-size:20px;cursor:pointer;color:#6b7280">✕</button>
+    </div>
+    <div style="padding:18px;display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div><label class="lbl">Grade Name *</label>
+        <input class="inp" id="gf-grade" value="${esc(g?.grade||'')}" placeholder="e.g. ADC12"></div>
+      <div><label class="lbl">Standard</label>
+        <input class="inp" id="gf-standard" value="${esc(g?.standard||'')}" placeholder="e.g. JIS H 5302"></div>
+      <div><label class="lbl">Metal Temperature Range</label>
+        <input class="inp" id="gf-temp" value="${esc(g?.metalTempRange||'')}" placeholder="e.g. 640–680°C"></div>
+      <div><label class="lbl">Melting Range</label>
+        <input class="inp" id="gf-melt" value="${esc(g?.meltingRange||'')}" placeholder="e.g. 515–585°C"></div>
+      <div><label class="lbl">Tensile Strength</label>
+        <input class="inp" id="gf-tensile" value="${esc(g?.tensileStrength||'')}" placeholder="e.g. ≥310 MPa"></div>
+      <div><label class="lbl">Hardness</label>
+        <input class="inp" id="gf-hardness" value="${esc(g?.hardness||'')}" placeholder="e.g. 75–105 HB"></div>
+      <div style="grid-column:1/-1"><label class="lbl">Acceptance Criteria</label>
+        <input class="inp" id="gf-criteria" value="${esc(g?.acceptanceCriteria||'')}"
+          placeholder="e.g. Within spectro limits per JIS H 5302"></div>
+    </div>
+    <div style="padding:0 18px 8px">
+      <label class="lbl">Chemical Composition</label>
+      <p style="font-size:11px;color:#6b7280;margin-bottom:8px">Enter element limits (e.g. 9.6–12.0 or ≤0.30)</p>
+      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px">
+        ${elements.map(el=>`<div>
+          <label style="font-size:11px;font-weight:700;color:#0d2f6e;display:block;margin-bottom:2px">${el}</label>
+          <input class="inp" id="gf-el-${el}" value="${esc(comp[el]||'')}" placeholder="—"
+            style="padding:5px 7px;font-size:12px">
+        </div>`).join('')}
+        <div>
+          <label style="font-size:11px;font-weight:700;color:#0d2f6e;display:block;margin-bottom:2px">Other</label>
+          <input class="inp" id="gf-el-other" value="${esc(comp['Other']||'')}" placeholder="—"
+            style="padding:5px 7px;font-size:12px">
+        </div>
+      </div>
+      <div style="margin-top:10px">
+        <label style="font-size:11px;color:#6b7280">Custom element (name:value pairs, comma separated)</label>
+        <input class="inp" id="gf-custom-el" value=""
+          placeholder="e.g. Ti:≤0.15, Cr:≤0.10" style="font-size:12px">
+      </div>
+    </div>
+    <div style="padding:14px 18px;display:flex;gap:8px;border-top:1px solid #f3f4f6">
+      <button class="btn btn-p" onclick="QMS2.saveGrade(${editId||0})">
+        ${editId?'Save Changes':'Add Grade'}</button>
+      <button class="btn btn-o" onclick="document.getElementById('grade-modal').remove()">Cancel</button>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+}
+
+async function saveGrade(editId){
+  const grade = document.getElementById('gf-grade')?.value?.trim();
+  if(!grade){ toast('Grade name required','d'); return; }
+
+  const elements = ['Si','Cu','Mg','Zn','Fe','Mn','Ni','Sn','Pb','Al'];
+  const composition = {};
+  elements.forEach(el=>{
+    const v = document.getElementById(`gf-el-${el}`)?.value?.trim();
+    if(v) composition[el] = v;
+  });
+  // Parse custom elements
+  const custom = document.getElementById('gf-custom-el')?.value?.trim();
+  if(custom){ custom.split(',').forEach(pair=>{
+    const [k,v] = pair.split(':').map(s=>s.trim());
+    if(k&&v) composition[k]=v;
+  });}
+
+  const rec = {
+    grade, standard:document.getElementById('gf-standard')?.value?.trim()||'',
+    metalTempRange:document.getElementById('gf-temp')?.value?.trim()||'',
+    meltingRange:document.getElementById('gf-melt')?.value?.trim()||'',
+    tensileStrength:document.getElementById('gf-tensile')?.value?.trim()||'',
+    hardness:document.getElementById('gf-hardness')?.value?.trim()||'',
+    acceptanceCriteria:document.getElementById('gf-criteria')?.value?.trim()||'',
+    composition
+  };
+  if(editId) rec.id = editId;
+  await POST('/api/qms2/grades', rec);
+  document.getElementById('grade-modal')?.remove();
+  toast(`Grade ${grade} saved ✅`,'s');
+  renderGradeMaster();
+}
+
+async function deleteGrade(id){
+  if(!confirm('Delete this grade? This cannot be undone.')) return;
+  await DEL(`/api/qms2/grades/${id}`);
+  toast('Deleted','d');
+  renderGradeMaster();
 }
 
 // ── Public API ────────────────────────────────────────────────────────
@@ -1602,6 +1767,6 @@ return {
   submitCP, approveCP, newCPRev,
   renderChecksheets, fillCS, saveCS, viewCSRecord, delCSRecord,
   printPfmea, printCP, printCS,
-  renderGradeMaster,
+  renderGradeMaster, showGradeForm, saveGrade, deleteGrade,
 };
 })();
