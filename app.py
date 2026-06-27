@@ -646,7 +646,11 @@ def qms2_flat(r):
 @app.route('/api/qms2/<module>', methods=['GET'])
 def qms2_list(module):
     if module not in QMS2_MODULES:
-        return jsonify({'error':'Unknown module'}), 400
+        prefixed = 'qms2_' + module
+        if prefixed in QMS2_MODULES:
+            module = prefixed
+        else:
+            return jsonify({'error':'Unknown module'}), 400
     # Support filtering by any query param
     recs = GenericRecord.query.filter_by(module=module).order_by(GenericRecord.id.asc()).all()
     result = [qms2_flat(r) for r in recs]
@@ -660,7 +664,11 @@ def qms2_list(module):
 @app.route('/api/qms2/<module>', methods=['POST'])
 def qms2_save(module):
     if module not in QMS2_MODULES:
-        return jsonify({'error':'Unknown module'}), 400
+        prefixed = 'qms2_' + module
+        if prefixed in QMS2_MODULES:
+            module = prefixed
+        else:
+            return jsonify({'error':'Unknown module'}), 400
     d = request.json
     existing_id = d.get('id')
     clean = {k:v for k,v in d.items() if k not in ('id','_createdAt')}
@@ -679,7 +687,11 @@ def qms2_save(module):
 @app.route('/api/qms2/<module>/<int:rid>', methods=['DELETE'])
 def qms2_delete(module, rid):
     if module not in QMS2_MODULES:
-        return jsonify({'error':'Unknown module'}), 400
+        prefixed = 'qms2_' + module
+        if prefixed in QMS2_MODULES:
+            module = prefixed
+        else:
+            return jsonify({'error':'Unknown module'}), 400
     r = GenericRecord.query.get(rid)
     if r and r.module == module:
         db.session.delete(r)
@@ -690,7 +702,11 @@ def qms2_delete(module, rid):
 def qms2_bulk_delete(module):
     """Delete all records of a module (for clean restart)."""
     if module not in QMS2_MODULES:
-        return jsonify({'error':'Unknown module'}), 400
+        prefixed = 'qms2_' + module
+        if prefixed in QMS2_MODULES:
+            module = prefixed
+        else:
+            return jsonify({'error':'Unknown module'}), 400
     ids = request.json.get('ids', [])
     if ids:
         for rid in ids:
