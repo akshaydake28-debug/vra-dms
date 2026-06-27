@@ -13,6 +13,19 @@ const STEPS = ['Receiving Inspection','Melting','Die Casting','Trimming/Fettling
 const GRADES = ['ADC12','A380','A383','LM2','LM6','LM24','ANSI360','AC4B'];
 const REVS   = ['A','B','C','D','E','F','G','H','J','K'];
 
+const DEFAULT_OPS = [
+  {op:'OP10', label:'OP10 Incoming Inspection',  step:'Receiving Inspection'},
+  {op:'OP20', label:'OP20 Melting',               step:'Melting'},
+  {op:'OP30', label:'OP30 Die Casting',            step:'Die Casting'},
+  {op:'OP40', label:'OP40 Trimming / Fettling',   step:'Trimming/Fettling'},
+  {op:'OP50', label:'OP50 Shot Blasting',          step:'Shot Blasting'},
+  {op:'OP60', label:'OP60 Machining',              step:'Machining'},
+  {op:'OP70', label:'OP70 Final Inspection',       step:'Final Inspection'},
+  {op:'OP80', label:'OP80 Packing & Dispatch',    step:'Packing & Dispatch'},
+];
+function stepToOp(step){ const o=DEFAULT_OPS.find(x=>x.step===step); return o?o.op:''; }
+function opLabel(step){ const o=DEFAULT_OPS.find(x=>x.step===step); return o?o.label:step; }
+
 // ── Dropdown masters for fast entry ──────────────────────────────────
 const DD = {
   detectionMethod: [
@@ -217,6 +230,7 @@ async function renderDashboard() {
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn btn-p btn-sm" onclick="QMS2.renderNewPart()">+ New Part</button>
       <button class="btn btn-o btn-sm" onclick="QMS2.renderGradeMaster()">⚗️ Grade Master</button>
+      <button class="btn btn-o btn-sm" onclick="QMS2.renderArchive()">🗄 Archive</button>
     </div>
   </div>
 
@@ -259,7 +273,7 @@ async function renderDashboard() {
             <div style="display:flex;align-items:center;gap:6px">
               <span class="badge-status" style="background:${STATUS_COLOR[c.status]||'#6b7280'}22;
                 color:${STATUS_COLOR[c.status]||'#6b7280'}">${c.status||'Draft'}</span>
-              <button class="btn btn-o btn-xs" onclick="QMS2.renderCP(${c.id})">View</button>
+              <button class="btn btn-o btn-xs" onclick="QMS2.renderCpView(${c.id})">View</button>
             </div></div>`).join('')}
       </div>
     </div>
@@ -420,6 +434,7 @@ async function renderPfmea(partId) {
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.renderDashboard()">← Back</button>
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.renderNewPart(${partId})">✏️ Edit</button>
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.printPfmea(${partId})">🖨 Print</button>
+      <button class="btn btn-o btn-sm no-print" onclick="QMS2._archivePart(${partId})">🗄 Archive</button>
       ${hasCp
         ?`<button class="btn btn-p btn-sm no-print" onclick="QMS2.renderCpForPart(${partId})">📄 Control Plan</button>`
         :`<button class="btn btn-p btn-sm no-print" onclick="QMS2.generateCP(${partId})">📄 Generate Control Plan →</button>`}
@@ -456,6 +471,7 @@ async function renderPfmea(partId) {
       <table class="ss-table" id="pfmea-table">
         <thead><tr>
           <th class="ss-rn" style="width:36px">#</th>
+          <th style="min-width:70px;position:sticky;left:36px;z-index:5;background:#152d50">Op No.</th>
           <th class="ss-col-step" style="min-width:120px">Process Step</th>
           <th style="min-width:150px">Process Function</th>
           <th style="min-width:150px">Failure Mode</th>
@@ -499,6 +515,7 @@ function _renderPfmeaRow(row, num, stepChanged=false) {
   const sc = sodClass(row.severity), oc = sodClass(row.occurrence), dc = sodClass(row.detection);
   const rc = rpnClass(r);
   const id = row.id;
+  const opNum = row.opNumber || stepToOp(row.processStep) || '';
   return `<tr data-id="${id}" data-part="${row.partId}" ondblclick="QMS2._expandRow(event,${id})" class="${stepChanged?'ss-step-divider':''}">
     <td class="ss-row-num-td">
       <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
@@ -511,9 +528,15 @@ function _renderPfmeaRow(row, num, stepChanged=false) {
         </div>
       </div>
     </td>
+    <td style="position:sticky;left:36px;z-index:2;background:#f1f5f9;min-width:70px;border-right:1px solid #e2e8f0">
+      <input class="ss-cell" data-field="opNumber" data-id="${id}"
+        value="${esc(opNum)}" placeholder="OP30"
+        onblur="QMS2._cellBlur(this)"
+        style="font-weight:700;color:#0d2f6e;font-size:12px;text-align:center">
+    </td>
     <td class="ss-col-step">
       <select class="ss-cell" data-field="processStep" data-id="${id}" onchange="QMS2._cellChange(this)" style="font-size:11px;font-weight:600;color:#0d2f6e">
-        ${STEPS.map(s=>`<option value="${s}" ${row.processStep===s?'selected':''}>${s}</option>`).join('')}
+        ${DEFAULT_OPS.map(o=>`<option value="${o.step}" ${row.processStep===o.step?'selected':''}>${o.step}</option>`).join('')}
       </select>
     </td>
     <td style="min-width:150px"><textarea class="ss-cell" data-field="function" data-id="${id}" rows="1"
@@ -685,6 +708,8 @@ async function _flushSaves() {
     await POST('/api/qms2/pfmea_rows', updated);
   }
   _hideSaving();
+  // Mark linked control plans as outdated
+  if(S.currentPartId) await _markCpsOutdated(S.currentPartId);
 }
 
 function _showSaving() {
@@ -700,7 +725,7 @@ async function pfmeaAddRow(step) {
   const partId = _state.currentPartId;
   if(!partId) return;
   const rec = {
-    partId, processStep: step||STEPS[0],
+    partId, opNumber: step?stepToOp(step):'OP10', processStep: step||STEPS[0],
     function:'', failureMode:'', failureEffect:'',
     severity:5, failureCause:'', occurrence:3,
     currentControls:'', detection:3, rpn:75,
@@ -749,370 +774,481 @@ async function pfmeaDupRow(id) {
   toast('Row duplicated','s');
 }
 
+// ── Impact Analysis ──────────────────────────────────────────────────────────
+async function showImpactDialog(partId, onNewRev, onKeep) {
+  const impact = await GET(`/api/qms2/impact/${partId}`);
+  const modal = document.createElement('div');
+  modal.id = 'impact-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:#0008;z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  const cps = impact.cpDetails||[];
+  modal.innerHTML = `<div style="background:#fff;border-radius:12px;width:100%;max-width:500px;box-shadow:0 20px 60px #0004">
+    <div style="padding:16px 20px;border-bottom:1px solid #e5e7eb">
+      <div style="font-size:16px;font-weight:700;color:#d97706;margin-bottom:4px">⚠️ PFMEA has changed</div>
+      <div style="font-size:13px;color:#374151">This change will affect the following documents:</div>
+    </div>
+    <div style="padding:16px 20px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
+        <div style="background:#7c3aed11;border:1px solid #7c3aed33;border-radius:8px;padding:10px 14px">
+          <div style="font-size:20px;font-weight:700;color:#7c3aed">${impact.controlPlans}</div>
+          <div style="font-size:11px;color:#6b7280">Control Plans</div></div>
+        <div style="background:#0d2f6e11;border:1px solid #0d2f6e33;border-radius:8px;padding:10px 14px">
+          <div style="font-size:20px;font-weight:700;color:#0d2f6e">${impact.characteristics}</div>
+          <div style="font-size:11px;color:#6b7280">Characteristics</div></div>
+        <div style="background:#16a34a11;border:1px solid #16a34a33;border-radius:8px;padding:10px 14px">
+          <div style="font-size:20px;font-weight:700;color:#16a34a">${impact.checksheets}</div>
+          <div style="font-size:11px;color:#6b7280">Check Sheets</div></div>
+        <div style="background:#d9770611;border:1px solid #d9770633;border-radius:8px;padding:10px 14px">
+          <div style="font-size:20px;font-weight:700;color:#d97706">${impact.reactionPlans}</div>
+          <div style="font-size:11px;color:#6b7280">Reaction Plans</div></div>
+      </div>
+      ${cps.map(c=>`<div style="font-size:12px;padding:3px 0">📄 <b>${c.cpNumber}</b> — Rev ${c.revision} — ${c.status}</div>`).join('')}
+      <div style="margin-top:12px;font-size:12px;color:#6b7280">Generating a new revision creates a new Control Plan and marks existing as Obsolete.</div>
+    </div>
+    <div style="padding:0 20px 16px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-p" id="imp-gen">📄 Generate New Revision</button>
+      <button class="btn btn-o" id="imp-keep">Keep Existing</button>
+      <button class="btn btn-o" id="imp-cancel">Cancel</button>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  modal.querySelector('#imp-gen').onclick = () => { modal.remove(); onNewRev(); };
+  modal.querySelector('#imp-keep').onclick = () => { modal.remove(); onKeep(); };
+  modal.querySelector('#imp-cancel').onclick = () => modal.remove();
+}
+
+async function _markCpsOutdated(partId) {
+  const cps = await GET('/api/qms2/cp_parts');
+  for(const cp of cps.filter(c=>c.pfmeaPartId===partId&&c.status!=='Archived'&&c.status!=='Obsolete')){
+    if(!cp.pfmeaOutdated) await POST('/api/qms2/cp_parts', {...cp, pfmeaOutdated:true});
+  }
+}
+
 // ── Generate Control Plan from PFMEA ──────────────────────────────────
-async function generateCP(partId) {
-  const [parts, cps, rows, templates, grades] = await Promise.all([
+async function generateCP(partId, forceNewRev=false) {
+  const [parts, cps, pfRows, grades] = await Promise.all([
     GET('/api/qms2/pfmea_parts'), GET('/api/qms2/cp_parts'),
-    GET(`/api/qms2/pfmea_rows?partId=${partId}`),
-    GET('/api/qms2/cp_templates'), GET('/api/qms2/grades')
-  ]);
+    GET(`/api/qms2/pfmea_rows?partId=${partId}`), GET('/api/qms2/grades')]);
   const part = parts.find(p=>p.id===partId);
-  const existing = cps.find(c=>c.pfmeaPartId===partId);
-  if(existing){ renderCP(existing.id); return; }
+  if(!part){ toast('Part not found','d'); return; }
 
+  const existing = cps.find(c=>c.pfmeaPartId===partId && c.status!=='Archived' && c.status!=='Obsolete');
+
+  // If CP exists and not forcing new rev, just open it
+  if(existing && !forceNewRev){ renderCpView(existing.id); return; }
+
+  // If forcing new rev, mark old CP as Obsolete
+  if(existing && forceNewRev){
+    await POST('/api/qms2/cp_parts', {...existing, status:'Obsolete'});
+  }
+
+  const prevRev = existing?.revision || '';
+  const newRev = prevRev ? (REVS[REVS.indexOf(prevRev)+1] || 'Z') : 'A';
   const gradeData = grades.find(g=>g.grade===part.grade);
-  const cpNum = `CP-${part.partNumber}-REV-A`;
+  const comp = gradeData?.composition||{};
+  const compStr = Object.entries(comp).map(([el,v])=>`${el}: ${v}`).join(', ');
 
-  const cp = await POST('/api/qms2/cp_parts',{
+  const cp = await POST('/api/qms2/cp_parts', {
     partNumber:part.partNumber, partName:part.partName,
     customer:part.customer, grade:part.grade,
     drawingNo:part.drawingNo||'', machine:part.machine||'',
     specialReqs:part.specialReqs||'', pfmeaPartId:partId,
-    pfmeaRev:'A', cpNumber:cpNum, revision:'A', status:'Draft',
+    pfmeaRev:newRev, cpNumber:`CP-${part.partNumber}-REV-${newRev}`,
+    revision:newRev, status:'Draft', archived:false, pfmeaOutdated:false,
     preparedBy:Auth?.user?.name||'', approvedBy:'',
-    createdDate:today(), approvedDate:''
+    createdDate:today(), approvedDate:'',
+    colourCode:gradeData?.colourCode||'',
+    incomingCriteria:gradeData?.incomingCriteria||''
   });
 
+  // Sort PFMEA rows by opNumber then id
+  pfRows.sort((a,b)=>(a.opNumber||'').localeCompare(b.opNumber||'')||(a.id-b.id));
+
+  const opCounters = {};
   let order = 1;
 
-  // 1. Template characteristics — standard controls per process step
-  // Auto-fill grade composition in Receiving Inspection
-  const gradeComp = gradeData?.composition || {};
-  const compLines = Object.entries(gradeComp).map(([el,v])=>`${el}: ${v}`).join(', ');
+  for(const r of pfRows){
+    const opNum = r.opNumber || stepToOp(r.processStep) || 'OP10';
+    opCounters[opNum] = (opCounters[opNum]||0)+1;
+    const charNum = `${opNum}.${String(opCounters[opNum]).padStart(2,'0')}`;
 
-  for(const t of templates){
-    let spec = t.specification;
-    // Auto-populate grade-specific values
-    if(t.charName==='Metal Temperature' && gradeData) spec = gradeData.metalTempRange || spec;
-    if(t.charName==='Spectro Chemical Composition' && compLines) spec = compLines;
-    if(t.charName==='Material Grade Verification' && gradeData) spec = `${gradeData.grade} per ${gradeData.standard||'grade spec'}`;
+    let spec = r.preventionControls || r.currentControls || '';
+    // Auto-fill grade composition for incoming inspection
+    if(opNum==='OP10' && r.function?.toLowerCase().includes('compos') && compStr) spec = compStr;
+    if(opNum==='OP10' && r.function?.toLowerCase().includes('grade') && gradeData)
+      spec = `${gradeData.grade} per ${gradeData.standard||'grade spec'}`;
 
-    await POST('/api/qms2/cp_chars',{
-      cpId:cp.id, processStep:t.processStep, charName:t.charName,
-      specification:spec, tolerance:'', method:t.method||'',
-      frequency:t.frequency||'', reaction:t.reaction||'',
-      source:'template', order:order++, imageId:null, charType:'process'
+    await POST('/api/qms2/cp_rows', {
+      cpId:cp.id, partId,
+      opNumber:opNum, processStep:r.processStep,
+      machine:part.machine||'',
+      charNumber:charNum,
+      charName:r.function||r.failureMode||'',
+      charType:'process', classification:'',
+      specification:spec, tolerance:'',
+      method:r.detectionControls||r.currentControls||'Visual',
+      gauge:'', sampleSize:'1',
+      frequency:'Per Control Plan',
+      controlMethod:r.preventionControls||r.currentControls||'',
+      reactionPlan:r.recommendedAction||'',
+      remarks:'',
+      source:'pfmea', pfmeaRowId:r.id, pfmeaRpn:r.rpn||0,
+      order:order++, imageId:null
     });
   }
 
-  // 2. Map EVERY PFMEA row to a CP row
-  // Group by process step — one CP row per unique failure mode
-  const seen = new Set();
-  for(const r of rows){
-    const key = `${r.processStep}::${r.function}`;
-    if(seen.has(key)) continue;
-    seen.add(key);
-
-    // Map PFMEA fields to CP fields
-    await POST('/api/qms2/cp_chars',{
-      cpId:cp.id,
-      processStep: r.processStep,
-      charName: r.function || r.failureMode || 'Process Control',
-      specification: r.currentControls || 'As per process standard',
-      tolerance: '',
-      method: r.currentControls?.includes('Pyrometer')||r.currentControls?.includes('temp')
-        ? 'Pyrometer' : r.currentControls?.includes('visual')||r.currentControls?.includes('Visual')
-        ? 'Visual' : 'As specified',
-      frequency: 'Per Control Plan frequency',
-      reaction: r.recommendedAction || 'Stop and inform supervisor',
-      source: 'pfmea',
-      pfmeaRowId: r.id,
-      pfmeaRpn: r.rpn || 0,
-      order: order++,
-      imageId: null,
-      charType: 'process'
-    });
-  }
-
-  // Log revision
-  await POST('/api/qms2/cp_revisions',{
-    cpId:cp.id, revision:'A', date:today(),
+  await POST('/api/qms2/cp_revisions', {
+    cpId:cp.id, revision:newRev, date:today(),
     changedBy:Auth?.user?.name||'',
-    summary:`Auto-generated: ${templates.length} standard controls + ${rows.length} PFMEA rows`
+    summary:`Generated from PFMEA Rev ${newRev} — ${pfRows.length} characteristics`
   });
 
-  toast('Control Plan generated ✅','s');
-  renderCP(cp.id);
+  toast(`Control Plan Rev ${newRev} generated ✅`, 's');
+  renderCpView(cp.id);
 }
 
-// ── Control Plan Spreadsheet ───────────────────────────────────────────
-async function renderCP(cpId) {
+
+async function renderCpForPart(partId){
+  const cps = await GET('/api/qms2/cp_parts');
+  const active = cps.find(c=>c.pfmeaPartId===partId && c.status!=='Archived' && c.status!=='Obsolete');
+  if(!active){ generateCP(partId); return; }
+  if(active.pfmeaOutdated){
+    showImpactDialog(partId,
+      () => generateCP(partId, true),
+      () => renderCpView(active.id)
+    );
+    return;
+  }
+  renderCpView(active.id);
+}
+
+// ── renderCpView alias ──────────────────────────────────────────────────
+const renderCP = (cpId) => renderCpView(cpId);
+
+// ── Control Plan Spreadsheet View ──────────────────────────────────────
+async function renderCpView(cpId) {
   const [cps, chars, revs] = await Promise.all([
     GET('/api/qms2/cp_parts'),
-    GET(`/api/qms2/cp_chars?cpId=${cpId}`),
+    GET(`/api/qms2/cp_rows?cpId=${cpId}`),
     GET(`/api/qms2/cp_revisions?cpId=${cpId}`)
   ]);
   const cp = cps.find(c=>c.id===cpId);
   if(!cp){ toast('CP not found','d'); return; }
-  _state.currentCpId = cpId;
-  _state.cpChars = chars;
+  S.currentCpId = cpId;
+  const isApproved = cp.status === 'Approved';
 
-  const isApproved = cp.status==='Approved';
-  // Ensure CP number includes doc number format
-  const displayCpNum = cp.cpNumber || `CP-${cp.partNumber}-REV-${cp.revision}`;
-  const stepGroups = {};
-  STEPS.forEach(s=>stepGroups[s]=[]);
-  chars.forEach(c=>{ (stepGroups[c.processStep]||(stepGroups[c.processStep]=[])).push(c); });
+  // Sort chars by opNumber then charNumber
+  chars.sort((a,b)=>(a.opNumber||'').localeCompare(b.opNumber||'') ||
+    (a.charNumber||'').localeCompare(b.charNumber||''));
 
   setC(`${SS_STYLE}
+  ${mkDL('dl-meth', DD_METHOD)}${mkDL('dl-freq', DD_FREQ)}${mkDL('dl-react', DD_REACTION)}
   <div class="ss-saving" id="ss-saving-ind">Saving…</div>
   <div class="part-header">
     <div>
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:2px">
-        <span style="font-family:monospace;font-weight:700;font-size:14px;color:#0d2f6e">${esc(displayCpNum)}</span>
-        <span class="badge-status" style="background:${STATUS_COLOR[cp.status]||'#6b7280'}22;
-          color:${STATUS_COLOR[cp.status]||'#6b7280'}">${cp.status}</span>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px;flex-wrap:wrap">
+        <span style="font-family:monospace;font-weight:700;font-size:14px;color:#0d2f6e">${esc(cp.cpNumber)}</span>
+        <span class="q2-badge" style="background:${STATUS_COLOR[cp.status]||'#6b7280'}22;color:${STATUS_COLOR[cp.status]||'#6b7280'}">${cp.status||'Draft'}</span>
         <span class="grade-pill">${esc(cp.grade)}</span>
+        ${cp.pfmeaOutdated ? '<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:600">⚠️ PFMEA updated</span>' : ''}
       </div>
-      <div style="font-size:12px;color:#6b7280">${esc(cp.partName)} · ${esc(cp.customer)} · Rev ${cp.revision}</div>
+      <div style="font-size:12px;color:#6b7280">${esc(cp.partName)} · ${esc(cp.customer)} · Rev ${cp.revision} · ${chars.length} characteristics</div>
     </div>
     <div style="display:flex;gap:7px;flex-wrap:wrap">
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.renderDashboard()">← Back</button>
-      <button class="btn btn-o btn-sm no-print" onclick="QMS2.printCP(${cpId})">🖨 Print</button>
-      ${!isApproved?`<button class="btn btn-w btn-sm no-print" onclick="QMS2.submitCP(${cpId})">📤 Submit for Review</button>`:''}
-      ${cp.status==='Under Review'&&Auth?.user?.role==='APPROVER'
-        ?`<button class="btn btn-g btn-sm no-print" onclick="QMS2.approveCP(${cpId})">✓ Approve</button>`:''}
-      ${isApproved?`<button class="btn btn-o btn-sm no-print" onclick="QMS2.newCPRev(${cpId})">🔄 New Revision</button>
-        <button class="btn btn-p btn-sm no-print" onclick="QMS2.renderChecksheets(${cpId})">📋 Checksheets</button>`:''}
+      <button class="btn btn-o btn-sm no-print" onclick="QMS2.renderPfmea(${cp.pfmeaPartId})">📋 PFMEA</button>
+      ${!isApproved ? `<button class="btn btn-o btn-sm no-print" onclick="QMS2.cpAddRow()">+ Row</button>
+        <button class="btn btn-o btn-sm no-print" onclick="QMS2.refreshCpFromPfmea(${cpId})">🔄 Sync PFMEA</button>` : ''}
+      <button class="btn btn-o btn-sm no-print" onclick="QMS2.printCP(${cpId})">🖨 Print All</button>
+      <button class="btn btn-o btn-sm no-print" onclick="QMS2._printSelectOp(${cpId})">🖨 Print by Op</button>
+      ${!isApproved ? `<button class="btn btn-w btn-sm no-print" onclick="QMS2.submitCP(${cpId})">📤 Submit</button>` : ''}
+      ${cp.status==='Under Review'&&Auth?.user?.role==='APPROVER' ? `<button class="btn btn-g btn-sm no-print" onclick="QMS2.approveCP(${cpId})">✓ Approve</button>` : ''}
+      ${isApproved ? `<button class="btn btn-o btn-sm no-print" onclick="QMS2.newCPRev(${cpId})">🔄 New Rev</button>
+        <button class="btn btn-p btn-sm no-print" onclick="QMS2.renderChecksheets(${cpId})">📋 Checksheets</button>` : ''}
+      <button class="btn btn-o btn-sm no-print" onclick="QMS2._archiveCP(${cpId})">🗄 Archive</button>
     </div>
   </div>
 
-  <div style="display:grid;grid-template-columns:1fr 240px;gap:14px;align-items:start">
+  ${cp.pfmeaOutdated ? `<div style="background:#fffbeb;border:2px solid #f59e0b;border-radius:10px;padding:12px 14px;margin-bottom:12px">
+    ⚠️ <b>PFMEA has been updated</b> since this Control Plan was generated.
+    <button class="btn btn-p btn-sm" style="margin-left:8px" onclick="QMS2.renderCpForPart(${cp.pfmeaPartId})">View Impact & Update</button>
+  </div>` : ''}
+
+  <div style="display:grid;grid-template-columns:1fr 220px;gap:14px;align-items:start">
     <div>
-      <div style="font-size:11px;color:#6b7280;margin-bottom:8px">
-        💡 Click any cell to edit · ⭐ = Part-specific characteristic · Template rows are pre-filled
-        ${isApproved?'<span style="color:#16a34a;font-weight:600"> · APPROVED — locked for editing</span>':''}
+      <div style="font-size:11px;color:#6b7280;margin-bottom:6px">
+        💡 Click cell · Tab/Enter navigate · Auto-save
+        ${isApproved ? ' · <span style="color:#16a34a;font-weight:600">APPROVED — locked</span>' : ''}
+        &nbsp;|&nbsp;<span style="background:#f0fdf4;padding:1px 5px;border-radius:3px;font-size:10px">From PFMEA</span>
+        <span style="background:#fefce8;padding:1px 5px;border-radius:3px;font-size:10px">Custom</span>
       </div>
       <div class="ss-outer">
         <div class="ss-scroll">
-          <table class="ss-table" id="cp-table">
+          <table class="ss-table" id="cp-tbl">
             <thead><tr>
-              <th class="ss-rn" style="width:36px">#</th>
-              <th class="ss-col-step" style="min-width:120px">Process Step</th>
-              <th style="min-width:160px">Characteristic</th>
-              <th style="width:70px">Type</th>
-              <th style="min-width:140px">Specification</th>
+              <th class="ss-rn">#</th>
+              <th style="min-width:70px;position:sticky;left:36px;z-index:5;background:#152d50">Op No.</th>
+              <th class="ss-col-step">Process</th>
+              <th style="min-width:100px">Machine</th>
+              <th style="min-width:80px">Char No.</th>
+              <th style="min-width:140px">Characteristic</th>
+              <th style="width:90px">Classification</th>
+              <th style="min-width:130px">Specification</th>
               <th style="min-width:80px">Tolerance</th>
-              <th style="min-width:120px">Method</th>
-              <th style="min-width:100px">Frequency</th>
-              <th style="min-width:140px">Reaction Plan</th>
-              <th style="width:32px" class="no-print"></th>
+              <th style="min-width:100px">Method</th>
+              <th style="min-width:80px">Gauge</th>
+              <th style="width:60px">Sample</th>
+              <th style="min-width:90px">Frequency</th>
+              <th style="min-width:120px">Control Method</th>
+              <th style="min-width:130px">Reaction Plan</th>
+              <th style="min-width:80px">Remarks</th>
+              <th class="no-print" style="width:10px"></th>
             </tr></thead>
-            <tbody id="cp-tbody">
-              ${_renderCpRows(chars, isApproved)}
-            </tbody>
+            <tbody id="cp-body">${_renderCpRows(chars, isApproved)}</tbody>
           </table>
         </div>
-        ${!isApproved?`<button class="ss-add-row no-print" onclick="QMS2.cpAddRow()">+ Add Characteristic</button>`:''}
+        ${!isApproved ? `<button class="ss-add-row no-print" onclick="QMS2.cpAddRow()">+ Add Characteristic</button>` : ''}
       </div>
     </div>
-
     <div>
       <div class="card" style="margin-bottom:12px">
         <div class="ch"><h5>Control Plan Info</h5></div>
-        <div style="padding:12px;font-size:12px">
-          ${[['CP Number',displayCpNum],['Revision',cp.revision],['Part No.',cp.partNumber],
-             ['Part Name',cp.partName],['Customer',cp.customer],['Grade',cp.grade],
-             ['Machine',cp.machine||'—'],['Prepared by',cp.preparedBy||'—'],
-             ['Date',fmtDate(cp.createdDate)],['Approved by',cp.approvedBy||'—'],
-             ['Approval Date',fmtDate(cp.approvedDate)]]
-            .map(([k,v])=>`<div style="display:flex;justify-content:space-between;
-              padding:5px 0;border-bottom:1px solid #f3f4f6">
-              <span style="color:#6b7280">${k}</span>
-              <span style="font-weight:500;text-align:right;max-width:130px;word-break:break-all">${esc(v)}</span>
+        <div style="padding:10px 12px;font-size:12px">
+          ${[['CP No.',cp.cpNumber],['Part No.',cp.partNumber],['Part Name',cp.partName],
+             ['Customer',cp.customer],['Grade',cp.grade],
+             ['Colour Code',cp.colourCode||'—'],['Machine',cp.machine||'—'],
+             ['Prepared by',cp.preparedBy||'—'],['Date',fmtDate(cp.createdDate)],
+             ['Approved by',cp.approvedBy||'—'],['Approval Date',fmtDate(cp.approvedDate)]]
+            .map(([k,val])=>`<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #f3f4f6">
+              <span style="color:#6b7280;font-size:11px">${k}</span>
+              <span style="font-weight:500;text-align:right;max-width:120px;word-break:break-all;font-size:11px">${esc(val)}</span>
             </div>`).join('')}
         </div>
       </div>
       <div class="card">
         <div class="ch"><h5>Revision History</h5></div>
         <div style="padding:0">
-          ${revs.map(r=>`<div style="padding:9px 12px;border-bottom:1px solid #f3f4f6;font-size:11.5px">
+          ${revs.map(r=>`<div style="padding:8px 12px;border-bottom:1px solid #f3f4f6;font-size:11.5px">
             <div style="display:flex;justify-content:space-between">
-              <b>Rev ${r.revision}</b><span style="color:#6b7280">${fmtDate(r.date)}</span>
+              <b>Rev ${esc(r.revision)}</b><span style="color:#6b7280">${fmtDate(r.date)}</span>
             </div>
             <div style="color:#6b7280">${esc(r.changedBy)}</div>
-            <div style="margin-top:2px">${esc(r.summary)}</div>
-          </div>`).join('')||'<p style="padding:12px;color:#9ca3af;font-size:12px">No revisions.</p>'}
+            <div>${esc(r.summary)}</div>
+          </div>`).join('') || '<p style="padding:12px;color:#9ca3af;font-size:12px">No revisions.</p>'}
         </div>
       </div>
     </div>
   </div>`);
-
-  setTimeout(()=>{
-    document.querySelectorAll('#cp-tbody textarea.ss-cell').forEach(t=>_autoResize(t));
-  },50);
+  setTimeout(()=>document.querySelectorAll('#cp-body textarea.ss-cell').forEach(_autoResize), 50);
 }
 
 function _renderCpRows(chars, locked) {
-  if(!chars.length) return `<tr><td colspan="10" style="padding:24px;text-align:center;color:#9ca3af">
-    No characteristics yet. Generate from PFMEA or add manually.</td></tr>`;
-  let lastCpStep = null;
+  if(!chars.length) return `<tr><td colspan="17" style="padding:24px;text-align:center;color:#9ca3af">
+    No characteristics. Generate from PFMEA or add manually.</td></tr>`;
+  let lastOp = null;
   return chars.map((c,i)=>{
-    const stepChanged2 = c.processStep !== lastCpStep;
-    lastCpStep = c.processStep;
-    const rowClass = [stepChanged2?'ss-step-divider':'', c.source==='custom'?'ss-custom-row':'', c.source==='pfmea'?'ss-pfmea-row':''].filter(Boolean).join(' ');
-    return `<tr data-id="${c.id}" class="${rowClass}">
-    <td class="ss-row-num-td">
-      <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
-        <span>${i+1}</span>
-        ${!locked?`<div class="ss-row-actions">
-          <button class="ss-row-btn" onclick="QMS2.cpDelRow(${c.id})">✕</button>
-          <button class="ss-row-btn dup" onclick="QMS2.cpDupRow(${c.id})">⧉</button>
-        </div>`:''}
-      </div>
-    </td>
-    <td><select class="ss-cell ss-select" data-field="processStep" data-id="${c.id}"
-      ${locked?'disabled':''} onchange="QMS2._cpCellChange(this)">
-      ${STEPS.map(s=>`<option ${c.processStep===s?'selected':''}>${s}</option>`).join('')}
-    </select></td>
-    <td><textarea class="ss-cell" data-field="charName" data-id="${c.id}" rows="1"
-      ${locked?'readonly':''} onblur="QMS2._cpCellBlur(this)" oninput="QMS2._autoResize(this)"
-      onkeydown="QMS2._cpCellKey(event,this)">${esc(c.charName||'')}${c.source==='custom'?' ⭐':''}</textarea></td>
-    <td><select class="ss-cell ss-select" data-field="charType" data-id="${c.id}"
-      ${locked?'disabled':''} onchange="QMS2._cpCellChange(this)">
-      <option value="product" ${c.charType==='product'?'selected':''}>Product</option>
-      <option value="process" ${c.charType==='process'?'selected':''}>Process</option>
-    </select></td>
-    <td><textarea class="ss-cell" data-field="specification" data-id="${c.id}" rows="1"
-      ${locked?'readonly':''} onblur="QMS2._cpCellBlur(this)" oninput="QMS2._autoResize(this)"
-      onkeydown="QMS2._cpCellKey(event,this)">${esc(c.specification||'')}</textarea></td>
-    <td><input class="ss-cell" data-field="tolerance" data-id="${c.id}"
-      value="${esc(c.tolerance||'')}" ${locked?'readonly':''}
-      onblur="QMS2._cpCellBlur(this)" placeholder="±0.05"></td>
-    <td style="min-width:120px">
-      <input class="ss-cell" data-field="method" data-id="${c.id}"
-        list="dl-method" value="${esc(c.method||'')}"
-        ${locked?'readonly':''} onblur="QMS2._cpCellBlur(this)" placeholder="Method…"></td>
-    <td style="min-width:90px">
-      <input class="ss-cell" data-field="frequency" data-id="${c.id}"
-        list="dl-frequency" value="${esc(c.frequency||'')}"
-        ${locked?'readonly':''} onblur="QMS2._cpCellBlur(this)" placeholder="Frequency…"></td>
-    <td style="min-width:130px">
-      <input class="ss-cell" data-field="reaction" data-id="${c.id}"
-        list="dl-reaction" value="${esc(c.reaction||'')}"
-        ${locked?'readonly':''} onblur="QMS2._cpCellBlur(this)" placeholder="Reaction…"></td>
-    <td class="no-print" style="width:32px"></td>
-  </tr>`;
+    const opChanged = c.opNumber !== lastOp;
+    lastOp = c.opNumber;
+    return _renderCpRow(c, i+1, locked, opChanged);
   }).join('');
 }
 
-// CP cell events (same pattern as PFMEA)
-const _cpPending = {};
-function _cpCellBlur(el){ _cpSched(parseInt(el.dataset.id), el.dataset.field, el.value); }
-function _cpCellChange(el){ _cpSched(parseInt(el.dataset.id), el.dataset.field, el.value); }
-function _cpCellKey(e,el){
-  if(e.key==='Tab'){e.preventDefault();
-    const cells=[...document.querySelectorAll('#cp-tbody .ss-cell')];
-    const i=cells.indexOf(el);
-    const next=cells[e.shiftKey?i-1:i+1];
-    if(next){next.focus();if(next.select)next.select();}
-  }
-  if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();
-    const row=el.closest('tr')?.nextElementSibling;
-    const first=row?.querySelector('.ss-cell');
-    if(first) first.focus(); else cpAddRow();
-  }
-}
-function _cpSched(id,field,val){
-  if(!_cpPending[id]) _cpPending[id]={};
-  _cpPending[id][field]=val;
-  _showSaving();
-  clearTimeout(_state.cpSaveTimer);
-  _state.cpSaveTimer=setTimeout(_cpFlush,800);
-}
-async function _cpFlush(){
-  for(const [id,changes] of Object.entries(_cpPending)){
-    delete _cpPending[id];
-    const chars=await GET(`/api/qms2/cp_chars?cpId=${_state.currentCpId}`);
-    const char=chars.find(c=>c.id===parseInt(id));
-    if(!char) continue;
-    await POST('/api/qms2/cp_chars',{...char,...changes,id:parseInt(id)});
-  }
-  _hideSaving();
-}
-
-async function cpAddRow(){
-  const cpId=_state.currentCpId;
-  const chars=await GET(`/api/qms2/cp_chars?cpId=${cpId}`);
-  const rec={cpId,processStep:STEPS[0],charName:'',charType:'product',
-    specification:'',tolerance:'',method:'',frequency:'',reaction:'',
-    source:'custom',order:(chars.length||0)+1,imageId:null};
-  const saved=await POST('/api/qms2/cp_chars',rec);
-  const tbody=document.getElementById('cp-tbody');
-  if(!tbody) return;
-  if(tbody.querySelector('td[colspan]')) tbody.innerHTML='';
-  const num=tbody.querySelectorAll('tr').length+1;
-  const tr=document.createElement('tr');
-  tr.dataset.id=saved.id;
-  tr.style.background='#fefce8';
-  tr.innerHTML=_renderCpRows([{...rec,id:saved.id}],false);
-  // Extract just the inner TR content
-  const tmp=document.createElement('table');
-  tmp.innerHTML=`<tbody>${_renderCpRows([{...rec,id:saved.id}],false)}</tbody>`;
-  const newTr=tmp.querySelector('tr');
-  if(newTr){ tbody.appendChild(newTr);
-    setTimeout(()=>{ const c=newTr.querySelector('.ss-cell'); if(c)c.focus(); },50); }
-}
-
-async function cpDelRow(id){
-  if(!confirm('Delete this characteristic?')) return;
-  await DEL(`/api/qms2/cp_chars/${id}`);
-  document.querySelector(`#cp-tbody tr[data-id="${id}"]`)?.remove();
-  toast('Deleted','d');
-}
-
-async function cpDupRow(id){
-  const chars=await GET(`/api/qms2/cp_chars?cpId=${_state.currentCpId}`);
-  const c=chars.find(x=>x.id===id);
-  if(!c) return;
-  const {id:_,...clean}=c; clean.source='custom';
-  const saved=await POST('/api/qms2/cp_chars',clean);
-  const tbody=document.getElementById('cp-tbody');
-  const tmp=document.createElement('table');
-  tmp.innerHTML=`<tbody>${_renderCpRows([{...clean,id:saved.id}],false)}</tbody>`;
-  const newTr=tmp.querySelector('tr');
-  if(newTr){ tbody.appendChild(newTr); toast('Duplicated','s'); }
+function _renderCpRow(c, num, locked, opDiv=false) {
+  const id = c.id;
+  const srcStyle = c.source==='pfmea' ? 'background:#f0fdf4' : c.source==='custom' ? 'background:#fefce8' : '';
+  return `<tr data-id="${id}" class="${opDiv?'ss-step-divider':''}" style="${srcStyle}">
+  <td class="ss-row-num-td">
+    <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+      <span>${num}</span>
+      ${!locked ? `<div class="ss-row-actions">
+        <button class="ss-row-btn" onclick="QMS2.cpDelRow(${id})">✕</button>
+        <button class="ss-row-btn dup" onclick="QMS2.cpDupRow(${id})">⧉</button>
+        <button class="ss-row-btn" onclick="QMS2._cpMov(${id},-1)">↑</button>
+        <button class="ss-row-btn" onclick="QMS2._cpMov(${id},1)">↓</button>
+      </div>` : ''}
+    </div>
+  </td>
+  <td style="position:sticky;left:36px;z-index:2;background:${opDiv?'#dbe4f5':'#f1f5f9'};min-width:70px;border-right:1px solid #e2e8f0">
+    <input class="ss-cell" data-field="opNumber" data-id="${id}"
+      value="${esc(c.opNumber||'')}" ${locked?'readonly':''} onblur="QMS2._cpCellBlur(this)"
+      style="font-weight:700;color:#0d2f6e;font-size:11px;text-align:center"></td>
+  <td class="ss-col-step">
+    <select class="ss-cell" data-field="processStep" data-id="${id}"
+      ${locked?'disabled':''} onchange="QMS2._cpCellChange(this)"
+      style="font-size:11px;font-weight:600;color:#0d2f6e">
+      ${DEFAULT_OPS.map(o=>`<option value="${o.step}" ${c.processStep===o.step?'selected':''}>${o.step}</option>`).join('')}
+    </select></td>
+  <td><input class="ss-cell" data-field="machine" data-id="${id}"
+    value="${esc(c.machine||'')}" ${locked?'readonly':''} onblur="QMS2._cpCellBlur(this)"
+    placeholder="Machine / Tool"></td>
+  <td><input class="ss-cell" data-field="charNumber" data-id="${id}"
+    value="${esc(c.charNumber||'')}" ${locked?'readonly':''} onblur="QMS2._cpCellBlur(this)"
+    placeholder="OP10.01"
+    style="font-family:monospace;font-weight:700;color:#0d2f6e;font-size:11px"></td>
+  <td style="min-width:140px"><textarea class="ss-cell" data-field="charName" data-id="${id}" rows="1"
+    ${locked?'readonly':''} onblur="QMS2._cpCellBlur(this)" oninput="QMS2._autoResize(this)"
+    onkeydown="QMS2._cpCellKey(event,this)">${esc(c.charName||'')}</textarea></td>
+  <td><select class="ss-cell" data-field="classification" data-id="${id}"
+    ${locked?'disabled':''} onchange="QMS2._cpCellChange(this)" style="font-size:11px">
+    ${['','Critical','Special','Major','Minor'].map(cls=>`<option ${c.classification===cls?'selected':''}>${cls}</option>`).join('')}
+  </select></td>
+  <td style="min-width:130px"><textarea class="ss-cell" data-field="specification" data-id="${id}" rows="1"
+    ${locked?'readonly':''} onblur="QMS2._cpCellBlur(this)" oninput="QMS2._autoResize(this)"
+    onkeydown="QMS2._cpCellKey(event,this)">${esc(c.specification||'')}</textarea></td>
+  <td><input class="ss-cell" data-field="tolerance" data-id="${id}"
+    value="${esc(c.tolerance||'')}" ${locked?'readonly':''} onblur="QMS2._cpCellBlur(this)"
+    placeholder="±0.05"></td>
+  <td><input class="ss-cell" data-field="method" data-id="${id}" list="dl-meth"
+    value="${esc(c.method||'')}" ${locked?'readonly':''} onblur="QMS2._cpCellBlur(this)"></td>
+  <td><input class="ss-cell" data-field="gauge" data-id="${id}"
+    value="${esc(c.gauge||'')}" ${locked?'readonly':''} onblur="QMS2._cpCellBlur(this)"
+    placeholder="Gauge / Instrument"></td>
+  <td><input class="ss-cell" data-field="sampleSize" data-id="${id}"
+    value="${esc(c.sampleSize||'1')}" ${locked?'readonly':''} onblur="QMS2._cpCellBlur(this)"
+    style="text-align:center"></td>
+  <td><input class="ss-cell" data-field="frequency" data-id="${id}" list="dl-freq"
+    value="${esc(c.frequency||'')}" ${locked?'readonly':''} onblur="QMS2._cpCellBlur(this)"></td>
+  <td style="min-width:120px"><textarea class="ss-cell" data-field="controlMethod" data-id="${id}" rows="1"
+    ${locked?'readonly':''} onblur="QMS2._cpCellBlur(this)" oninput="QMS2._autoResize(this)"
+    onkeydown="QMS2._cpCellKey(event,this)">${esc(c.controlMethod||c.reaction||'')}</textarea></td>
+  <td style="min-width:130px"><textarea class="ss-cell" data-field="reactionPlan" data-id="${id}" rows="1"
+    list="dl-react" ${locked?'readonly':''} onblur="QMS2._cpCellBlur(this)" oninput="QMS2._autoResize(this)"
+    onkeydown="QMS2._cpCellKey(event,this)">${esc(c.reactionPlan||c.reaction||'')}</textarea></td>
+  <td><textarea class="ss-cell" data-field="remarks" data-id="${id}" rows="1"
+    ${locked?'readonly':''} onblur="QMS2._cpCellBlur(this)" oninput="QMS2._autoResize(this)"
+    onkeydown="QMS2._cpCellKey(event,this)">${esc(c.remarks||'')}</textarea></td>
+  <td class="no-print" style="width:10px"></td>
+  </tr>`;
 }
 
-// CP workflow
-async function submitCP(cpId){
-  if(!confirm('Submit for review?')) return;
+// ── CP row CRUD ──────────────────────────────────────────────────────
+async function _cpMov(id,dir){
+  const tbody=document.getElementById('cp-body');
+  const rows=[...tbody.querySelectorAll('tr[data-id]')];
+  const idx=rows.findIndex(r=>+r.dataset.id===id);
+  const tgt=rows[idx+dir]; if(!tgt) return;
+  dir===-1?tbody.insertBefore(rows[idx],tgt):tbody.insertBefore(tgt,rows[idx]);
+  tbody.querySelectorAll('tr[data-id]').forEach((tr,i)=>{
+    const td=tr.querySelector('.ss-row-num-td span');
+    if(td) td.textContent=i+1;
+  });
+}
+
+function _printSelectOp(cpId){
+  GET('/api/qms2/cp_rows?cpId='+cpId).then(chars=>{
+    const ops=[...new Set(chars.map(c=>c.opNumber).filter(Boolean))].sort();
+    const modal=document.createElement('div');
+    modal.style.cssText='position:fixed;inset:0;background:#0008;z-index:9999;display:flex;align-items:center;justify-content:center';
+    modal.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px;min-width:280px">
+      <div style="font-weight:700;font-size:14px;color:#0d2f6e;margin-bottom:12px">Print Selected Operation</div>
+      <select id="op-sel" class="inp" style="margin-bottom:12px">
+        <option value="">All Operations</option>
+        ${ops.map(o=>`<option value="${o}">${o}</option>`).join('')}
+      </select>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-p" id="op-ok">Print</button>
+        <button class="btn btn-o" id="op-cancel">Cancel</button>
+      </div>
+    </div>`;
+    document.body.appendChild(modal);
+    modal.querySelector('#op-ok').onclick=()=>{
+      const op=document.getElementById('op-sel').value;
+      modal.remove(); QMS2.printCP(cpId,op);
+    };
+    modal.querySelector('#op-cancel').onclick=()=>modal.remove();
+  });
+}
+
+async function _archiveCP(cpId){
+  if(!confirm('Archive this Control Plan? It will be hidden from the main view but can be restored.')) return;
   const cps=await GET('/api/qms2/cp_parts');
   const cp=cps.find(c=>c.id===cpId);
-  await POST('/api/qms2/cp_parts',{...cp,id:cpId,status:'Under Review'});
-  toast('Submitted for review','s'); renderCP(cpId);
+  await POST('/api/qms2/cp_parts',{...cp,archived:true,status:'Archived'});
+  const cs=await GET(`/api/qms2/cs_records?cpId=${cpId}`);
+  for(const s of cs) await POST('/api/qms2/cs_records',{...s,archived:true});
+  toast('Archived','s'); renderDashboard();
 }
 
-async function approveCP(cpId){
-  if(!confirm('Approve this Control Plan? It will be locked.')) return;
-  const cps=await GET('/api/qms2/cp_parts');
-  const cp=cps.find(c=>c.id===cpId);
-  await POST('/api/qms2/cp_parts',{...cp,id:cpId,status:'Approved',
-    approvedBy:Auth?.user?.name||'',approvedDate:today()});
-  await POST('/api/qms2/cp_revisions',{cpId,revision:cp.revision,date:today(),
-    changedBy:Auth?.user?.name||'',summary:'Control Plan Approved'});
-  toast('Approved ✅','s'); renderCP(cpId);
+// ── Archive View ──────────────────────────────────────────────────────
+async function renderArchive(){
+  const [parts,cps]=await Promise.all([GET('/api/qms2/pfmea_parts'),GET('/api/qms2/cp_parts')]);
+  const arParts=parts.filter(p=>p.archived);
+  const arCps=cps.filter(c=>c.archived||c.status==='Archived'||c.status==='Obsolete');
+  setC(`${SS_STYLE}
+  <div class="ph">
+    <div>
+      <button class="btn btn-o btn-sm" onclick="QMS2.renderDashboard()" style="margin-bottom:6px">← Back</button>
+      <h2>Archive</h2>
+      <p style="font-size:12px;color:#6b7280">Archived and obsolete documents — can be restored</p>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+    <div class="card">
+      <div class="ch"><h5>Archived Parts (${arParts.length})</h5></div>
+      <div style="padding:0">
+        ${!arParts.length?'<p style="padding:16px;color:#9ca3af;font-size:12px">No archived parts.</p>':
+          arParts.map(p=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid #f3f4f6">
+            <div>
+              <div style="font-weight:600;font-family:monospace;color:#6b7280">${esc(p.partNumber)}</div>
+              <div style="font-size:11px;color:#9ca3af">${esc(p.partName)}</div>
+            </div>
+            <div style="display:flex;gap:5px">
+              <button class="btn btn-xs btn-o" onclick="QMS2._restorePart(${p.id})">Restore</button>
+              <button class="btn btn-xs" style="background:#fee2e2;color:#dc2626"
+                onclick="QMS2._permDeletePart(${p.id})">Delete</button>
+            </div>
+          </div>`).join('')}
+      </div>
+    </div>
+    <div class="card">
+      <div class="ch"><h5>Archived / Obsolete Control Plans (${arCps.length})</h5></div>
+      <div style="padding:0">
+        ${!arCps.length?'<p style="padding:16px;color:#9ca3af;font-size:12px">No archived control plans.</p>':
+          arCps.map(c=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid #f3f4f6">
+            <div>
+              <div style="font-weight:600;font-family:monospace;color:#6b7280">${esc(c.cpNumber)}</div>
+              <div style="font-size:11px;color:#9ca3af">${c.status}</div>
+            </div>
+            <div style="display:flex;gap:5px">
+              ${c.status==='Archived'?`<button class="btn btn-xs btn-o" onclick="QMS2._restoreCP(${c.id})">Restore</button>`:''}
+              <button class="btn btn-xs" style="background:#fee2e2;color:#dc2626"
+                onclick="QMS2._permDeleteCP(${c.id})">Delete</button>
+            </div>
+          </div>`).join('')}
+      </div>
+    </div>
+  </div>`);
 }
 
-async function newCPRev(cpId){
+async function _restorePart(id){
+  const parts=await GET('/api/qms2/pfmea_parts');
+  const p=parts.find(x=>x.id===id);
+  await POST('/api/qms2/pfmea_parts',{...p,archived:false});
+  toast('Restored','s'); renderArchive();
+}
+async function _restoreCP(id){
   const cps=await GET('/api/qms2/cp_parts');
-  const cp=cps.find(c=>c.id===cpId);
-  const newRev=REVS[REVS.indexOf(cp.revision)+1]||'Z';
-  const summary=prompt(`Revision ${newRev} — describe what changed:`,'');
-  if(!summary) return;
-  await POST('/api/qms2/cp_parts',{...cp,id:cpId,revision:newRev,
-    cpNumber:`CP-${cp.partNumber}-REV-${newRev}`,
-    status:'Draft',approvedBy:'',approvedDate:''});
-  await POST('/api/qms2/cp_revisions',{cpId,revision:newRev,date:today(),
-    changedBy:Auth?.user?.name||'',summary});
-  toast(`Revision ${newRev} started`,'s'); renderCP(cpId);
+  const c=cps.find(x=>x.id===id);
+  await POST('/api/qms2/cp_parts',{...c,archived:false,status:'Draft'});
+  toast('Restored','s'); renderArchive();
+}
+async function _permDeletePart(id){
+  if(!confirm('PERMANENTLY delete? Cannot be undone.')) return;
+  const rows=await GET(`/api/qms2/pfmea_rows?partId=${id}`);
+  for(const r of rows) await DEL(`/api/qms2/pfmea_rows/${r.id}`);
+  await DEL(`/api/qms2/pfmea_parts/${id}`);
+  toast('Permanently deleted','d'); renderArchive();
+}
+async function _permDeleteCP(id){
+  if(!confirm('PERMANENTLY delete? Cannot be undone.')) return;
+  const rows=await GET(`/api/qms2/cp_rows?cpId=${id}`);
+  for(const r of rows) await DEL(`/api/qms2/cp_rows/${r.id}`);
+  const revs=await GET(`/api/qms2/cp_revisions?cpId=${id}`);
+  for(const r of revs) await DEL(`/api/qms2/cp_revisions/${r.id}`);
+  await DEL(`/api/qms2/cp_parts/${id}`);
+  toast('Permanently deleted','d'); renderArchive();
 }
 
-async function renderCpForPart(partId){
-  const cps=await GET('/api/qms2/cp_parts');
-  const cp=cps.find(c=>c.pfmeaPartId===partId);
-  if(cp) renderCP(cp.id); else generateCP(partId);
-}
+
 
 // ── Checksheets ───────────────────────────────────────────────────────
 async function renderChecksheets(cpId){
@@ -1141,7 +1277,7 @@ async function renderChecksheets(cpId){
   }
 
   const [cps, chars, records] = await Promise.all([
-    GET('/api/qms2/cp_parts'), GET(`/api/qms2/cp_chars?cpId=${cpId}`),
+    GET('/api/qms2/cp_parts'), GET(`/api/qms2/cp_rows?cpId=${cpId}`),
     GET(`/api/qms2/cs_records?cpId=${cpId}`)]);
   const cp=cps.find(c=>c.id===cpId);
   if(!cp){ toast('CP not found','d'); return; }
@@ -1210,7 +1346,7 @@ async function renderChecksheets(cpId){
 }
 
 async function fillCS(type,cpId){
-  const [cps,chars]=await Promise.all([GET('/api/qms2/cp_parts'),GET(`/api/qms2/cp_chars?cpId=${cpId}`)]);
+  const [cps,chars]=await Promise.all([GET('/api/qms2/cp_parts'),GET(`/api/qms2/cp_rows?cpId=${cpId}`)]);
   const cp=cps.find(c=>c.id===cpId);
   const stepMap={IPS:['Melting','Die Casting','Machining'],FIS:['Final Inspection'],PCL:['Packing & Dispatch']};
   const labels={IPS:'In-Process Inspection Sheet',FIS:'Final Inspection Sheet',PCL:'Packing Checklist'};
@@ -1277,7 +1413,7 @@ async function fillCS(type,cpId){
 }
 
 async function saveCS(type,cpId,charIds){
-  const chars=await GET(`/api/qms2/cp_chars?cpId=${cpId}`);
+  const chars=await GET(`/api/qms2/cp_rows?cpId=${cpId}`);
   const results=charIds.map(id=>{
     const c=chars.find(x=>x.id===id)||{};
     return{charId:id,charName:c.charName||'',spec:c.specification||'',
@@ -1445,14 +1581,16 @@ async function printPfmea(partId){
   w.document.close();
 }
 
-async function printCP(cpId){
-  const [cps,chars,revs]=await Promise.all([
-    GET('/api/qms2/cp_parts'),GET(`/api/qms2/cp_chars?cpId=${cpId}`),
+async function printCP(cpId, opFilter){
+  const [cps,allChars,revs]=await Promise.all([
+    GET('/api/qms2/cp_parts'),GET(`/api/qms2/cp_rows?cpId=${cpId}`),
     GET(`/api/qms2/cp_revisions?cpId=${cpId}`)]);
   const cp=cps.find(c=>c.id===cpId);
   if(!cp) return;
+  const chars = opFilter ? allChars.filter(r=>r.opNumber===opFilter) : allChars;
+  chars.sort((a,b)=>(a.opNumber||'').localeCompare(b.opNumber||'')||(a.charNumber||'').localeCompare(b.charNumber||''));
   const w=window.open('','_blank');
-  w.document.write(`<!DOCTYPE html><html><head><title>${cp.cpNumber}</title>
+  w.document.write(`<!DOCTYPE html><html><head><title>${cp.cpNumber}${opFilter?' '+opFilter:''}</title>
   <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:Arial,sans-serif;font-size:9pt;color:#000}
@@ -1529,7 +1667,7 @@ async function printCP(cpId){
 }
 
 async function printCS(type,cpId){
-  const [cps,chars]=await Promise.all([GET('/api/qms2/cp_parts'),GET(`/api/qms2/cp_chars?cpId=${cpId}`)]);
+  const [cps,chars]=await Promise.all([GET('/api/qms2/cp_parts'),GET(`/api/qms2/cp_rows?cpId=${cpId}`)]);
   const cp=cps.find(c=>c.id===cpId);
   const stepMap={IPS:['Melting','Die Casting','Machining'],FIS:['Final Inspection'],PCL:['Packing & Dispatch']};
   const labels={IPS:'IN-PROCESS INSPECTION SHEET',FIS:'FINAL INSPECTION SHEET',PCL:'PACKING CHECKLIST'};
@@ -1601,6 +1739,19 @@ async function printCS(type,cpId){
   </div>
   </body></html>`);
   w.document.close();
+}
+
+// ── Archive Part ─────────────────────────────────────────────────────
+async function _archivePart(partId){
+  if(!confirm('Archive this part? It will be hidden from main view but can be restored.')) return;
+  const parts = await GET('/api/qms2/pfmea_parts');
+  const part = parts.find(p=>p.id===partId);
+  await POST('/api/qms2/pfmea_parts', {...part, archived:true});
+  const cps = await GET('/api/qms2/cp_parts');
+  for(const cp of cps.filter(c=>c.pfmeaPartId===partId)){
+    await POST('/api/qms2/cp_parts', {...cp, archived:true, status:'Archived'});
+  }
+  toast('Archived','s'); renderDashboard();
 }
 
 // ── Grade Master ──────────────────────────────────────────────────────
@@ -1761,12 +1912,14 @@ return {
   renderDashboard, renderNewPart, showGrade, savePart,
   renderPfmea, pfmeaAddRow, pfmeaDelRow, pfmeaDupRow, _moveRow, _expandRow,
   _cellBlur, _cellChange, _cellKey, _autoResize, _updateRpn, _enterNext,
-  generateCP, renderCP, renderCpForPart,
-  cpAddRow, cpDelRow, cpDupRow,
-  _cpCellBlur, _cpCellChange, _cpCellKey,
-  submitCP, approveCP, newCPRev,
+  generateCP, renderCP, renderCpView, renderCpForPart,
+  cpAddRow, cpDelRow, cpDupRow, _cpMov, _cpCellBlur, _cpCellChange, _cpCellKey,
+  submitCP, approveCP, newCPRev, refreshCpFromPfmea, _archiveCP,
+  _printSelectOp, _restorePart, _restoreCP, _permDeletePart, _permDeleteCP,
+  renderArchive,
   renderChecksheets, fillCS, saveCS, viewCSRecord, delCSRecord,
   printPfmea, printCP, printCS,
+  showImpactDialog,
   renderGradeMaster, showGradeForm, saveGrade, deleteGrade,
 };
 })();
