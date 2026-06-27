@@ -924,6 +924,49 @@ async function renderCpForPart(partId){
 // ── renderCpView alias ──────────────────────────────────────────────────
 const renderCP = (cpId) => renderCpView(cpId);
 
+// ── Control Plans List View ─────────────────────────────────────────────
+async function renderCpList() {
+  const [parts, cps] = await Promise.all([GET('/api/qms2/pfmea_parts'), GET('/api/qms2/cp_parts')]);
+  const active = cps.filter(c => c.status !== 'Archived' && c.status !== 'Obsolete');
+  setC(`${SS_STYLE}
+  <div class="ph">
+    <div>
+      <h2 style="font-size:17px;font-weight:700;color:#0d2f6e">📄 Control Plans</h2>
+      <p style="color:#6b7280;font-size:12px;margin:2px 0 0">${active.length} active control plan${active.length!==1?'s':''}</p>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-o btn-sm" onclick="QMS2.renderDashboard()">← Dashboard</button>
+      <button class="btn btn-o btn-sm" onclick="QMS2.renderArchive()">🗄 Archive</button>
+    </div>
+  </div>
+  <div class="card" style="padding:0">
+    ${active.length===0 ? '<p style="padding:16px;color:#9ca3af;font-size:12px">No control plans yet. Create one from the Dashboard via a Part.</p>' :
+      `<table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="background:#1e3a5f;color:#fff">
+          <th style="padding:9px 14px;text-align:left">CP Number</th>
+          <th style="padding:9px 14px;text-align:left">Part</th>
+          <th style="padding:9px 14px;text-align:left">Customer</th>
+          <th style="padding:9px 14px;text-align:left">Rev</th>
+          <th style="padding:9px 14px;text-align:left">Status</th>
+          <th style="padding:9px 14px;text-align:left">Actions</th>
+        </tr></thead>
+        <tbody>
+          ${active.map(c=>`<tr style="border-bottom:1px solid #f3f4f6">
+            <td style="padding:9px 14px;font-family:monospace;font-weight:600;color:#0d2f6e">${esc(c.cpNumber)}</td>
+            <td style="padding:9px 14px">${esc(c.partName)}</td>
+            <td style="padding:9px 14px;color:#6b7280">${esc(c.customer||'—')}</td>
+            <td style="padding:9px 14px;color:#6b7280">${esc(c.revision||'—')}</td>
+            <td style="padding:9px 14px"><span class="badge-status" style="background:${STATUS_COLOR[c.status]||'#6b7280'}22;color:${STATUS_COLOR[c.status]||'#6b7280'}">${c.status||'Draft'}</span></td>
+            <td style="padding:9px 14px;display:flex;gap:5px">
+              <button class="btn btn-o btn-xs" onclick="QMS2.renderCpView(${c.id})">View</button>
+              <button class="btn btn-p btn-xs" onclick="QMS2.renderChecksheets(${c.id})">📋 Checksheets</button>
+            </td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`}
+  </div>`);
+}
+
 // ── Control Plan Spreadsheet View ──────────────────────────────────────
 async function renderCpView(cpId) {
   const [cps, chars, revs] = await Promise.all([
@@ -2070,7 +2113,7 @@ return {
   renderDashboard, renderNewPart, showGrade, savePart,
   renderPfmea, pfmeaAddRow, pfmeaDelRow, pfmeaDupRow, _moveRow, _expandRow,
   _cellBlur, _cellChange, _cellKey, _autoResize, _updateRpn, _enterNext,
-  generateCP, renderCP, renderCpView, renderCpForPart,
+  generateCP, renderCP, renderCpView, renderCpForPart, renderCpList,
   cpAddRow, cpDelRow, cpDupRow, _cpMov, _cpCellBlur, _cpCellChange, _cpCellKey,
   submitCP, approveCP, newCPRev, refreshCpFromPfmea, _archiveCP,
   _printSelectOp, _restorePart, _restoreCP, _permDeletePart, _permDeleteCP,
