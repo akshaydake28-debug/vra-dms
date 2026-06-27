@@ -1907,6 +1907,164 @@ async function deleteGrade(id){
   renderGradeMaster();
 }
 
+// ── CP Cell Event Handlers ────────────────────────────────────────────
+const _cpPending = {};
+let _cpSaveTimer = null;
+
+function _cpCellBlur(el){
+  const id = +el.dataset.id || +el.dataset['id'];
+  const field = el.dataset.field || el.dataset['field'] || el.dataset.f;
+  if(!id || !field) return;
+  if(!_cpPending[id]) _cpPending[id] = {};
+  _cpPending[id][field] = el.value;
+  _showSaving();
+  clearTimeout(_cpSaveTimer);
+  _cpSaveTimer = setTimeout(_cpFlush, 900);
+}
+
+function _cpCellChange(el){ _cpCellBlur(el); }
+
+function _cpCellKey(e, el){
+  if(e.key==='Tab'){ e.preventDefault();
+    const all = [...document.querySelectorAll('#cp-body .ss-cell, #cp-body .q2-cell')];
+    const i = all.indexOf(el);
+    const nx = all[e.shiftKey ? i-1 : i+1];
+    if(nx){ nx.focus(); if(nx.select) nx.select(); }
+  }
+  if(e.key==='Enter' && !e.shiftKey){ e.preventDefault();
+    const tr = el.closest('tr')?.nextElementSibling;
+    tr?.querySelector('.ss-cell, .q2-cell')?.focus() || cpAddRow();
+  }
+}
+
+async function _cpFlush(){
+  const cpId = S.currentCpId;
+  if(!cpId) return;
+  for(const [id, changes] of Object.entries(_cpPending)){
+    delete _cpPending[id];
+    const all = await GET(`/api/qms2/cp_rows?cpId=${cpId}`);
+    const rec = all.find(r=>r.id===+id); if(!rec) continue;
+    await POST('/api/qms2/cp_rows', {...rec, ...changes, id:+id});
+  }
+  _hideSaving();
+}
+
+// ── CP Row CRUD ───────────────────────────────────────────────────────
+async function cpAddRow(){
+  const cpId = S.currentCpId; if(!cpId) return;
+  const all = await GET(`/api/qms2/cp_rows?cpId=${cpId}`);
+  const rec = {
+    cpId, opNumber:'OP10', processStep:DEFAULT_OPS[0].step,
+    machine:'', charNumber:'', charName:'', charType:'process', classification:'',
+    specification:'', tolerance:'', method:'Visual', gauge:'', sampleSize:'1',
+    frequency:'100%', controlMethod:'', reactionPlan:'', remarks:'',
+    source:'custom', order:(all.length||0)+1, imageId:null
+  };
+  const saved = await POST('/api/qms2/cp_rows', rec);
+  const tbody = document.getElementById('cp-body');
+  if(!tbody) return;
+  if(tbody.querySelector('td[colspan]')) tbody.innerHTML = '';
+  const num = tbody.querySelectorAll('tr[data-id]').length + 1;
+  tbody.insertAdjacentHTML('beforeend', _renderCpRow({...rec, id:saved.id}, num, false, false));
+  setTimeout(()=>tbody.querySelector(`tr[data-id="${saved.id}"]`)?.querySelector('.ss-cell, .q2-cell')?.focus(), 50);
+}
+
+async function cpDelRow(id){
+  if(!confirm('Delete this characteristic?')) return;
+  await DEL(`/api/qms2/cp_rows/${id}`);
+  document.querySelector(`#cp-body tr[data-id="${id}"]`)?.remove();
+  document.querySelectorAll('#cp-body tr[data-id]').forEach((tr,i)=>{
+    const s = tr.querySelector('.ss-row-num-td span');
+    if(s) s.textContent = i+1;
+  });
+  toast('Deleted','d');
+}
+
+async function cpDupRow(id){
+  const cpId = S.currentCpId;
+  const all = await GET(`/api/qms2/cp_rows?cpId=${cpId}`);
+  const r = all.find(x=>x.id===id); if(!r) return;
+  const {id:_, ...clean} = r; clean.source = 'custom';
+  const saved = await POST('/api/qms2/cp_rows', clean);
+  const tbody = document.getElementById('cp-body');
+  if(!tbody) return;
+  const num = tbody.querySelectorAll('tr[data-id]').length + 1;
+  tbody.insertAdjacentHTML('beforeend', _renderCpRow({...clean, id:saved.id}, num, false, false));
+  toast('Duplicated','s');
+}
+
+// ── CP workflow actions ───────────────────────────────────────────────
+async function submitCP(cpId){
+  if(!confirm('Submit for review?')) return;
+  const cps = await GET('/api/qms2/cp_parts');
+  const cp = cps.find(c=>c.id===cpId);
+  await POST('/api/qms2/cp_parts', {...cp, status:'Under Review'});
+  toast('Submitted for review','s'); renderCpView(cpId);
+}
+
+async function approveCP(cpId){
+  if(!confirm('Approve this Control Plan? It will be locked for editing.')) return;
+  const cps = await GET('/api/qms2/cp_parts');
+  const cp = cps.find(c=>c.id===cpId);
+  await POST('/api/qms2/cp_parts', {...cp, status:'Approved',
+    approvedBy:Auth?.user?.name||'', approvedDate:today()});
+  await POST('/api/qms2/cp_revisions', {cpId, revision:cp.revision, date:today(),
+    changedBy:Auth?.user?.name||'', summary:'Control Plan Approved'});
+  toast('Approved ✅','s'); renderCpView(cpId);
+}
+
+async function newCPRev(cpId){
+  const cps = await GET('/api/qms2/cp_parts');
+  const cp = cps.find(c=>c.id===cpId);
+  const newRev = REVS[REVS.indexOf(cp.revision)+1] || 'Z';
+  const summary = prompt(`Revision ${newRev} — describe changes:`, '');
+  if(!summary) return;
+  await POST('/api/qms2/cp_parts', {...cp, revision:newRev,
+    cpNumber:`CP-${cp.partNumber}-REV-${newRev}`,
+    status:'Draft', approvedBy:'', approvedDate:'', pfmeaOutdated:false});
+  await POST('/api/qms2/cp_revisions', {cpId, revision:newRev, date:today(),
+    changedBy:Auth?.user?.name||'', summary});
+  toast(`Revision ${newRev} started`,'s'); renderCpView(cpId);
+}
+
+async function refreshCpFromPfmea(cpId){
+  const cps = await GET('/api/qms2/cp_parts');
+  const cp = cps.find(c=>c.id===cpId); if(!cp) return;
+  const [existChars, pfRows] = await Promise.all([
+    GET(`/api/qms2/cp_rows?cpId=${cpId}`),
+    GET(`/api/qms2/pfmea_rows?partId=${cp.pfmeaPartId}`)]);
+  const existIds = new Set(existChars.filter(c=>c.pfmeaRowId).map(c=>c.pfmeaRowId));
+  const existNames = new Set(existChars.map(c=>c.charName));
+  const opCounters = {};
+  existChars.forEach(c=>{ opCounters[c.opNumber] = (opCounters[c.opNumber]||0)+1; });
+  const maxOrder = Math.max(...existChars.map(c=>c.order||0), 0);
+  let order = maxOrder+1; let added = 0;
+  for(const r of pfRows){
+    if(existIds.has(r.id)) continue;
+    const nm = r.function || r.failureMode || '';
+    if(existNames.has(nm)) continue;
+    const opNum = r.opNumber || stepToOp(r.processStep) || 'OP10';
+    opCounters[opNum] = (opCounters[opNum]||0)+1;
+    const charNum = `${opNum}.${String(opCounters[opNum]).padStart(2,'0')}`;
+    await POST('/api/qms2/cp_rows', {
+      cpId, opNumber:opNum, processStep:r.processStep,
+      machine:cp.machine||'', charNumber:charNum, charName:nm,
+      charType:'process', classification:'',
+      specification:r.preventionControls||r.currentControls||'',
+      tolerance:'', method:r.detectionControls||'Visual',
+      gauge:'', sampleSize:'1', frequency:'Per Control Plan',
+      controlMethod:r.preventionControls||'',
+      reactionPlan:r.recommendedAction||'', remarks:'',
+      source:'pfmea', pfmeaRowId:r.id, pfmeaRpn:r.rpn||0,
+      order:order++, imageId:null
+    });
+    added++;
+  }
+  await POST('/api/qms2/cp_parts', {...cp, pfmeaOutdated:false});
+  toast(added ? `✅ ${added} new row${added>1?'s':''} added` : 'Already in sync ✅','s');
+  renderCpView(cpId);
+}
+
 // ── Public API ────────────────────────────────────────────────────────
 return {
   renderDashboard, renderNewPart, showGrade, savePart,
