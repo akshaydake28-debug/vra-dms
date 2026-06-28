@@ -984,7 +984,7 @@ async function renderCpView(cpId) {
     (a.charNumber||'').localeCompare(b.charNumber||''));
 
   setC(`${SS_STYLE}
-  ${mkDL('dl-meth', DD_METHOD)}${mkDL('dl-freq', DD_FREQ)}${mkDL('dl-react', DD_REACTION)}
+  ${mkDL('dl-meth', DD.detectionMethod)}${mkDL('dl-freq', DD.frequency)}${mkDL('dl-react', DD.reactionPlan)}
   <div class="ss-saving" id="ss-saving-ind">Saving…</div>
   <div class="part-header">
     <div>
