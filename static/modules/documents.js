@@ -36,6 +36,7 @@ async function renderRegistry(p={}){
         <td style="white-space:nowrap">
           <button class="btn btn-o btn-xs" onclick="viewDoc(${d.id})">View</button>
           <button class="btn btn-xs btn-o" onclick="printDoc(${d.id})">🖨 Print</button>
+          <button class="btn btn-xs btn-o" onclick="printDoc(${d.id},true)" title="Landscape print">↔</button>
         </td>
       </tr>`).join('')||`<tr><td colspan="8" style="text-align:center;padding:24px;color:#9ca3af">No documents found.</td></tr>`}
       </tbody>
@@ -113,6 +114,20 @@ function editorHTML(initialContent=''){
           ${colorSwatches(CELL_COLORS,'applyCellBg')}
         </div>
       </div>
+      <span class="tb-sep"></span>
+      <span style="font-size:11px;color:#92400e;font-weight:600">Width:</span>
+      <select class="tb-select" onmousedown="event.preventDefault()" onchange="tblSetWidth(this.value);this.blur()" title="Table width">
+        <option value="">—</option>
+        <option value="25%">25%</option>
+        <option value="50%">50%</option>
+        <option value="75%">75%</option>
+        <option value="100%">100%</option>
+        <option value="auto">Auto</option>
+      </select>
+      <span class="tb-sep"></span>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblSetAlign('left')"   title="Align table left">◀ Left</button>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblSetAlign('center')" title="Align table center">≡ Center</button>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblSetAlign('right')"  title="Align table right">▶ Right</button>
     </div>
 
     <div id="doc-editor" contenteditable="true" spellcheck="true">${initialContent||'<p><br></p>'}</div>
@@ -260,6 +275,21 @@ function tblToggleHeader(){
   });
 }
 
+function tblSetWidth(w){
+  const ctx=getTblCtx(); if(!ctx){toast('Click inside a table first','w');return}
+  if(!w) return;
+  ctx.table.style.width=w;
+  if(w!=='100%'&&w!=='auto') ctx.table.style.minWidth='';
+}
+function tblSetAlign(align){
+  const ctx=getTblCtx(); if(!ctx){toast('Click inside a table first','w');return}
+  const t=ctx.table;
+  if(align==='center'){t.style.marginLeft='auto';t.style.marginRight='auto';}
+  else if(align==='right'){t.style.marginLeft='auto';t.style.marginRight='0';}
+  else{t.style.marginLeft='0';t.style.marginRight='auto';}
+  t.style.display='table';
+}
+
 function insertTable(){
   const rows=parseInt(prompt('Rows (including header):', '4'))||4;
   const cols=parseInt(prompt('Columns:', '3'))||3;
@@ -387,7 +417,8 @@ async function viewDoc(id){
       ${canSubmit?`<button class="btn btn-w btn-sm" onclick="doSubmit(${id})">📤 Submit</button>`:''}
       ${canApprove?`<button class="btn btn-g btn-sm" onclick="showApproveM(${id})">✓ Approve</button>
         <button class="btn btn-r btn-sm" onclick="showRejectM(${id})">✗ Reject</button>`:''}
-      <button class="btn btn-p btn-sm" onclick="printDoc(${id})">🖨 Print / PDF</button>
+      <button class="btn btn-p btn-sm" onclick="printDoc(${id})">🖨 Print</button>
+      <button class="btn btn-sm" style="background:#eff6ff;color:#1d4ed8;border:1px solid #93c5fd" onclick="printDoc(${id},true)" title="Print in landscape/horizontal orientation">↔ Landscape</button>
       <button class="btn btn-sm" style="background:#f0fdf4;color:#166534;border:1px solid #86efac" onclick="showTranslatePicker(${id})">🌐 Translate</button>
     </div>
   </div>
@@ -1316,7 +1347,7 @@ hr{border:none;border-top:1px solid #ccc;margin:12px 0}
 // ══════════════════════════════════════════════════════
 //  PRINT DOCUMENT
 // ══════════════════════════════════════════════════════
-async function printDoc(id){
+async function printDoc(id, landscape=false){
   const doc = await DB.getDoc(id);
   if(!doc){ toast('Document not found','d'); return; }
   const ver = await DB.getVer(id, doc.revision);
@@ -1335,7 +1366,7 @@ async function printDoc(id){
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:Arial,sans-serif;font-size:10pt;color:#000;background:#fff}
-@page{size:A4;margin:14mm 15mm 18mm 15mm}
+@page{size:${landscape?'A4 landscape':'A4'};margin:14mm 15mm 18mm 15mm}
 table.wrap{width:100%;border-collapse:collapse}
 table.wrap>thead>tr>td{padding-bottom:7px;border-bottom:2px solid #000}
 table.wrap>tfoot>tr>td{padding-top:5px;border-top:1px solid #000;font-size:7.5pt;color:#444}
@@ -1362,7 +1393,16 @@ th{background:#ececec;font-weight:bold}
 .page-num::after{content:" " counter(page) " of " counter(pages)}
 </style>
 </head><body>
-<button class="no-print" onclick="window.print()" style="position:fixed;top:10px;right:10px;padding:8px 16px;background:#1e3a5f;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px">🖨 Print / Save PDF</button>
+<div class="no-print" style="position:fixed;top:10px;right:10px;display:flex;gap:8px;align-items:center">
+  <span style="font-size:12px;color:#555">Orientation:</span>
+  <select id="orient-sel" onchange="applyOrient(this.value)" style="padding:5px 8px;border-radius:5px;border:1px solid #ccc;font-size:13px">
+    <option value="portrait"${landscape?'':' selected'}>Portrait</option>
+    <option value="landscape"${landscape?' selected':''}>Landscape</option>
+  </select>
+  <button onclick="window.print()" style="padding:8px 16px;background:#1e3a5f;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px">🖨 Print / Save PDF</button>
+</div>
+<style id="orient-style">@page{size:${landscape?'A4 landscape':'A4'}}</style>
+<script>function applyOrient(v){document.getElementById('orient-style').textContent='@page{size:A4 '+v+'}'}<\/script>
 
 <table class="wrap">
 <thead><tr><td>
