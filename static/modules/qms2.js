@@ -709,7 +709,7 @@ async function _flushSaves() {
   }
   _hideSaving();
   // Mark linked control plans as outdated
-  if(S.currentPartId) await _markCpsOutdated(S.currentPartId);
+  if(_state.currentPartId) await _markCpsOutdated(_state.currentPartId);
 }
 
 function _showSaving() {
@@ -976,7 +976,7 @@ async function renderCpView(cpId) {
   ]);
   const cp = cps.find(c=>c.id===cpId);
   if(!cp){ toast('CP not found','d'); return; }
-  S.currentCpId = cpId;
+  _state.currentCpId = cpId;
   const isApproved = cp.status === 'Approved';
 
   // Sort chars by opNumber then charNumber
