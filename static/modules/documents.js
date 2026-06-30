@@ -128,6 +128,8 @@ function editorHTML(initialContent=''){
       <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblSetAlign('left')"   title="Align table left">◀ Left</button>
       <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblSetAlign('center')" title="Align table center">≡ Center</button>
       <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblSetAlign('right')"  title="Align table right">▶ Right</button>
+      <span class="tb-sep"></span>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblEqualCols()" title="Make all columns equal width">⇔ Equal Cols</button>
     </div>
 
     <div id="doc-editor" contenteditable="true" spellcheck="true">${initialContent||'<p><br></p>'}</div>
@@ -275,6 +277,18 @@ function tblToggleHeader(){
   });
 }
 
+function tblEqualCols(){
+  const ctx=getTblCtx(); if(!ctx){toast('Click inside a table first','w');return}
+  const t=ctx.table;
+  const numCols=t.rows[0]?.cells.length; if(!numCols) return;
+  const totalW=t.getBoundingClientRect().width;
+  const colW=Math.floor(totalW/numCols);
+  t.style.tableLayout='fixed';
+  t.style.width=totalW+'px';
+  Array.from(t.rows).forEach(r=>{
+    Array.from(r.cells).forEach(c=>{ c.style.width=colW+'px'; c.style.minWidth=colW+'px'; });
+  });
+}
 function tblSetWidth(w){
   const ctx=getTblCtx(); if(!ctx){toast('Click inside a table first','w');return}
   if(!w) return;
