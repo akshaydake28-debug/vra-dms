@@ -1440,8 +1440,21 @@ async function printDoc(id, landscape=false){
 <title>${doc.docNumber} — ${esc(doc.title)}</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:Arial,sans-serif;font-size:10pt;color:#000;background:#fff;max-width:${landscape?'277mm':'190mm'};margin:10mm auto}
-@page{size:${landscape?'A4 landscape':'A4'};margin:10mm 15mm 14mm 15mm}
+body{font-family:Arial,sans-serif;font-size:10pt;color:#000;background:#e5e7eb;padding-top:56px}
+@page{size:${landscape?'A4 landscape':'A4'};margin:12mm 15mm 15mm 15mm}
+@media print{
+  body{background:#fff!important;padding-top:0!important}
+  .no-print{display:none!important}
+  #page-wrap{box-shadow:none!important;margin:0!important;padding:12mm 15mm 15mm!important;width:100%!important}
+}
+#page-wrap{
+  background:#fff;
+  width:${landscape?'277mm':'190mm'};
+  min-height:${landscape?'185mm':'267mm'};
+  margin:16px auto;
+  padding:12mm 15mm 15mm;
+  box-shadow:0 2px 16px rgba(0,0,0,0.18);
+}
 table.wrap{width:100%;border-collapse:collapse}
 table.wrap>thead>tr>td{padding-bottom:7px;border-bottom:2px solid #000}
 table.wrap>tfoot>tr>td{padding-top:5px;border-top:1px solid #000;font-size:7.5pt;color:#444}
@@ -1462,41 +1475,36 @@ table{width:100%;border-collapse:collapse;margin:10px 0;font-size:9.5pt}
 td,th{border:1px solid #ccc;padding:5px 8px;text-align:left;vertical-align:top}
 th{background:#ececec;font-weight:bold}
 .rev-table th{background:#1e3a5f;color:#fff}
-@media print{.no-print{display:none!important}}
-#content-wrap{width:100%}
-.fit-active #content-wrap{transform-origin:top left}
 .page-num::after{content:" " counter(page) " of " counter(pages)}
 </style>
 </head><body>
-<div class="no-print" style="position:fixed;top:0;left:0;right:0;background:#f1f5f9;border-bottom:1px solid #cbd5e1;padding:8px 16px;display:flex;gap:10px;align-items:center;z-index:999">
-  <span style="font-size:12px;color:#64748b;font-weight:600">V R ALUCAST — Print Preview</span>
-  <span style="font-size:12px;color:#94a3b8">${landscape?'Landscape':'Portrait'}</span>
+<div class="no-print" style="position:fixed;top:0;left:0;right:0;height:48px;background:#1e3a5f;padding:0 16px;display:flex;gap:10px;align-items:center;z-index:999;box-shadow:0 2px 8px rgba(0,0,0,0.3)">
+  <span style="font-size:13px;color:#fff;font-weight:600">V R ALUCAST</span>
+  <span style="font-size:11px;color:#93c5fd;background:rgba(255,255,255,0.1);padding:2px 8px;border-radius:4px">${landscape?'Landscape':'Portrait'}</span>
   <div style="flex:1"></div>
-  <button id="fit-btn" onclick="toggleFit()" style="padding:6px 14px;background:#f8fafc;color:#1e3a5f;border:1px solid #cbd5e1;border-radius:6px;cursor:pointer;font-size:12px">⤢ Fit to Page: OFF</button>
-  <button onclick="doPrint()" style="padding:8px 18px;background:#1e3a5f;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600">🖨 Print / Save PDF</button>
+  <button id="fit-btn" onclick="toggleFit()" style="padding:6px 14px;background:rgba(255,255,255,0.15);color:#fff;border:1px solid rgba(255,255,255,0.3);border-radius:6px;cursor:pointer;font-size:12px">⤢ Fit to Window</button>
+  <button onclick="window.print()" style="padding:8px 18px;background:#2563eb;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600">🖨 Print / Save PDF</button>
 </div>
-<div style="height:48px"></div>
-<div id="content-wrap">
+<div id="page-wrap">
 <script>
 var _fitted=false;
 function toggleFit(){
   _fitted=!_fitted;
   var btn=document.getElementById('fit-btn');
-  btn.textContent='⤢ Fit to Page: '+ (_fitted?'ON':'OFF');
-  btn.style.background=_fitted?'#dbeafe':'#f8fafc';
+  btn.textContent=_fitted?'⤢ Actual Size':'⤢ Fit to Window';
+  btn.style.background=_fitted?'rgba(37,99,235,0.5)':'rgba(255,255,255,0.15)';
   applyFit();
 }
 function applyFit(){
-  var wrap=document.getElementById('content-wrap');
-  if(!_fitted){wrap.style.transform='';wrap.style.width='';return;}
-  var isLandscape=${landscape?'true':'false'};
-  var pageW=isLandscape?1056:744; // A4 px at 96dpi minus margins
-  var scale=Math.min(1,(pageW-60)/wrap.scrollWidth);
+  var wrap=document.getElementById('page-wrap');
+  if(!_fitted){wrap.style.transform='';wrap.style.transformOrigin='';return;}
+  var availW=window.innerWidth-32;
+  var wrapW=wrap.offsetWidth;
+  var scale=Math.min(1,availW/wrapW);
   wrap.style.transformOrigin='top left';
   wrap.style.transform='scale('+scale+')';
   wrap.style.width=(100/scale)+'%';
 }
-function doPrint(){applyFit();window.print();}
 <\/script>
 
 <table class="wrap">
