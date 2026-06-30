@@ -1435,25 +1435,25 @@ async function printDoc(id, landscape=false){
     <td>${esc(v.changeSummary||'')}</td>
   </tr>`).join('');
 
-  const w = window.open('','_blank','width=900,height=700');
+  const w = window.open('','_blank','width=1000,height=750');
   w.document.write(`<!DOCTYPE html><html><head>
 <title>${doc.docNumber} — ${esc(doc.title)}</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:Arial,sans-serif;font-size:10pt;color:#000;background:#e5e7eb;padding-top:56px}
-@page{size:${landscape?'A4 landscape':'A4'};margin:12mm 15mm 15mm 15mm}
+body{font-family:Arial,sans-serif;font-size:10pt;color:#000;background:#d1d5db;padding:64px 24px 24px}
+@page{size:${landscape?'A4 landscape':'A4'};margin:0}
 @media print{
-  body{background:#fff!important;padding-top:0!important}
+  body{background:#fff!important;padding:0!important}
   .no-print{display:none!important}
-  #page-wrap{box-shadow:none!important;margin:0!important;padding:12mm 15mm 15mm!important;width:100%!important}
+  #page-wrap{box-shadow:none!important;margin:0!important;border-radius:0!important}
 }
 #page-wrap{
   background:#fff;
-  width:${landscape?'277mm':'190mm'};
-  min-height:${landscape?'185mm':'267mm'};
-  margin:16px auto;
-  padding:12mm 15mm 15mm;
-  box-shadow:0 2px 16px rgba(0,0,0,0.18);
+  width:${landscape?'297mm':'210mm'};
+  margin:0 auto;
+  padding:14mm 15mm 18mm;
+  box-shadow:0 4px 24px rgba(0,0,0,0.25);
+  border-radius:2px;
 }
 table.wrap{width:100%;border-collapse:collapse}
 table.wrap>thead>tr>td{padding-bottom:7px;border-bottom:2px solid #000}
@@ -1477,35 +1477,40 @@ th{background:#ececec;font-weight:bold}
 .rev-table th{background:#1e3a5f;color:#fff}
 .page-num::after{content:" " counter(page) " of " counter(pages)}
 </style>
-</head><body>
-<div class="no-print" style="position:fixed;top:0;left:0;right:0;height:48px;background:#1e3a5f;padding:0 16px;display:flex;gap:10px;align-items:center;z-index:999;box-shadow:0 2px 8px rgba(0,0,0,0.3)">
-  <span style="font-size:13px;color:#fff;font-weight:600">V R ALUCAST</span>
-  <span style="font-size:11px;color:#93c5fd;background:rgba(255,255,255,0.1);padding:2px 8px;border-radius:4px">${landscape?'Landscape':'Portrait'}</span>
-  <div style="flex:1"></div>
-  <button id="fit-btn" onclick="toggleFit()" style="padding:6px 14px;background:rgba(255,255,255,0.15);color:#fff;border:1px solid rgba(255,255,255,0.3);border-radius:6px;cursor:pointer;font-size:12px">⤢ Fit to Window</button>
-  <button onclick="window.print()" style="padding:8px 18px;background:#2563eb;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600">🖨 Print / Save PDF</button>
-</div>
-<div id="page-wrap">
 <script>
-var _fitted=false;
-function toggleFit(){
-  _fitted=!_fitted;
-  var btn=document.getElementById('fit-btn');
-  btn.textContent=_fitted?'⤢ Actual Size':'⤢ Fit to Window';
-  btn.style.background=_fitted?'rgba(37,99,235,0.5)':'rgba(255,255,255,0.15)';
-  applyFit();
-}
-function applyFit(){
+var _isLandscape=${landscape?'true':'false'};
+// Auto-fit: scale content to fill exactly one page width before printing (like Excel fit-to-page)
+function calcScale(){
   var wrap=document.getElementById('page-wrap');
-  if(!_fitted){wrap.style.transform='';wrap.style.transformOrigin='';return;}
-  var availW=window.innerWidth-32;
-  var wrapW=wrap.offsetWidth;
-  var scale=Math.min(1,availW/wrapW);
-  wrap.style.transformOrigin='top left';
-  wrap.style.transform='scale('+scale+')';
-  wrap.style.width=(100/scale)+'%';
+  // A4 usable width after margins (297mm or 210mm) in px at 96dpi
+  var pageWpx=(_isLandscape?297:210)/25.4*96;
+  var contentW=wrap.scrollWidth;
+  return contentW>pageWpx?pageWpx/contentW:1;
+}
+window.addEventListener('beforeprint',function(){
+  var s=calcScale();
+  if(s<1){
+    document.getElementById('page-wrap').style.zoom=s;
+  }
+});
+window.addEventListener('afterprint',function(){
+  document.getElementById('page-wrap').style.zoom='';
+});
+function doPrint(){
+  window.print();
 }
 <\/script>
+</head><body>
+<div class="no-print" style="position:fixed;top:0;left:0;right:0;height:48px;background:#1e293b;padding:0 20px;display:flex;gap:12px;align-items:center;z-index:999;box-shadow:0 2px 8px rgba(0,0,0,0.4)">
+  <span style="font-size:13px;color:#fff;font-weight:700">V R ALUCAST</span>
+  <span style="font-size:11px;color:#94a3b8">|</span>
+  <span style="font-size:11px;color:#cbd5e1">${esc(doc.docNumber)} — ${esc(doc.title)}</span>
+  <span style="font-size:10px;color:#64748b;background:#334155;padding:2px 8px;border-radius:4px">${landscape?'Landscape':'Portrait'}</span>
+  <div style="flex:1"></div>
+  <span style="font-size:11px;color:#94a3b8">Content auto-scales to fit page on print</span>
+  <button onclick="doPrint()" style="padding:8px 20px;background:#2563eb;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;letter-spacing:0.3px">🖨 Print / Save PDF</button>
+</div>
+<div id="page-wrap">
 
 <table class="wrap">
 <thead><tr><td>
