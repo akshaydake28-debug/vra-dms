@@ -1811,27 +1811,30 @@ async function renderGradeMaster(){
     <div>
       <button class="btn btn-o btn-sm" onclick="QMS2.renderDashboard()" style="margin-bottom:6px">← Back</button>
       <h2>Grade Master</h2>
-      <p style="font-size:12px;color:#6b7280">Material compositions and acceptance criteria — used for auto-population in Control Plans</p>
+      <p style="font-size:12px;color:#6b7280">Material chemical compositions — used for auto-population in Control Plans</p>
     </div>
     <button class="btn btn-p btn-sm" onclick="QMS2.showGradeForm()">+ Add Grade</button>
   </div>
   <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px">
     ${grades.map(g=>{
       const comp=g.composition||{};
+      const cc=g.colourCode||'';
       return `<div class="card">
         <div class="ch" style="background:#f8fafc">
           <div style="display:flex;align-items:center;gap:8px">
+            ${cc?`<span style="display:inline-block;width:18px;height:18px;border-radius:50%;background:${esc(cc)};border:1px solid #ccc;flex-shrink:0"></span>`:''}
             <span style="font-weight:700;font-size:15px;color:#0d2f6e">${esc(g.grade)}</span>
-            <span style="font-size:11px;color:#6b7280">${esc(g.standard||'')}</span>
+            ${cc?`<span style="font-size:11px;color:#6b7280">${esc(cc)}</span>`:''}
           </div>
           <div style="display:flex;gap:5px">
+            <button class="btn btn-xs" style="background:#e0f2fe;color:#0369a1" onclick="QMS2.printGrade(${g.id})">🖨 Print</button>
             <button class="btn btn-xs btn-o" onclick="QMS2.showGradeForm(${g.id})">✏️ Edit</button>
             <button class="btn btn-xs" style="background:#fee2e2;color:#dc2626"
               onclick="QMS2.deleteGrade(${g.id})">✕</button>
           </div>
         </div>
         <div style="padding:12px">
-          <table style="width:100%;font-size:11.5px;border-collapse:collapse;margin-bottom:10px">
+          <table style="width:100%;font-size:11.5px;border-collapse:collapse">
             <tr style="background:#f1f5f9">
               <th style="padding:4px 6px;text-align:left">Element</th>
               <th style="padding:4px 6px;text-align:right">Range / Limit</th>
@@ -1841,13 +1844,6 @@ async function renderGradeMaster(){
               <td style="padding:3px 6px;text-align:right">${esc(v)}</td>
             </tr>`).join('')}
           </table>
-          <div style="font-size:11px;display:grid;gap:4px;color:#374151">
-            <div>🌡 Metal Temp: <b>${esc(g.metalTempRange||'—')}</b></div>
-            <div>💪 Tensile Strength: <b>${esc(g.tensileStrength||'—')}</b></div>
-            <div>⚙️ Hardness: <b>${esc(g.hardness||'—')}</b></div>
-            <div>📏 Melting Range: <b>${esc(g.meltingRange||'—')}</b></div>
-            <div style="margin-top:4px;color:#6b7280;font-size:10.5px">${esc(g.acceptanceCriteria||'')}</div>
-          </div>
         </div>
       </div>`;}).join('')||'<p style="padding:20px;color:#9ca3af">No grades yet. Click + Add Grade.</p>'}
   </div>`);
@@ -1856,14 +1852,15 @@ async function renderGradeMaster(){
 async function showGradeForm(editId){
   const grades = editId ? await GET('/api/qms2/grades') : [];
   const g = editId ? grades.find(x=>x.id===editId) : null;
-  const comp = g?.composition || {Si:'',Cu:'',Mg:'',Zn:'',Fe:'',Mn:'',Ni:'',Sn:'',Al:'Balance'};
-  const elements = ['Si','Cu','Mg','Zn','Fe','Mn','Ni','Sn','Pb','Al'];
+  const comp = g?.composition || {};
+  // Build element rows — existing ones from saved data + blank row for adding
+  const existingEls = Object.entries(comp);
 
   const modal = document.createElement('div');
   modal.id = 'grade-modal';
   modal.style.cssText = 'position:fixed;inset:0;background:#0008;z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;overflow-y:auto';
   modal.innerHTML = `
-  <div style="background:#fff;border-radius:12px;width:100%;max-width:700px;max-height:92vh;overflow-y:auto;box-shadow:0 20px 60px #0004">
+  <div style="background:#fff;border-radius:12px;width:100%;max-width:640px;max-height:92vh;overflow-y:auto;box-shadow:0 20px 60px #0004">
     <div style="padding:14px 18px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:#fff;z-index:1">
       <h4 style="font-size:15px;font-weight:700;color:#0d2f6e">${editId?'Edit Grade':'Add New Grade'}</h4>
       <button onclick="document.getElementById('grade-modal').remove()"
@@ -1872,40 +1869,34 @@ async function showGradeForm(editId){
     <div style="padding:18px;display:grid;grid-template-columns:1fr 1fr;gap:12px">
       <div><label class="lbl">Grade Name *</label>
         <input class="inp" id="gf-grade" value="${esc(g?.grade||'')}" placeholder="e.g. ADC12"></div>
-      <div><label class="lbl">Standard</label>
-        <input class="inp" id="gf-standard" value="${esc(g?.standard||'')}" placeholder="e.g. JIS H 5302"></div>
-      <div><label class="lbl">Metal Temperature Range</label>
-        <input class="inp" id="gf-temp" value="${esc(g?.metalTempRange||'')}" placeholder="e.g. 640–680°C"></div>
-      <div><label class="lbl">Melting Range</label>
-        <input class="inp" id="gf-melt" value="${esc(g?.meltingRange||'')}" placeholder="e.g. 515–585°C"></div>
-      <div><label class="lbl">Tensile Strength</label>
-        <input class="inp" id="gf-tensile" value="${esc(g?.tensileStrength||'')}" placeholder="e.g. ≥310 MPa"></div>
-      <div><label class="lbl">Hardness</label>
-        <input class="inp" id="gf-hardness" value="${esc(g?.hardness||'')}" placeholder="e.g. 75–105 HB"></div>
-      <div style="grid-column:1/-1"><label class="lbl">Acceptance Criteria</label>
-        <input class="inp" id="gf-criteria" value="${esc(g?.acceptanceCriteria||'')}"
-          placeholder="e.g. Within spectro limits per JIS H 5302"></div>
-    </div>
-    <div style="padding:0 18px 8px">
-      <label class="lbl">Chemical Composition</label>
-      <p style="font-size:11px;color:#6b7280;margin-bottom:8px">Enter element limits (e.g. 9.6–12.0 or ≤0.30)</p>
-      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px">
-        ${elements.map(el=>`<div>
-          <label style="font-size:11px;font-weight:700;color:#0d2f6e;display:block;margin-bottom:2px">${el}</label>
-          <input class="inp" id="gf-el-${el}" value="${esc(comp[el]||'')}" placeholder="—"
-            style="padding:5px 7px;font-size:12px">
-        </div>`).join('')}
-        <div>
-          <label style="font-size:11px;font-weight:700;color:#0d2f6e;display:block;margin-bottom:2px">Other</label>
-          <input class="inp" id="gf-el-other" value="${esc(comp['Other']||'')}" placeholder="—"
-            style="padding:5px 7px;font-size:12px">
+      <div><label class="lbl">Colour Code</label>
+        <div style="display:flex;gap:6px;align-items:center">
+          <input class="inp" id="gf-colour-text" value="${esc(g?.colourCode||'')}" placeholder="e.g. Yellow or #FFD700" style="flex:1"
+            oninput="document.getElementById('gf-colour-swatch').style.background=this.value||'#fff'">
+          <input type="color" id="gf-colour-picker" value="${g?.colourCode&&g.colourCode.startsWith('#')?esc(g.colourCode):'#ffffff'}"
+            style="width:36px;height:34px;border:1px solid #d1d5db;border-radius:6px;cursor:pointer;padding:2px"
+            oninput="document.getElementById('gf-colour-text').value=this.value;document.getElementById('gf-colour-swatch').style.background=this.value">
+          <span id="gf-colour-swatch" style="display:inline-block;width:34px;height:34px;border-radius:6px;border:1px solid #d1d5db;background:${esc(g?.colourCode||'#fff')}"></span>
         </div>
       </div>
-      <div style="margin-top:10px">
-        <label style="font-size:11px;color:#6b7280">Custom element (name:value pairs, comma separated)</label>
-        <input class="inp" id="gf-custom-el" value=""
-          placeholder="e.g. Ti:≤0.15, Cr:≤0.10" style="font-size:12px">
+    </div>
+    <div style="padding:0 18px 14px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <label class="lbl" style="margin:0">Chemical Composition</label>
+        <button class="btn btn-xs btn-o" onclick="QMS2._addElementRow()">+ Add Element</button>
       </div>
+      <table style="width:100%;border-collapse:collapse;font-size:13px" id="gf-el-table">
+        <tr style="background:#f1f5f9">
+          <th style="padding:5px 8px;text-align:left;font-size:11px">Element</th>
+          <th style="padding:5px 8px;text-align:left;font-size:11px">Range / Limit</th>
+          <th style="padding:5px 8px;width:32px"></th>
+        </tr>
+        ${existingEls.map(([el,v],i)=>`<tr class="gf-el-row">
+          <td style="padding:4px 6px"><input class="inp gf-el-name" value="${esc(el)}" placeholder="Si" style="padding:4px 7px;font-size:12px;font-weight:700"></td>
+          <td style="padding:4px 6px"><input class="inp gf-el-val" value="${esc(v)}" placeholder="9.6–12.0 or ≤0.30" style="padding:4px 7px;font-size:12px"></td>
+          <td style="padding:4px 6px"><button onclick="this.closest('tr').remove()" style="background:none;border:none;color:#dc2626;cursor:pointer;font-size:14px">✕</button></td>
+        </tr>`).join('')}
+      </table>
     </div>
     <div style="padding:14px 18px;display:flex;gap:8px;border-top:1px solid #f3f4f6">
       <button class="btn btn-p" onclick="QMS2.saveGrade(${editId||0})">
@@ -1916,38 +1907,103 @@ async function showGradeForm(editId){
   document.body.appendChild(modal);
 }
 
+function _addElementRow(){
+  const tbody = document.getElementById('gf-el-table');
+  if(!tbody) return;
+  const tr = document.createElement('tr');
+  tr.className = 'gf-el-row';
+  tr.innerHTML = `
+    <td style="padding:4px 6px"><input class="inp gf-el-name" placeholder="e.g. Ti" style="padding:4px 7px;font-size:12px;font-weight:700"></td>
+    <td style="padding:4px 6px"><input class="inp gf-el-val" placeholder="≤0.20" style="padding:4px 7px;font-size:12px"></td>
+    <td style="padding:4px 6px"><button onclick="this.closest('tr').remove()" style="background:none;border:none;color:#dc2626;cursor:pointer;font-size:14px">✕</button></td>`;
+  tbody.appendChild(tr);
+  tr.querySelector('.gf-el-name').focus();
+}
+
 async function saveGrade(editId){
   const grade = document.getElementById('gf-grade')?.value?.trim();
   if(!grade){ toast('Grade name required','d'); return; }
 
-  const elements = ['Si','Cu','Mg','Zn','Fe','Mn','Ni','Sn','Pb','Al'];
+  const colourCode = document.getElementById('gf-colour-text')?.value?.trim()||'';
   const composition = {};
-  elements.forEach(el=>{
-    const v = document.getElementById(`gf-el-${el}`)?.value?.trim();
-    if(v) composition[el] = v;
+  document.querySelectorAll('#gf-el-table .gf-el-row').forEach(row=>{
+    const k = row.querySelector('.gf-el-name')?.value?.trim();
+    const v = row.querySelector('.gf-el-val')?.value?.trim();
+    if(k) composition[k] = v||'';
   });
-  // Parse custom elements
-  const custom = document.getElementById('gf-custom-el')?.value?.trim();
-  if(custom){ custom.split(',').forEach(pair=>{
-    const [k,v] = pair.split(':').map(s=>s.trim());
-    if(k&&v) composition[k]=v;
-  });}
 
-  const rec = {
-    grade, standard:document.getElementById('gf-standard')?.value?.trim()||'',
-    metalTempRange:document.getElementById('gf-temp')?.value?.trim()||'',
-    meltingRange:document.getElementById('gf-melt')?.value?.trim()||'',
-    tensileStrength:document.getElementById('gf-tensile')?.value?.trim()||'',
-    hardness:document.getElementById('gf-hardness')?.value?.trim()||'',
-    acceptanceCriteria:document.getElementById('gf-criteria')?.value?.trim()||'',
-    composition
-  };
+  const rec = { grade, colourCode, composition };
   if(editId) rec.id = editId;
   await POST('/api/qms2/grades', rec);
-  _cpGradeCache = null; // invalidate so CP auto-fill picks up new data
+  _cpGradeCache = null;
   document.getElementById('grade-modal')?.remove();
   toast(`Grade ${grade} saved ✅`,'s');
   renderGradeMaster();
+}
+
+async function printGrade(gradeId){
+  const grades = await GET('/api/qms2/grades');
+  const g = grades.find(x=>x.id===gradeId);
+  if(!g){ toast('Grade not found','d'); return; }
+  const comp = g.composition||{};
+  const cc = g.colourCode||'';
+  const docNum = `GM-${(g.grade||'').replace(/\s+/g,'')}-REV-A`;
+  const today = new Date().toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'});
+
+  const win = window.open('','_blank','width=794,height=1123');
+  win.document.write(`<!DOCTYPE html><html><head><title>Grade Master — ${g.grade}</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:Arial,sans-serif;font-size:12px;background:#e5e7eb;display:flex;justify-content:center;padding:20px}
+    #page{width:210mm;min-height:297mm;background:#fff;padding:18mm 16mm;box-shadow:0 2px 16px #0003}
+    .hdr{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #0d2f6e;padding-bottom:10px;margin-bottom:14px}
+    .hdr-left h1{font-size:20px;color:#0d2f6e;font-weight:800}
+    .hdr-left p{font-size:11px;color:#6b7280;margin-top:2px}
+    .hdr-right{text-align:right;font-size:10.5px;color:#374151;line-height:1.7}
+    .hdr-right b{color:#0d2f6e}
+    .grade-title{font-size:22px;font-weight:800;color:#0d2f6e;margin-bottom:4px}
+    .colour-row{display:flex;align-items:center;gap:10px;margin-bottom:16px}
+    .colour-swatch{width:28px;height:28px;border-radius:50%;border:1px solid #ccc}
+    .colour-label{font-size:13px;color:#374151}
+    table{width:100%;border-collapse:collapse;margin-bottom:18px}
+    th{background:#0d2f6e;color:#fff;padding:7px 10px;font-size:11.5px;text-align:left}
+    td{padding:6px 10px;border-bottom:1px solid #e5e7eb;font-size:12px}
+    tr:nth-child(even) td{background:#f8fafc}
+    .footer{border-top:1px solid #e5e7eb;padding-top:10px;display:flex;justify-content:space-between;font-size:10px;color:#9ca3af;margin-top:auto}
+    .controlled{background:#fef9c3;border:1px solid #fbbf24;border-radius:4px;padding:4px 10px;font-size:10px;color:#92400e;font-weight:700;display:inline-block;margin-bottom:12px}
+    @media print{body{background:#fff;padding:0}#page{box-shadow:none;width:100%;min-height:auto}}
+  </style></head><body>
+  <div id="page">
+    <div class="hdr">
+      <div class="hdr-left">
+        <h1>V R ALUCAST</h1>
+        <p>Grade Master — Controlled Document</p>
+      </div>
+      <div class="hdr-right">
+        <div><b>Doc No:</b> ${docNum}</div>
+        <div><b>Issue Date:</b> ${today}</div>
+        <div><b>Rev:</b> A</div>
+      </div>
+    </div>
+    <div class="controlled">CONTROLLED DOCUMENT — DO NOT COPY WITHOUT AUTHORIZATION</div>
+    <div class="grade-title">${esc(g.grade)}</div>
+    ${cc?`<div class="colour-row">
+      <span class="colour-swatch" style="background:${esc(cc)}"></span>
+      <span class="colour-label">Colour Code: <b>${esc(cc)}</b></span>
+    </div>`:''}
+    <table>
+      <tr><th>Element</th><th>Range / Limit (%)</th></tr>
+      ${Object.entries(comp).map(([el,v])=>`<tr><td style="font-weight:700">${esc(el)}</td><td>${esc(v)}</td></tr>`).join('')}
+    </table>
+    <div class="footer">
+      <span>V R ALUCAST — Grade Master</span>
+      <span>${docNum} | Rev A | ${today}</span>
+      <span>Page 1 of 1</span>
+    </div>
+  </div>
+  <script>window.onload=()=>{window.print();}<\/script>
+  </body></html>`);
+  win.document.close();
 }
 
 async function deleteGrade(id){
@@ -2158,6 +2214,6 @@ return {
   renderChecksheets, fillCS, saveCS, viewCSRecord, delCSRecord,
   printPfmea, printCP, printCS,
   showImpactDialog,
-  renderGradeMaster, showGradeForm, saveGrade, deleteGrade,
+  renderGradeMaster, showGradeForm, saveGrade, deleteGrade, printGrade, _addElementRow,
 };
 })();
