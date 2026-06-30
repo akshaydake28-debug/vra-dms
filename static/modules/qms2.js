@@ -253,6 +253,9 @@ async function renderDashboard() {
             <div>
               <div style="font-weight:600;font-size:13px;color:#0d2f6e;font-family:monospace">${esc(p.partNumber)}</div>
               <div style="font-size:11px;color:#6b7280">${esc(p.partName)} · <span class="grade-pill">${esc(p.grade)}</span></div>
+              <div style="font-size:10px;color:#94a3b8;font-family:monospace;margin-top:2px">
+                PFMEA-${esc(p.partNumber)}-REV-A
+              </div>
             </div>
             <div style="display:flex;gap:5px">
               <button class="btn btn-o btn-xs" onclick="QMS2.renderPfmea(${p.id})">PFMEA</button>
@@ -1137,9 +1140,10 @@ function _renderCpRow(c, num, locked, opDiv=false) {
   <td style="min-width:130px"><textarea class="ss-cell" data-field="specification" data-id="${id}" rows="1"
     ${locked?'readonly':''} onblur="QMS2._cpCellBlur(this)" oninput="QMS2._autoResize(this)"
     onkeydown="QMS2._cpCellKey(event,this)">${esc(c.specification||'')}</textarea></td>
-  <td><input class="ss-cell" data-field="tolerance" data-id="${id}"
-    value="${esc(c.tolerance||'')}" ${locked?'readonly':''} onblur="QMS2._cpCellBlur(this)"
-    placeholder="±0.05"></td>
+  <td style="min-width:140px"><textarea class="ss-cell" data-field="tolerance" data-id="${id}"
+    rows="1" ${locked?'readonly':''} onblur="QMS2._cpCellBlur(this)" oninput="QMS2._autoResize(this)"
+    onkeydown="QMS2._cpCellKey(event,this)"
+    placeholder="±0.05 or auto-filled from grade">${esc(c.tolerance||'')}</textarea></td>
   <td><input class="ss-cell" data-field="method" data-id="${id}" list="dl-meth"
     value="${esc(c.method||'')}" ${locked?'readonly':''} onblur="QMS2._cpCellBlur(this)"></td>
   <td><input class="ss-cell" data-field="gauge" data-id="${id}"
@@ -1938,6 +1942,7 @@ async function saveGrade(editId){
   };
   if(editId) rec.id = editId;
   await POST('/api/qms2/grades', rec);
+  _cpGradeCache = null; // invalidate so CP auto-fill picks up new data
   document.getElementById('grade-modal')?.remove();
   toast(`Grade ${grade} saved ✅`,'s');
   renderGradeMaster();
@@ -1953,6 +1958,34 @@ async function deleteGrade(id){
 // ── CP Cell Event Handlers ────────────────────────────────────────────
 const _cpPending = {};
 let _cpSaveTimer = null;
+let _cpGradeCache = null;
+
+async function _getCpGrades(){
+  if(!_cpGradeCache) _cpGradeCache = await GET('/api/qms2/grades').catch(()=>[]);
+  return _cpGradeCache||[];
+}
+
+async function _tryGradeAutoFill(rowId, specValue, tr){
+  if(!specValue?.trim()) return;
+  const grades = await _getCpGrades();
+  const norm = v => v.replace(/[\s\-_]/g,'').toUpperCase();
+  const grade = grades.find(g => norm(g.grade) === norm(specValue));
+  if(!grade || !grade.composition) return;
+  const tolInput = tr?.querySelector('[data-field="tolerance"]');
+  if(!tolInput || tolInput.readOnly) return;
+  // Build tolerance string: each element with its limit, newline-separated for readability
+  const tolStr = Object.entries(grade.composition)
+    .filter(([,v])=>v&&v.trim())
+    .map(([el,v])=>`${el}: ${v}`)
+    .join('\n');
+  tolInput.value = tolStr;
+  if(!_cpPending[rowId]) _cpPending[rowId]={};
+  _cpPending[rowId]['tolerance'] = tolStr;
+  _showSaving();
+  clearTimeout(_cpSaveTimer);
+  _cpSaveTimer = setTimeout(_cpFlush, 900);
+  toast(`✓ Tolerance auto-filled from ${grade.grade} (${grade.standard||'Grade Master'})`,'s');
+}
 
 function _cpCellBlur(el){
   const id = +el.dataset.id || +el.dataset['id'];
@@ -1960,6 +1993,7 @@ function _cpCellBlur(el){
   if(!id || !field) return;
   if(!_cpPending[id]) _cpPending[id] = {};
   _cpPending[id][field] = el.value;
+  if(field==='specification') _tryGradeAutoFill(id, el.value, el.closest('tr'));
   _showSaving();
   clearTimeout(_cpSaveTimer);
   _cpSaveTimer = setTimeout(_cpFlush, 900);
