@@ -309,52 +309,53 @@ function insertTable(){
 (function initColResize(){
   let dragging=false, startX=0, startW=0, nextW=0, colIdx=null, nextIdx=null, activeTable=null;
 
-  function colCells(tbl, ci){
-    return Array.from(tbl.rows).map(r=>r.cells[ci]).filter(Boolean);
+  function colCells(tbl,ci){ return Array.from(tbl.rows).map(r=>r.cells[ci]).filter(Boolean); }
+
+  function lockTable(tbl){
+    const firstRow=tbl.rows[0]; if(!firstRow) return;
+    const widths=Array.from(firstRow.cells).map(c=>c.getBoundingClientRect().width);
+    tbl.style.width=tbl.getBoundingClientRect().width+'px';
+    tbl.style.tableLayout='fixed';
+    widths.forEach((w,i)=>colCells(tbl,i).forEach(c=>{ c.style.width=w+'px'; c.style.minWidth=w+'px'; }));
   }
 
   document.addEventListener('mousemove', e=>{
     if(dragging){
       const diff=e.clientX-startX;
-      const newW=Math.max(30, startW+diff);
-      colCells(activeTable, colIdx).forEach(c=>{ c.style.width=newW+'px'; c.style.minWidth=newW+'px'; });
+      const newW=Math.max(30,startW+diff);
+      colCells(activeTable,colIdx).forEach(c=>{ c.style.width=newW+'px'; c.style.minWidth=newW+'px'; });
       if(nextIdx!==null){
-        const newNext=Math.max(30, nextW-diff);
-        colCells(activeTable, nextIdx).forEach(c=>{ c.style.width=newNext+'px'; c.style.minWidth=newNext+'px'; });
+        const newNext=Math.max(30,nextW-diff);
+        colCells(activeTable,nextIdx).forEach(c=>{ c.style.width=newNext+'px'; c.style.minWidth=newNext+'px'; });
       }
       e.preventDefault();
       return;
     }
-    const ed=document.getElementById('doc-editor'); if(!ed) return;
-    const cell=e.target.closest('#doc-editor td, #doc-editor th'); if(!cell) return;
+    const cell=e.target.closest&&e.target.closest('#doc-editor td,#doc-editor th'); if(!cell) return;
     const rect=cell.getBoundingClientRect();
-    cell.style.cursor=(e.clientX>rect.right-6)?'col-resize':'';
+    cell.style.cursor=(e.clientX>=rect.right-7)?'col-resize':'';
   });
 
   document.addEventListener('mousedown', e=>{
-    const ed=document.getElementById('doc-editor'); if(!ed) return;
-    const cell=e.target.closest('#doc-editor td, #doc-editor th'); if(!cell) return;
+    const cell=e.target.closest&&e.target.closest('#doc-editor td,#doc-editor th'); if(!cell) return;
     const rect=cell.getBoundingClientRect();
-    if(e.clientX>rect.right-6){
+    if(e.clientX>=rect.right-7){
       activeTable=cell.closest('table');
-      // Lock all column widths as explicit pixels before dragging
-      Array.from(activeTable.rows).forEach(r=>{
-        Array.from(r.cells).forEach(c=>{ c.style.width=c.offsetWidth+'px'; c.style.minWidth=c.style.width; });
-      });
-      activeTable.style.width=activeTable.offsetWidth+'px';
+      lockTable(activeTable);
       colIdx=cell.cellIndex;
       startX=e.clientX;
-      startW=cell.offsetWidth;
+      startW=cell.getBoundingClientRect().width;
       const nextCell=activeTable.rows[0]?.cells[colIdx+1];
       nextIdx=nextCell?colIdx+1:null;
-      nextW=nextCell?nextCell.offsetWidth:0;
+      nextW=nextCell?nextCell.getBoundingClientRect().width:0;
       dragging=true;
+      document.body.style.userSelect='none';
       e.preventDefault();
     }
   });
 
   document.addEventListener('mouseup', ()=>{
-    if(dragging){ dragging=false; activeTable=null; colIdx=null; nextIdx=null; }
+    if(dragging){ dragging=false; activeTable=null; colIdx=null; nextIdx=null; document.body.style.userSelect=''; }
   });
 })();
 
