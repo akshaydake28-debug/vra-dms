@@ -422,7 +422,8 @@ async function renderPfmea(partId) {
   STEPS.forEach(s=>{ grouped[s]=[]; });
   rows.forEach(r=>{ (grouped[r.processStep]||(grouped[r.processStep]=[])).push(r); });
 
-  const pfmeaDocNum = `PFMEA-${part.partNumber}-REV-A`;
+  const pfRev = part.pfmeaRevision || 'A';
+  const pfmeaDocNum = `PFMEA-${part.partNumber}-REV-${pfRev}`;
   setC(`${SS_STYLE}
   <div class="ss-saving" id="ss-saving-ind">Saving…</div>
   <div class="part-header">
@@ -431,13 +432,15 @@ async function renderPfmea(partId) {
         <span style="font-family:monospace;font-weight:700;font-size:15px;color:#0d2f6e">${esc(part.partNumber)}</span>
         <span class="grade-pill">${esc(part.grade)}</span>
         <span style="font-family:monospace;font-size:11px;color:#6b7280;background:#f1f5f9;
-          padding:2px 8px;border-radius:4px;border:1px solid #e2e8f0">${pfmeaDocNum}</span>
+          padding:2px 8px;border-radius:4px;border:1px solid #e2e8f0" id="pfmea-docnum">${pfmeaDocNum}</span>
       </div>
       <div style="font-size:12px;color:#6b7280">${esc(part.partName)} · ${esc(part.customer)} · ${rows.length} failure modes</div>
     </div>
     <div style="display:flex;gap:7px;flex-wrap:wrap">
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.renderDashboard()">← Back</button>
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.renderNewPart(${partId})">✏️ Edit</button>
+      <button class="btn btn-p btn-sm no-print" onclick="QMS2._pfSave(${partId})">💾 Save</button>
+      <button class="btn btn-o btn-sm no-print" onclick="QMS2._pfNewRev(${partId})">↑ New Rev</button>
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.printPfmea(${partId})">🖨 Print</button>
       <button class="btn btn-o btn-sm no-print" onclick="QMS2._archivePart(${partId})">🗄 Archive</button>
       ${hasCp
@@ -447,7 +450,7 @@ async function renderPfmea(partId) {
   </div>
 
   <div style="font-size:11px;color:#6b7280;margin-bottom:8px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-    <span>💡 Click cell to edit · Tab = next · Enter = new row · Double-click = expand · Auto-save</span>
+    <span>💡 Click cell to edit · Tab = next · Enter = new row · Double-click = expand · Auto-save on blur</span>
     <span style="display:flex;gap:5px;align-items:center">
       SOD:
       <span style="background:#dcfce7;color:#166534;padding:1px 6px;border-radius:3px;font-weight:600">1–2</span>
@@ -590,8 +593,9 @@ function _renderPfmeaRow(row, num, stepChanged=false) {
 }
 
 function _bindPfmeaEvents() {
-  // Auto-resize all textareas on load
-  document.querySelectorAll('#pfmea-tbody textarea.ss-cell').forEach(t=>_autoResize(t));
+  // Auto-resize all textareas — wait for full paint
+  const resizeAll = () => document.querySelectorAll('#pfmea-tbody textarea.ss-cell').forEach(t=>_autoResize(t));
+  requestAnimationFrame(()=>{ resizeAll(); setTimeout(resizeAll, 150); });
 }
 
 function _autoResize(el) {
@@ -715,6 +719,26 @@ async function _flushSaves() {
   _hideSaving();
   // Mark linked control plans as outdated
   if(_state.currentPartId) await _markCpsOutdated(_state.currentPartId);
+}
+
+async function _pfSave(partId){
+  clearTimeout(_state.saveTimer);
+  await _flushSaves();
+  toast('PFMEA saved ✅','s');
+}
+
+async function _pfNewRev(partId){
+  clearTimeout(_state.saveTimer);
+  await _flushSaves();
+  const parts = await GET('/api/qms2/pfmea_parts');
+  const part = parts.find(p=>p.id===partId); if(!part) return;
+  const curRev = part.pfmeaRevision || 'A';
+  const newRev = REVS[REVS.indexOf(curRev)+1] || 'Z';
+  const note = prompt(`Creating PFMEA Rev ${newRev}. Enter change summary:`, '');
+  if(note === null) return;
+  await POST('/api/qms2/pfmea_parts', {...part, pfmeaRevision:newRev, revisionNote:note, revisionDate:today()});
+  toast(`PFMEA Rev ${newRev} saved ✅`,'s');
+  renderPfmea(partId);
 }
 
 function _showSaving() {
@@ -1006,11 +1030,13 @@ async function renderCpView(cpId) {
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.renderPfmea(${cp.pfmeaPartId})">📋 PFMEA</button>
       ${!isApproved ? `<button class="btn btn-o btn-sm no-print" onclick="QMS2.cpAddRow()">+ Row</button>
         <button class="btn btn-o btn-sm no-print" onclick="QMS2.refreshCpFromPfmea(${cpId})">🔄 Sync PFMEA</button>` : ''}
+      ${!isApproved ? `<button class="btn btn-p btn-sm no-print" onclick="QMS2._cpSaveNow(${cpId})">💾 Save</button>
+        <button class="btn btn-o btn-sm no-print" onclick="QMS2.newCPRev(${cpId})">↑ New Rev</button>` : ''}
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.printCP(${cpId})">🖨 Print All</button>
       <button class="btn btn-o btn-sm no-print" onclick="QMS2._printSelectOp(${cpId})">🖨 Print by Op</button>
       ${!isApproved ? `<button class="btn btn-w btn-sm no-print" onclick="QMS2.submitCP(${cpId})">📤 Submit</button>` : ''}
       ${cp.status==='Under Review'&&Auth?.user?.role==='APPROVER' ? `<button class="btn btn-g btn-sm no-print" onclick="QMS2.approveCP(${cpId})">✓ Approve</button>` : ''}
-      ${isApproved ? `<button class="btn btn-o btn-sm no-print" onclick="QMS2.newCPRev(${cpId})">🔄 New Rev</button>
+      ${isApproved ? `<button class="btn btn-o btn-sm no-print" onclick="QMS2.newCPRev(${cpId})">↑ New Rev</button>
         <button class="btn btn-p btn-sm no-print" onclick="QMS2.renderChecksheets(${cpId})">📋 Checksheets</button>` : ''}
       <button class="btn btn-o btn-sm no-print" onclick="QMS2._archiveCP(${cpId})">🗄 Archive</button>
     </div>
@@ -1086,7 +1112,8 @@ async function renderCpView(cpId) {
       </div>
     </div>
   </div>`);
-  setTimeout(()=>document.querySelectorAll('#cp-body textarea.ss-cell').forEach(_autoResize), 50);
+  const resizeCpAll = () => document.querySelectorAll('#cp-body textarea.ss-cell').forEach(_autoResize);
+  requestAnimationFrame(()=>{ resizeCpAll(); setTimeout(resizeCpAll, 150); });
 }
 
 function _renderCpRows(chars, locked) {
@@ -2085,6 +2112,12 @@ async function _cpFlush(){
   _hideSaving();
 }
 
+async function _cpSaveNow(cpId){
+  clearTimeout(_cpSaveTimer);
+  await _cpFlush();
+  toast('Control Plan saved ✅','s');
+}
+
 // ── CP Row CRUD ───────────────────────────────────────────────────────
 async function cpAddRow(){
   const cpId = S.currentCpId; if(!cpId) return;
@@ -2150,17 +2183,19 @@ async function approveCP(cpId){
 }
 
 async function newCPRev(cpId){
+  clearTimeout(_cpSaveTimer);
+  await _cpFlush();
   const cps = await GET('/api/qms2/cp_parts');
-  const cp = cps.find(c=>c.id===cpId);
+  const cp = cps.find(c=>c.id===cpId); if(!cp) return;
   const newRev = REVS[REVS.indexOf(cp.revision)+1] || 'Z';
-  const summary = prompt(`Revision ${newRev} — describe changes:`, '');
-  if(!summary) return;
+  const summary = prompt(`Creating Revision ${newRev} — describe changes (or press OK to skip):`, '');
+  if(summary === null) return;
   await POST('/api/qms2/cp_parts', {...cp, revision:newRev,
     cpNumber:`CP-${cp.partNumber}-REV-${newRev}`,
     status:'Draft', approvedBy:'', approvedDate:'', pfmeaOutdated:false});
   await POST('/api/qms2/cp_revisions', {cpId, revision:newRev, date:today(),
-    changedBy:Auth?.user?.name||'', summary});
-  toast(`Revision ${newRev} started`,'s'); renderCpView(cpId);
+    changedBy:Auth?.user?.name||'', summary:summary||`Rev ${newRev}`});
+  toast(`Control Plan Rev ${newRev} created ✅`,'s'); renderCpView(cpId);
 }
 
 async function refreshCpFromPfmea(cpId){
@@ -2206,6 +2241,7 @@ return {
   renderDashboard, renderNewPart, showGrade, savePart,
   renderPfmea, pfmeaAddRow, pfmeaDelRow, pfmeaDupRow, _moveRow, _expandRow,
   _cellBlur, _cellChange, _cellKey, _autoResize, _updateRpn, _enterNext,
+  _pfSave, _pfNewRev, _cpSaveNow,
   generateCP, renderCP, renderCpView, renderCpForPart, renderCpList,
   cpAddRow, cpDelRow, cpDupRow, _cpMov, _cpCellBlur, _cpCellChange, _cpCellKey,
   submitCP, approveCP, newCPRev, refreshCpFromPfmea, _archiveCP,
