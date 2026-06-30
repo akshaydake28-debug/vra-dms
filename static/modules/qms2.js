@@ -212,6 +212,8 @@ const SS_STYLE = `
   .ss-outer{overflow:visible!important;max-height:none!important}
   .ss-scroll{overflow:visible!important;max-height:none!important}
   body{margin:0;padding:6px}
+  .ss-cell{height:auto!important;min-height:0!important;overflow:visible!important;white-space:pre-wrap!important}
+  .ss-table td{height:auto!important;overflow:visible!important}
 }
 </style>`;
 
@@ -1687,8 +1689,8 @@ async function printCP(cpId, opFilter){
         <td>${esc(c.processStep)}</td>
         <td>${c.source==='custom'?'★ ':''} ${esc(c.charName)}</td>
         <td style="text-align:center;font-size:8pt">${esc(c.charType||'process')}</td>
-        <td>${esc(c.specification)}</td>
-        <td>${esc(c.tolerance||'—')}</td>
+        <td style="white-space:pre-wrap">${esc(c.specification)}</td>
+        <td style="white-space:pre-wrap">${esc(c.tolerance||'—')}</td>
         <td>${esc(c.method)}</td>
         <td>${esc(c.frequency)}</td>
         <td>${esc(c.reaction)}</td>
@@ -1979,6 +1981,7 @@ async function _tryGradeAutoFill(rowId, specValue, tr){
     .map(([el,v])=>`${el}: ${v}`)
     .join('\n');
   tolInput.value = tolStr;
+  _autoResize(tolInput); // expand cell height to show all chemicals
   if(!_cpPending[rowId]) _cpPending[rowId]={};
   _cpPending[rowId]['tolerance'] = tolStr;
   _showSaving();
