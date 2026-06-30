@@ -305,6 +305,40 @@ function insertTable(){
   document.getElementById('doc-editor')?.focus();
 }
 
+// ── Column resize by dragging ────────────────────────
+(function initColResize(){
+  let dragging=false, startX=0, startW=0, targetCell=null;
+
+  document.addEventListener('mousemove', e=>{
+    if(dragging){
+      const diff=e.clientX-startX;
+      targetCell.style.width=Math.max(30, startW+diff)+'px';
+      targetCell.style.minWidth=targetCell.style.width;
+      e.preventDefault();
+      return;
+    }
+    const ed=document.getElementById('doc-editor'); if(!ed) return;
+    const cell=e.target.closest('#doc-editor td, #doc-editor th'); if(!cell) return;
+    const rect=cell.getBoundingClientRect();
+    cell.style.cursor=(e.clientX>rect.right-6)?'col-resize':'';
+  });
+
+  document.addEventListener('mousedown', e=>{
+    const ed=document.getElementById('doc-editor'); if(!ed) return;
+    const cell=e.target.closest('#doc-editor td, #doc-editor th'); if(!cell) return;
+    const rect=cell.getBoundingClientRect();
+    if(e.clientX>rect.right-6){
+      dragging=true; startX=e.clientX;
+      startW=cell.offsetWidth; targetCell=cell;
+      e.preventDefault();
+    }
+  });
+
+  document.addEventListener('mouseup', ()=>{
+    if(dragging){ dragging=false; targetCell=null; }
+  });
+})();
+
 function insertImage(){
   const inp=document.createElement('input'); inp.type='file'; inp.accept='image/*';
   inp.onchange=e=>{
@@ -344,6 +378,11 @@ function renderCreate(p={}){
             </select></div>
           <div class="fg"><label class="lbl">Title <span style="color:red">*</span></label>
             <input class="fc" id="c-title" placeholder="Document title…"></div>
+          <div class="fg"><label class="lbl">Page Orientation</label>
+            <select class="fc" id="c-orient">
+              <option value="portrait">Portrait (vertical)</option>
+              <option value="landscape">Landscape (horizontal)</option>
+            </select></div>
           <div style="font-size:11px;color:#9ca3af;margin-bottom:10px">Number auto-assigned on save</div>
           <div style="display:flex;flex-direction:column;gap:7px">
             <button class="btn btn-p" style="width:100%" onclick="saveCreate()">💾 Save as Draft</button>
@@ -370,12 +409,13 @@ function renderCreate(p={}){
 async function saveCreate(){
   const title=document.getElementById('c-title').value.trim();
   const type=document.getElementById('c-type').value;
+  const orient=document.getElementById('c-orient')?.value||'portrait';
   const content=getEditorHTML();
   if(!title){toast('⚠️ Enter a document title','d');return}
   const u=Auth.user;
   const docNumber=await DB.nextNum(type);
   const docId=await DB.createDoc({docNumber,docType:type,title,revision:'A',status:'DRAFT',
-    createdBy:u.name,createdDate:new Date().toISOString()});
+    orientation:orient,createdBy:u.name,createdDate:new Date().toISOString()});
   await DB.createVer({docId,revision:'A',content,changeSummary:'Initial creation',
     preparedBy:u.name,preparedDate:new Date().toISOString(),status:'DRAFT'});
   await DB.log({docId,docNumber,action:'CREATED',user:u.name,notes:`"${title}" created`});
@@ -1350,6 +1390,7 @@ hr{border:none;border-top:1px solid #ccc;margin:12px 0}
 async function printDoc(id, landscape=false){
   const doc = await DB.getDoc(id);
   if(!doc){ toast('Document not found','d'); return; }
+  if(doc.orientation==='landscape') landscape=true;
   const ver = await DB.getVer(id, doc.revision);
   const allVers = await DB.getAllVers(id);
   const typeName_ = ALL_TYPES[doc.docType]?.name || doc.docType;
