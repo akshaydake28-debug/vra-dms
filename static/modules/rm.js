@@ -121,6 +121,13 @@ function rmRenderLabels(){
       <div class="rm-pf"><span style="font-size:12px;color:#6b7280" id="rm-pc"></span><button class="btn btn-p" onclick="window.print()">🖨 Print All</button></div>
     </div></div>`);
     window._rmQty=4;window._rmAddTarget=null;
+    // If navigated here from register print, open preview immediately
+    if(window._rmPrefillLot){
+      const l=window._rmPrefillLot; window._rmPrefillLot=null;
+      window._rmQty=l.bundles||1;
+      const qe=document.getElementById('rm-qty');if(qe)qe.textContent=window._rmQty;
+      setTimeout(()=>rmPreview(l),50);
+    }
   });
 }
 
@@ -224,6 +231,12 @@ async function rmRenderRegister(){
 async function rmDelLot(id){if(!confirm('Delete this lot?'))return;await fetch(window.location.origin+'/api/rm/lots/'+id,{method:'DELETE'});toast('Lot deleted','s');rmRenderRegister();}
 
 function rmPrintReg(id){rmGetLots().then(lots=>{
+  const l=lots.find(x=>x.id===id);if(!l)return;
+  window._rmPrefillLot=l;
+  nav('rm-labels');
+});}
+
+function _rmPrintRegOld(id){rmGetLots().then(lots=>{
   const l=lots.find(x=>x.id===id);if(!l)return;
   const qty=l.bundles||1;
   const stxt=l.spectro==='Done'?'✓ DONE':l.spectro==='Pending'?'⏳ PENDING':'N/A';
