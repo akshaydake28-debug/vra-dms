@@ -118,7 +118,15 @@ function rmRenderLabels(){
     <div class="rm-pb" id="rm-pmod"><div class="rm-pm">
       <div class="rm-ph"><h3>Label Preview — <span id="rm-pln"></span></h3><button class="btn btn-o btn-sm" onclick="rmClosePrint()">✕</button></div>
       <div class="rm-pbd" id="rm-pa"></div>
-      <div class="rm-pf"><span style="font-size:12px;color:#6b7280" id="rm-pc"></span><button class="btn btn-p" onclick="window.print()">🖨 Print All</button></div>
+      <div class="rm-pf" style="justify-content:space-between">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:12px;color:#6b7280">Labels:</span>
+          <button class="rm-sb" onclick="rmModalChgQty(-1)">−</button>
+          <span class="rm-qv" id="rm-modal-qty">1</span>
+          <button class="rm-sb" onclick="rmModalChgQty(1)">＋</button>
+        </div>
+        <button class="btn btn-p" onclick="window.print()">🖨 Print</button>
+      </div>
     </div></div>`);
     window._rmQty=4;window._rmAddTarget=null;
     // If navigated here from register print, open preview immediately
@@ -152,12 +160,23 @@ async function rmSave(){
 function rmPreview(lotData){
   if(!lotData&&!rmVal())return;
   const lot=lotData||rmCollect(),qty=lotData?lotData.bundles:(window._rmQty||4);
+  window._rmPreviewLot=lot; window._rmModalQty=qty;
+  const mqe=document.getElementById('rm-modal-qty');if(mqe)mqe.textContent=qty;
+  rmBuildPreview(lot,qty);
+  const m=document.getElementById('rm-pmod');if(m)m.classList.add('open');
+}
+
+function rmBuildPreview(lot,qty){
   const area=document.getElementById('rm-pa');if(!area)return;
   area.innerHTML='';
   for(let i=1;i<=qty;i+=2){const sheet=document.createElement('div');sheet.className='rm-a4';sheet.appendChild(rmBuildLabel(lot,i,qty));if(i+1<=qty){const cut=document.createElement('div');cut.className='rm-cl';cut.textContent='✂  CUT HERE';sheet.appendChild(cut);sheet.appendChild(rmBuildLabel(lot,i+1,qty));}area.appendChild(sheet);}
-  const ln=document.getElementById('rm-pln'),lc=document.getElementById('rm-pc');
-  if(ln)ln.textContent=lot.lotNumber;if(lc)lc.textContent=qty+' label(s)';
-  const m=document.getElementById('rm-pmod');if(m)m.classList.add('open');
+  const ln=document.getElementById('rm-pln');if(ln)ln.textContent=lot.lotNumber;
+}
+
+function rmModalChgQty(d){
+  window._rmModalQty=Math.max(1,Math.min(20,(window._rmModalQty||1)+d));
+  const e=document.getElementById('rm-modal-qty');if(e)e.textContent=window._rmModalQty;
+  if(window._rmPreviewLot)rmBuildPreview(window._rmPreviewLot,window._rmModalQty);
 }
 
 function rmClosePrint(){const m=document.getElementById('rm-pmod');if(m)m.classList.remove('open');}
