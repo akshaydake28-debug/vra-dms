@@ -74,7 +74,7 @@ function rmRenderLabels(){
       .rm-ldoc{font-size:8px;color:#9ca3af}
       .rm-lhole{width:14px;height:14px;border-radius:50%;border:1.5px solid #9ca3af;display:flex;align-items:center;justify-content:center}
       .rm-lhi{width:6px;height:6px;border-radius:50%;background:#d1d5db}
-      @media print{body *{visibility:hidden!important}#rm-pa,#rm-pa *{visibility:visible!important}#rm-pa{position:fixed;top:0;left:0;width:210mm;display:flex;flex-direction:column;align-items:center;gap:0;background:#fff;padding:5mm 10mm;box-sizing:border-box}.rm-a4{width:190mm;display:flex;flex-direction:column;gap:0;page-break-after:always}.rm-label{width:190mm;height:124mm;border:2px solid #1f2937;box-shadow:none;page-break-inside:avoid}}
+      @media print{body *{visibility:hidden!important}#rm-pa,#rm-pa *,#rm-pa2,#rm-pa2 *{visibility:visible!important}#rm-pa,#rm-pa2{position:fixed;top:0;left:0;width:210mm;display:flex;flex-direction:column;align-items:center;gap:0;background:#fff;padding:5mm 10mm;box-sizing:border-box}.rm-a4{width:190mm;display:flex;flex-direction:column;gap:0;page-break-after:always}.rm-label{width:190mm;height:124mm;border:2px solid #1f2937;box-shadow:none;page-break-inside:avoid}}
     </style>
     <div class="ph"><h2>Raw Material — Label Generator</h2></div>
     <div class="rm-card">
