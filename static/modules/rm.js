@@ -221,12 +221,34 @@ async function rmRenderRegister(){
   <div class="rm-pb" id="rm-pmod2"><div class="rm-pm">
     <div class="rm-ph"><h3>Label Preview — <span id="rm-pln2"></span></h3><button class="btn btn-o btn-sm" onclick="document.getElementById('rm-pmod2').classList.remove('open')">✕</button></div>
     <div class="rm-pbd" id="rm-pa2"></div>
-    <div class="rm-pf"><button class="btn btn-p" onclick="window.print()">🖨 Print All</button></div>
+    <div class="rm-pf" style="justify-content:space-between">
+      <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:#374151">
+        <span>Labels to print:</span>
+        <button class="rm-sb" onclick="rmReg2ChgQty(-1)">−</button>
+        <span class="rm-qv" id="rm-reg2-qty">1</span>
+        <button class="rm-sb" onclick="rmReg2ChgQty(1)">＋</button>
+        <button class="btn btn-o btn-sm" onclick="rmReg2Refresh()">↺ Update</button>
+      </div>
+      <button class="btn btn-p" onclick="window.print()">🖨 Print</button>
+    </div>
   </div></div>`);
 }
 
 async function rmDelLot(id){if(!confirm('Delete this lot?'))return;await fetch(window.location.origin+'/api/rm/lots/'+id,{method:'DELETE'});toast('Lot deleted','s');rmRenderRegister();}
 
-function rmPrintReg(id){rmGetLots().then(lots=>{const l=lots.find(x=>x.id===id);if(!l)return;const area=document.getElementById('rm-pa2');if(!area)return;area.innerHTML='';for(let i=1;i<=l.bundles;i+=2){const sheet=document.createElement('div');sheet.className='rm-a4';sheet.appendChild(rmBuildLabel(l,i,l.bundles));if(i+1<=l.bundles){const cut=document.createElement('div');cut.className='rm-cl';cut.textContent='✂  CUT HERE';sheet.appendChild(cut);sheet.appendChild(rmBuildLabel(l,i+1,l.bundles));}area.appendChild(sheet);}const ln=document.getElementById('rm-pln2');if(ln)ln.textContent=l.lotNumber;const m=document.getElementById('rm-pmod2');if(m)m.classList.add('open');});}
+function rmPrintReg(id){rmGetLots().then(lots=>{const l=lots.find(x=>x.id===id);if(!l)return;
+  window._rmReg2Lot=l; window._rmReg2Qty=1;
+  const qe=document.getElementById('rm-reg2-qty');if(qe)qe.textContent='1';
+  rmReg2Build(l,1);
+  const ln=document.getElementById('rm-pln2');if(ln)ln.textContent=l.lotNumber;
+  const m=document.getElementById('rm-pmod2');if(m)m.classList.add('open');});}
+
+function rmReg2Build(l,qty){
+  const area=document.getElementById('rm-pa2');if(!area)return;
+  area.innerHTML='';
+  for(let i=1;i<=qty;i+=2){const sheet=document.createElement('div');sheet.className='rm-a4';sheet.appendChild(rmBuildLabel(l,i,qty));if(i+1<=qty){const cut=document.createElement('div');cut.className='rm-cl';cut.textContent='✂  CUT HERE';sheet.appendChild(cut);sheet.appendChild(rmBuildLabel(l,i+1,qty));}area.appendChild(sheet);}
+}
+function rmReg2ChgQty(d){const max=window._rmReg2Lot?.bundles||20;window._rmReg2Qty=Math.max(1,Math.min(max,(window._rmReg2Qty||1)+d));const e=document.getElementById('rm-reg2-qty');if(e)e.textContent=window._rmReg2Qty;}
+function rmReg2Refresh(){if(window._rmReg2Lot)rmReg2Build(window._rmReg2Lot,window._rmReg2Qty||1);}
 
 // ══ END RAW MATERIAL MODULE ══
