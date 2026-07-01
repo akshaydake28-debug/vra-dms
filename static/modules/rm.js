@@ -218,37 +218,73 @@ async function rmRenderRegister(){
     </tr>`).join('')||'<tr><td colspan="9" style="text-align:center;padding:28px;color:#9ca3af">No lots yet.</td></tr>'}
     </tbody>
   </table></div></div>
-  <div class="rm-pb" id="rm-pmod2"><div class="rm-pm">
-    <div class="rm-ph"><h3>Label Preview — <span id="rm-pln2"></span></h3><button class="btn btn-o btn-sm" onclick="document.getElementById('rm-pmod2').classList.remove('open')">✕</button></div>
-    <div class="rm-pbd" id="rm-pa2"></div>
-    <div class="rm-pf" style="justify-content:space-between">
-      <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:#374151">
-        <span>Labels to print:</span>
-        <button class="rm-sb" onclick="rmReg2ChgQty(-1)">−</button>
-        <span class="rm-qv" id="rm-reg2-qty">1</span>
-        <button class="rm-sb" onclick="rmReg2ChgQty(1)">＋</button>
-        <button class="btn btn-o btn-sm" onclick="rmReg2Refresh()">↺ Update</button>
-      </div>
-      <button class="btn btn-p" onclick="window.print()">🖨 Print</button>
-    </div>
-  </div></div>`);
+`);
 }
 
 async function rmDelLot(id){if(!confirm('Delete this lot?'))return;await fetch(window.location.origin+'/api/rm/lots/'+id,{method:'DELETE'});toast('Lot deleted','s');rmRenderRegister();}
 
-function rmPrintReg(id){rmGetLots().then(lots=>{const l=lots.find(x=>x.id===id);if(!l)return;
-  window._rmReg2Lot=l; window._rmReg2Qty=1;
-  const qe=document.getElementById('rm-reg2-qty');if(qe)qe.textContent='1';
-  rmReg2Build(l,1);
-  const ln=document.getElementById('rm-pln2');if(ln)ln.textContent=l.lotNumber;
-  const m=document.getElementById('rm-pmod2');if(m)m.classList.add('open');});}
+function rmPrintReg(id){rmGetLots().then(lots=>{
+  const l=lots.find(x=>x.id===id);if(!l)return;
+  const qty=l.bundles||1;
+  const stxt=l.spectro==='Done'?'✓ DONE':l.spectro==='Pending'?'⏳ PENDING':'N/A';
+  const sc=l.spectro==='Done'?'#15803d':l.spectro==='Pending'?'#d97706':'#6b7280';
+  const labelHTML=(i,total)=>`
+    <div style="width:190mm;height:124mm;background:#fff;border:2px solid #1f2937;font-family:Arial,sans-serif;display:flex;flex-direction:column;box-sizing:border-box;overflow:hidden;page-break-inside:avoid">
+      <div style="background:#1f2937;color:#fff;padding:7px 12px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
+        <div style="font-size:14px;font-weight:900;letter-spacing:3px">V R ALUCAST</div>
+        <div style="font-size:10px;opacity:.6">Bundle ${i} of ${total}</div>
+      </div>
+      <div style="background:#3B6D11;color:#fff;text-align:center;font-size:11px;font-weight:800;letter-spacing:2px;padding:4px 0;flex-shrink:0">✓ &nbsp; RAW MATERIAL — APPROVED FOR USE</div>
+      <div style="flex:1;display:flex;flex-direction:column">
+        <div style="border-bottom:2px solid #1f2937;padding:8px 12px 6px;flex-shrink:0">
+          <div style="font-size:8px;font-weight:700;color:#6b7280;letter-spacing:1px;text-transform:uppercase;margin-bottom:2px">LOT NUMBER</div>
+          <div style="font-size:26px;font-weight:900;color:#1f2937;letter-spacing:1px;line-height:1">${l.lotNumber}</div>
+        </div>
+        <div style="flex:1;display:grid;grid-template-columns:1fr 1fr 1fr;border-bottom:1px solid #d1d5db">
+          <div style="border-right:1px solid #d1d5db;padding:6px 10px;display:flex;flex-direction:column;justify-content:center;background:#FAEEDA">
+            <div style="font-size:8px;font-weight:700;color:#6b7280;letter-spacing:1px;text-transform:uppercase">GRADE</div>
+            <div style="font-size:22px;font-weight:800;color:#633806;line-height:1.2;margin-top:2px">${l.grade}</div>
+          </div>
+          <div style="border-right:1px solid #d1d5db;padding:6px 10px;display:flex;flex-direction:column;justify-content:center">
+            <div style="font-size:8px;font-weight:700;color:#6b7280;letter-spacing:1px;text-transform:uppercase">SUPPLIER</div>
+            <div style="font-size:13px;font-weight:800;color:#1f2937;line-height:1.2;margin-top:2px">${l.supplier}</div>
+          </div>
+          <div style="padding:6px 10px;display:flex;flex-direction:column;justify-content:center">
+            <div style="font-size:8px;font-weight:700;color:#6b7280;letter-spacing:1px;text-transform:uppercase">INVOICE NO.</div>
+            <div style="font-size:13px;font-weight:800;color:#1f2937;line-height:1.2;margin-top:2px">${l.invoice}</div>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid #d1d5db">
+          <div style="border-right:1px solid #d1d5db;padding:6px 10px;display:flex;flex-direction:column;justify-content:center">
+            <div style="font-size:8px;font-weight:700;color:#6b7280;letter-spacing:1px;text-transform:uppercase">RECEIVED DATE</div>
+            <div style="font-size:15px;font-weight:800;color:#1f2937;line-height:1.2;margin-top:2px">${rmFmtDate(l.date)}</div>
+          </div>
+          <div style="padding:6px 10px;display:flex;flex-direction:column;justify-content:center">
+            <div style="font-size:8px;font-weight:700;color:#6b7280;letter-spacing:1px;text-transform:uppercase">APPROVED BY</div>
+            <div style="font-size:15px;font-weight:800;color:#1f2937;line-height:1.2;margin-top:2px">${l.approvedBy}</div>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 12px;border-top:1px solid #e5e7eb;flex-shrink:0;background:#f9fafb">
+        <div style="font-size:8px;color:#9ca3af">VRA-QC-F-010 | Rev 00 | Jun 2025</div>
+        <div style="font-size:10px;font-weight:800;color:${sc}">SPECTRO: ${stxt}</div>
+        <div style="width:14px;height:14px;border-radius:50%;border:1.5px solid #9ca3af;display:flex;align-items:center;justify-content:center"><div style="width:6px;height:6px;border-radius:50%;background:#d1d5db"></div></div>
+      </div>
+    </div>`;
 
-function rmReg2Build(l,qty){
-  const area=document.getElementById('rm-pa2');if(!area)return;
-  area.innerHTML='';
-  for(let i=1;i<=qty;i+=2){const sheet=document.createElement('div');sheet.className='rm-a4';sheet.appendChild(rmBuildLabel(l,i,qty));if(i+1<=qty){const cut=document.createElement('div');cut.className='rm-cl';cut.textContent='✂  CUT HERE';sheet.appendChild(cut);sheet.appendChild(rmBuildLabel(l,i+1,qty));}area.appendChild(sheet);}
-}
-function rmReg2ChgQty(d){const max=window._rmReg2Lot?.bundles||20;window._rmReg2Qty=Math.max(1,Math.min(max,(window._rmReg2Qty||1)+d));const e=document.getElementById('rm-reg2-qty');if(e)e.textContent=window._rmReg2Qty;}
-function rmReg2Refresh(){if(window._rmReg2Lot)rmReg2Build(window._rmReg2Lot,window._rmReg2Qty||1);}
+  let pages='';
+  for(let i=1;i<=qty;i+=2){
+    pages+=`<div style="width:210mm;display:flex;flex-direction:column;align-items:center;gap:0;page-break-after:always;padding:5mm 10mm;box-sizing:border-box">`;
+    pages+=labelHTML(i,qty);
+    if(i+1<=qty){pages+=`<div style="text-align:center;font-size:10px;color:#9ca3af;letter-spacing:3px;padding:4px 0;border-top:1px dashed #d1d5db;border-bottom:1px dashed #d1d5db;width:190mm">✂  CUT HERE</div>`;pages+=labelHTML(i+1,qty);}
+    pages+='</div>';
+  }
+  const win=window.open('','_blank','width=850,height:700');
+  win.document.write(`<!DOCTYPE html><html><head><title>Labels — ${l.lotNumber}</title>
+  <style>*{box-sizing:border-box;margin:0;padding:0}body{background:#e5e7eb;display:flex;flex-direction:column;align-items:center;padding:16px;font-family:Arial,sans-serif}
+  @media print{body{background:#fff;padding:0}}</style></head>
+  <body>${pages}<script>window.onload=()=>window.print();<\/script></body></html>`);
+  win.document.close();
+});}
 
 // ══ END RAW MATERIAL MODULE ══
