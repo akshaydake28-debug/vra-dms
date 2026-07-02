@@ -424,23 +424,25 @@ async function renderPfmea(partId) {
 
   const pfRev = part.pfmeaRevision || 'A';
   const pfmeaDocNum = `PFMEA-${part.partNumber}-REV-${pfRev}`;
+  const pfRevHist = part.revisionHistory || [];
   setC(`${SS_STYLE}
   <div class="ss-saving" id="ss-saving-ind">Saving…</div>
   <div class="part-header">
     <div>
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:2px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:2px;flex-wrap:wrap">
         <span style="font-family:monospace;font-weight:700;font-size:15px;color:#0d2f6e">${esc(part.partNumber)}</span>
         <span class="grade-pill">${esc(part.grade)}</span>
+        <span style="font-family:monospace;font-size:11px;color:#fff;background:#0d2f6e;
+          padding:2px 10px;border-radius:4px;font-weight:700">Rev ${pfRev}</span>
         <span style="font-family:monospace;font-size:11px;color:#6b7280;background:#f1f5f9;
-          padding:2px 8px;border-radius:4px;border:1px solid #e2e8f0" id="pfmea-docnum">${pfmeaDocNum}</span>
+          padding:2px 8px;border-radius:4px;border:1px solid #e2e8f0">${pfmeaDocNum}</span>
       </div>
       <div style="font-size:12px;color:#6b7280">${esc(part.partName)} · ${esc(part.customer)} · ${rows.length} failure modes</div>
     </div>
     <div style="display:flex;gap:7px;flex-wrap:wrap">
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.renderDashboard()">← Back</button>
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.renderNewPart(${partId})">✏️ Edit</button>
-      <button class="btn btn-p btn-sm no-print" onclick="QMS2._pfSave(${partId})">💾 Save</button>
-      <button class="btn btn-o btn-sm no-print" onclick="QMS2._pfNewRev(${partId})">↑ New Rev</button>
+      <button class="btn btn-p btn-sm no-print" onclick="QMS2._pfNewRev(${partId})">📝 Save New Revision</button>
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.printPfmea(${partId})">🖨 Print</button>
       <button class="btn btn-o btn-sm no-print" onclick="QMS2._archivePart(${partId})">🗄 Archive</button>
       ${hasCp
@@ -449,8 +451,22 @@ async function renderPfmea(partId) {
     </div>
   </div>
 
+  ${pfRevHist.length ? `<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;margin-bottom:10px">
+    <div style="font-size:11px;font-weight:700;color:#0d2f6e;margin-bottom:6px">📋 Revision History</div>
+    <table style="width:100%;border-collapse:collapse;font-size:11px">
+      <tr style="background:#f1f5f9"><th style="padding:3px 8px;text-align:left">Rev</th><th style="padding:3px 8px;text-align:left">Date</th><th style="padding:3px 8px;text-align:left">Changed By</th><th style="padding:3px 8px;text-align:left">Summary of Changes</th><th style="padding:3px 8px;text-align:left">Status</th></tr>
+      ${pfRevHist.map(r=>`<tr style="border-bottom:1px solid #f3f4f6">
+        <td style="padding:3px 8px;font-weight:700;font-family:monospace">${r.rev}</td>
+        <td style="padding:3px 8px;color:#6b7280">${r.date||''}</td>
+        <td style="padding:3px 8px">${r.changedBy||''}</td>
+        <td style="padding:3px 8px">${esc(r.summary||'')}</td>
+        <td style="padding:3px 8px"><span style="background:${r.rev===pfRev?'#dcfce7':'#f1f5f9'};color:${r.rev===pfRev?'#16a34a':'#6b7280'};padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600">${r.rev===pfRev?'Current':'Superseded'}</span></td>
+      </tr>`).join('')}
+    </table>
+  </div>` : ''}
+
   <div style="font-size:11px;color:#6b7280;margin-bottom:8px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-    <span>💡 Click cell to edit · Tab = next · Enter = new row · Double-click = expand · Auto-save on blur</span>
+    <span>💡 Click cell to edit · Tab = next · Enter = new row · Double-click = expand · Changes auto-saved · Click <b>Save New Revision</b> to commit with change summary</span>
     <span style="display:flex;gap:5px;align-items:center">
       SOD:
       <span style="background:#dcfce7;color:#166534;padding:1px 6px;border-radius:3px;font-weight:600">1–2</span>
@@ -724,21 +740,109 @@ async function _flushSaves() {
 async function _pfSave(partId){
   clearTimeout(_state.saveTimer);
   await _flushSaves();
-  toast('PFMEA saved ✅','s');
+  toast('Draft changes saved ✅','s');
 }
 
 async function _pfNewRev(partId){
+  // Show modal for mandatory change summary
+  _showPfRevModal(partId);
+}
+
+function _showPfRevModal(partId){
+  const existing = document.getElementById('pf-rev-modal');
+  if(existing) existing.remove();
+  const modal = document.createElement('div');
+  modal.id = 'pf-rev-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:#0008;z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML = `
+  <div style="background:#fff;border-radius:12px;width:100%;max-width:480px;box-shadow:0 20px 60px #0004">
+    <div style="padding:14px 18px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between">
+      <h4 style="font-size:15px;font-weight:700;color:#0d2f6e">📝 Save New PFMEA Revision</h4>
+      <button onclick="document.getElementById('pf-rev-modal').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#6b7280">✕</button>
+    </div>
+    <div style="padding:18px;display:flex;flex-direction:column;gap:12px">
+      <div style="background:#fffbeb;border:1px solid #f59e0b;border-radius:6px;padding:10px 12px;font-size:12px;color:#92400e">
+        ⚠️ A change summary is <b>mandatory</b> before creating a new revision. This creates a permanent audit record.
+      </div>
+      <div>
+        <label style="font-size:11px;font-weight:700;color:#374151;display:block;margin-bottom:4px">Summary of Changes *</label>
+        <textarea id="pf-rev-summary" rows="3" placeholder="Describe what was changed and why (e.g. Added failure mode for OP30 die casting — flash on parting line)" style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:8px;font-size:13px;font-family:inherit;resize:vertical"></textarea>
+      </div>
+      <div>
+        <label style="font-size:11px;font-weight:700;color:#374151;display:block;margin-bottom:4px">Changed By</label>
+        <input id="pf-rev-by" value="${Auth?.user?.name||''}" style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:8px;font-size:13px;font-family:inherit">
+      </div>
+    </div>
+    <div style="padding:14px 18px;border-top:1px solid #f3f4f6;display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-o" onclick="document.getElementById('pf-rev-modal').remove()">Cancel</button>
+      <button class="btn btn-p" onclick="QMS2._pfNewRevConfirm(${partId})">✅ Save Revision</button>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  setTimeout(()=>document.getElementById('pf-rev-summary')?.focus(), 50);
+}
+
+async function _pfNewRevConfirm(partId){
+  const summary = document.getElementById('pf-rev-summary')?.value?.trim();
+  const changedBy = document.getElementById('pf-rev-by')?.value?.trim();
+  if(!summary){ toast('Change summary is mandatory','d'); document.getElementById('pf-rev-summary')?.focus(); return; }
+
   clearTimeout(_state.saveTimer);
   await _flushSaves();
+
   const parts = await GET('/api/qms2/pfmea_parts');
   const part = parts.find(p=>p.id===partId); if(!part) return;
   const curRev = part.pfmeaRevision || 'A';
   const newRev = REVS[REVS.indexOf(curRev)+1] || 'Z';
-  const note = prompt(`Creating PFMEA Rev ${newRev}. Enter change summary:`, '');
-  if(note === null) return;
-  await POST('/api/qms2/pfmea_parts', {...part, pfmeaRevision:newRev, revisionNote:note, revisionDate:today()});
-  toast(`PFMEA Rev ${newRev} saved ✅`,'s');
-  renderPfmea(partId);
+
+  // Build revision history — append new entry
+  const history = part.revisionHistory || [];
+  // Mark previous current as superseded (already done by list, newest is current)
+  history.push({ rev:newRev, date:today(), changedBy:changedBy||Auth?.user?.name||'', summary });
+
+  await POST('/api/qms2/pfmea_parts', {
+    ...part, pfmeaRevision:newRev, revisionHistory:history,
+    revisionNote:summary, revisionDate:today()
+  });
+
+  document.getElementById('pf-rev-modal')?.remove();
+  toast(`PFMEA Rev ${newRev} saved ✅`, 's');
+
+  // Check if linked CP needs updating
+  const cps = await GET('/api/qms2/cp_parts');
+  const linkedCp = cps.find(c=>c.pfmeaPartId===partId && c.status!=='Archived' && c.status!=='Obsolete' && c.status!=='Superseded');
+  if(linkedCp){
+    _showCpUpdatePrompt(partId, linkedCp.id, newRev);
+  } else {
+    renderPfmea(partId);
+  }
+}
+
+function _showCpUpdatePrompt(partId, cpId, pfRev){
+  const modal = document.createElement('div');
+  modal.id = 'cp-update-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:#0008;z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML = `
+  <div style="background:#fff;border-radius:12px;width:100%;max-width:440px;box-shadow:0 20px 60px #0004">
+    <div style="padding:14px 18px;border-bottom:1px solid #e5e7eb">
+      <h4 style="font-size:15px;font-weight:700;color:#0d2f6e">📄 Control Plan Update Required?</h4>
+    </div>
+    <div style="padding:18px;font-size:13px;color:#374151;line-height:1.6">
+      PFMEA has been updated to <b>Rev ${pfRev}</b>.<br>
+      Does the linked <b>Control Plan</b> also need a new revision to reflect these changes?
+    </div>
+    <div style="padding:14px 18px;border-top:1px solid #f3f4f6;display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-o" onclick="document.getElementById('cp-update-modal').remove();QMS2.renderPfmea(${partId})">No — CP unchanged</button>
+      <button class="btn btn-p" onclick="document.getElementById('cp-update-modal').remove();QMS2._cpNewRevFromPfmea(${cpId},${partId})">Yes — Open CP for New Rev</button>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+}
+
+async function _cpNewRevFromPfmea(cpId, partId){
+  await renderCpView(cpId);
+  // Small delay to let CP render, then trigger new rev modal
+  setTimeout(()=>newCPRev(cpId), 300);
 }
 
 function _showSaving() {
@@ -865,9 +969,9 @@ async function generateCP(partId, forceNewRev=false) {
   // If CP exists and not forcing new rev, just open it
   if(existing && !forceNewRev){ renderCpView(existing.id); return; }
 
-  // If forcing new rev, mark old CP as Obsolete
+  // If forcing new rev, mark old CP as Superseded
   if(existing && forceNewRev){
-    await POST('/api/qms2/cp_parts', {...existing, status:'Obsolete'});
+    await POST('/api/qms2/cp_parts', {...existing, status:'Superseded'});
   }
 
   const prevRev = existing?.revision || '';
@@ -938,7 +1042,7 @@ async function generateCP(partId, forceNewRev=false) {
 
 async function renderCpForPart(partId){
   const cps = await GET('/api/qms2/cp_parts');
-  const active = cps.find(c=>c.pfmeaPartId===partId && c.status!=='Archived' && c.status!=='Obsolete');
+  const active = cps.find(c=>c.pfmeaPartId===partId && c.status!=='Archived' && c.status!=='Obsolete' && c.status!=='Superseded');
   if(!active){ generateCP(partId); return; }
   if(active.pfmeaOutdated){
     showImpactDialog(partId,
@@ -956,7 +1060,7 @@ const renderCP = (cpId) => renderCpView(cpId);
 // ── Control Plans List View ─────────────────────────────────────────────
 async function renderCpList() {
   const [parts, cps] = await Promise.all([GET('/api/qms2/pfmea_parts'), GET('/api/qms2/cp_parts')]);
-  const active = cps.filter(c => c.status !== 'Archived' && c.status !== 'Obsolete');
+  const active = cps.filter(c => c.status !== 'Archived' && c.status !== 'Obsolete' && c.status !== 'Superseded');
   setC(`${SS_STYLE}
   <div class="ph">
     <div>
@@ -1030,8 +1134,7 @@ async function renderCpView(cpId) {
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.renderPfmea(${cp.pfmeaPartId})">📋 PFMEA</button>
       ${!isApproved ? `<button class="btn btn-o btn-sm no-print" onclick="QMS2.cpAddRow()">+ Row</button>
         <button class="btn btn-o btn-sm no-print" onclick="QMS2.refreshCpFromPfmea(${cpId})">🔄 Sync PFMEA</button>` : ''}
-      ${!isApproved ? `<button class="btn btn-p btn-sm no-print" onclick="QMS2._cpSaveNow(${cpId})">💾 Save</button>
-        <button class="btn btn-o btn-sm no-print" onclick="QMS2.newCPRev(${cpId})">↑ New Rev</button>` : ''}
+      ${!isApproved ? `<button class="btn btn-p btn-sm no-print" onclick="QMS2.newCPRev(${cpId})">📝 Save New Revision</button>` : ''}
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.printCP(${cpId})">🖨 Print All</button>
       <button class="btn btn-o btn-sm no-print" onclick="QMS2._printSelectOp(${cpId})">🖨 Print by Op</button>
       ${!isApproved ? `<button class="btn btn-w btn-sm no-print" onclick="QMS2.submitCP(${cpId})">📤 Submit</button>` : ''}
@@ -2185,17 +2288,68 @@ async function approveCP(cpId){
 async function newCPRev(cpId){
   clearTimeout(_cpSaveTimer);
   await _cpFlush();
+  // Show modal for mandatory change summary
+  _showCpRevModal(cpId);
+}
+
+function _showCpRevModal(cpId){
+  const existing = document.getElementById('cp-rev-modal');
+  if(existing) existing.remove();
+  const modal = document.createElement('div');
+  modal.id = 'cp-rev-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:#0008;z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML = `
+  <div style="background:#fff;border-radius:12px;width:100%;max-width:480px;box-shadow:0 20px 60px #0004">
+    <div style="padding:14px 18px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between">
+      <h4 style="font-size:15px;font-weight:700;color:#0d2f6e">📝 Save New Control Plan Revision</h4>
+      <button onclick="document.getElementById('cp-rev-modal').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#6b7280">✕</button>
+    </div>
+    <div style="padding:18px;display:flex;flex-direction:column;gap:12px">
+      <div style="background:#fffbeb;border:1px solid #f59e0b;border-radius:6px;padding:10px 12px;font-size:12px;color:#92400e">
+        ⚠️ A change summary is <b>mandatory</b>. The current revision will be marked <b>Superseded</b> and a new revision will be created.
+      </div>
+      <div>
+        <label style="font-size:11px;font-weight:700;color:#374151;display:block;margin-bottom:4px">Summary of Changes *</label>
+        <textarea id="cp-rev-summary" rows="3" placeholder="Describe what was changed and why (e.g. Updated tolerance for OP60 machining per engineering change EC-2025-042)" style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:8px;font-size:13px;font-family:inherit;resize:vertical"></textarea>
+      </div>
+      <div>
+        <label style="font-size:11px;font-weight:700;color:#374151;display:block;margin-bottom:4px">Changed By</label>
+        <input id="cp-rev-by" value="${Auth?.user?.name||''}" style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:8px;font-size:13px;font-family:inherit">
+      </div>
+    </div>
+    <div style="padding:14px 18px;border-top:1px solid #f3f4f6;display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-o" onclick="document.getElementById('cp-rev-modal').remove()">Cancel</button>
+      <button class="btn btn-p" onclick="QMS2._cpNewRevConfirm(${cpId})">✅ Save Revision</button>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  setTimeout(()=>document.getElementById('cp-rev-summary')?.focus(), 50);
+}
+
+async function _cpNewRevConfirm(cpId){
+  const summary = document.getElementById('cp-rev-summary')?.value?.trim();
+  const changedBy = document.getElementById('cp-rev-by')?.value?.trim();
+  if(!summary){ toast('Change summary is mandatory','d'); document.getElementById('cp-rev-summary')?.focus(); return; }
+
   const cps = await GET('/api/qms2/cp_parts');
   const cp = cps.find(c=>c.id===cpId); if(!cp) return;
   const newRev = REVS[REVS.indexOf(cp.revision)+1] || 'Z';
-  const summary = prompt(`Creating Revision ${newRev} — describe changes (or press OK to skip):`, '');
-  if(summary === null) return;
-  await POST('/api/qms2/cp_parts', {...cp, revision:newRev,
+
+  // Supersede current revision
+  await POST('/api/qms2/cp_parts', {...cp, status:'Superseded'});
+
+  // Create new revision
+  await POST('/api/qms2/cp_parts', {...cp, id:cpId, revision:newRev,
     cpNumber:`CP-${cp.partNumber}-REV-${newRev}`,
     status:'Draft', approvedBy:'', approvedDate:'', pfmeaOutdated:false});
+
+  // Log revision history
   await POST('/api/qms2/cp_revisions', {cpId, revision:newRev, date:today(),
-    changedBy:Auth?.user?.name||'', summary:summary||`Rev ${newRev}`});
-  toast(`Control Plan Rev ${newRev} created ✅`,'s'); renderCpView(cpId);
+    changedBy:changedBy||Auth?.user?.name||'', summary});
+
+  document.getElementById('cp-rev-modal')?.remove();
+  toast(`Control Plan Rev ${newRev} created ✅`, 's');
+  renderCpView(cpId);
 }
 
 async function refreshCpFromPfmea(cpId){
@@ -2241,7 +2395,9 @@ return {
   renderDashboard, renderNewPart, showGrade, savePart,
   renderPfmea, pfmeaAddRow, pfmeaDelRow, pfmeaDupRow, _moveRow, _expandRow,
   _cellBlur, _cellChange, _cellKey, _autoResize, _updateRpn, _enterNext,
-  _pfSave, _pfNewRev, _cpSaveNow,
+  _pfSave, _pfNewRev, _pfNewRevConfirm, _showPfRevModal,
+  _showCpUpdatePrompt, _cpNewRevFromPfmea,
+  _cpSaveNow, _showCpRevModal, _cpNewRevConfirm,
   generateCP, renderCP, renderCpView, renderCpForPart, renderCpList,
   cpAddRow, cpDelRow, cpDupRow, _cpMov, _cpCellBlur, _cpCellChange, _cpCellKey,
   submitCP, approveCP, newCPRev, refreshCpFromPfmea, _archiveCP,
