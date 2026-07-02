@@ -786,8 +786,6 @@ async function _flushSaves() {
     await POST('/api/qms2/pfmea_rows', updated);
   }
   _hideSaving();
-  // Mark linked control plans as outdated
-  if(_state.currentPartId) await _markCpsOutdated(_state.currentPartId);
 }
 
 async function _pfSave(partId){
@@ -874,15 +872,7 @@ async function _pfNewRevConfirm(partId){
   document.getElementById('pf-rev-modal')?.remove();
   _state.editMode = false;
   toast(`PFMEA Rev ${curRev} saved & locked 🔒`, 's');
-
-  // Check if linked CP needs updating
-  const cps = await GET('/api/qms2/cp_parts');
-  const linkedCp = cps.find(c=>c.pfmeaPartId===partId && c.status!=='Archived' && c.status!=='Obsolete' && c.status!=='Superseded');
-  if(linkedCp){
-    _showCpUpdatePrompt(partId, linkedCp.id, curRev);
-  } else {
-    renderPfmea(partId);
-  }
+  renderPfmea(partId);
 }
 
 async function _pfStartNewRev(partId){
@@ -896,33 +886,6 @@ async function _pfStartNewRev(partId){
   _state.editMode = true;
   toast(`PFMEA Rev ${newRev} — editing started ✏️`, 's');
   renderPfmea(partId);
-}
-
-function _showCpUpdatePrompt(partId, cpId, pfRev){
-  const modal = document.createElement('div');
-  modal.id = 'cp-update-modal';
-  modal.style.cssText = 'position:fixed;inset:0;background:#0008;z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
-  modal.innerHTML = `
-  <div style="background:#fff;border-radius:12px;width:100%;max-width:440px;box-shadow:0 20px 60px #0004">
-    <div style="padding:14px 18px;border-bottom:1px solid #e5e7eb">
-      <h4 style="font-size:15px;font-weight:700;color:#0d2f6e">📄 Control Plan Update Required?</h4>
-    </div>
-    <div style="padding:18px;font-size:13px;color:#374151;line-height:1.6">
-      PFMEA has been updated to <b>Rev ${pfRev}</b>.<br>
-      Does the linked <b>Control Plan</b> also need a new revision to reflect these changes?
-    </div>
-    <div style="padding:14px 18px;border-top:1px solid #f3f4f6;display:flex;gap:8px;justify-content:flex-end">
-      <button class="btn btn-o" onclick="document.getElementById('cp-update-modal').remove();QMS2.renderPfmea(${partId})">No — CP unchanged</button>
-      <button class="btn btn-p" onclick="document.getElementById('cp-update-modal').remove();QMS2._cpNewRevFromPfmea(${cpId},${partId})">Yes — Open CP for New Rev</button>
-    </div>
-  </div>`;
-  document.body.appendChild(modal);
-}
-
-async function _cpNewRevFromPfmea(cpId, partId){
-  await renderCpView(cpId);
-  // Small delay to let CP render, then trigger new rev modal
-  setTimeout(()=>newCPRev(cpId), 300);
 }
 
 function _showSaving() {
@@ -991,54 +954,6 @@ async function pfmeaDupRow(id) {
 }
 
 // ── Impact Analysis ──────────────────────────────────────────────────────────
-async function showImpactDialog(partId, onNewRev, onKeep) {
-  const impact = await GET(`/api/qms2/impact/${partId}`);
-  const modal = document.createElement('div');
-  modal.id = 'impact-modal';
-  modal.style.cssText = 'position:fixed;inset:0;background:#0008;z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
-  const cps = impact.cpDetails||[];
-  modal.innerHTML = `<div style="background:#fff;border-radius:12px;width:100%;max-width:500px;box-shadow:0 20px 60px #0004">
-    <div style="padding:16px 20px;border-bottom:1px solid #e5e7eb">
-      <div style="font-size:16px;font-weight:700;color:#d97706;margin-bottom:4px">⚠️ PFMEA has changed</div>
-      <div style="font-size:13px;color:#374151">This change will affect the following documents:</div>
-    </div>
-    <div style="padding:16px 20px">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
-        <div style="background:#7c3aed11;border:1px solid #7c3aed33;border-radius:8px;padding:10px 14px">
-          <div style="font-size:20px;font-weight:700;color:#7c3aed">${impact.controlPlans}</div>
-          <div style="font-size:11px;color:#6b7280">Control Plans</div></div>
-        <div style="background:#0d2f6e11;border:1px solid #0d2f6e33;border-radius:8px;padding:10px 14px">
-          <div style="font-size:20px;font-weight:700;color:#0d2f6e">${impact.characteristics}</div>
-          <div style="font-size:11px;color:#6b7280">Characteristics</div></div>
-        <div style="background:#16a34a11;border:1px solid #16a34a33;border-radius:8px;padding:10px 14px">
-          <div style="font-size:20px;font-weight:700;color:#16a34a">${impact.checksheets}</div>
-          <div style="font-size:11px;color:#6b7280">Check Sheets</div></div>
-        <div style="background:#d9770611;border:1px solid #d9770633;border-radius:8px;padding:10px 14px">
-          <div style="font-size:20px;font-weight:700;color:#d97706">${impact.reactionPlans}</div>
-          <div style="font-size:11px;color:#6b7280">Reaction Plans</div></div>
-      </div>
-      ${cps.map(c=>`<div style="font-size:12px;padding:3px 0">📄 <b>${c.cpNumber}</b> — Rev ${c.revision} — ${c.status}</div>`).join('')}
-      <div style="margin-top:12px;font-size:12px;color:#6b7280">Generating a new revision creates a new Control Plan and marks existing as Obsolete.</div>
-    </div>
-    <div style="padding:0 20px 16px;display:flex;gap:8px;flex-wrap:wrap">
-      <button class="btn btn-p" id="imp-gen">📄 Generate New Revision</button>
-      <button class="btn btn-o" id="imp-keep">Keep Existing</button>
-      <button class="btn btn-o" id="imp-cancel">Cancel</button>
-    </div>
-  </div>`;
-  document.body.appendChild(modal);
-  modal.querySelector('#imp-gen').onclick = () => { modal.remove(); onNewRev(); };
-  modal.querySelector('#imp-keep').onclick = () => { modal.remove(); onKeep(); };
-  modal.querySelector('#imp-cancel').onclick = () => modal.remove();
-}
-
-async function _markCpsOutdated(partId) {
-  const cps = await GET('/api/qms2/cp_parts');
-  for(const cp of cps.filter(c=>c.pfmeaPartId===partId&&c.status!=='Archived'&&c.status!=='Obsolete')){
-    if(!cp.pfmeaOutdated) await POST('/api/qms2/cp_parts', {...cp, pfmeaOutdated:true});
-  }
-}
-
 // ── Generate Control Plan from PFMEA ──────────────────────────────────
 async function generateCP(partId, forceNewRev=false) {
   const [parts, cps, pfRows, grades] = await Promise.all([
@@ -1127,13 +1042,6 @@ async function renderCpForPart(partId){
   const cps = await GET('/api/qms2/cp_parts');
   const active = cps.find(c=>c.pfmeaPartId===partId && c.status!=='Archived' && c.status!=='Obsolete' && c.status!=='Superseded');
   if(!active){ generateCP(partId); return; }
-  if(active.pfmeaOutdated){
-    showImpactDialog(partId,
-      () => generateCP(partId, true),
-      () => renderCpView(active.id)
-    );
-    return;
-  }
   renderCpView(active.id);
 }
 
@@ -1214,7 +1122,6 @@ async function renderCpView(cpId) {
         <span style="font-family:monospace;font-weight:700;font-size:14px;color:#0d2f6e">${esc(cp.cpNumber)}</span>
         <span class="q2-badge" style="background:${STATUS_COLOR[cp.status]||'#6b7280'}22;color:${STATUS_COLOR[cp.status]||'#6b7280'}">${cp.status||'Draft'}</span>
         <span class="grade-pill">${esc(cp.grade)}</span>
-        ${cp.pfmeaOutdated ? '<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:600">⚠️ PFMEA updated</span>' : ''}
         ${_state.cpEditMode && !isApproved ? '<span style="background:#fee2e2;color:#dc2626;padding:2px 10px;border-radius:4px;font-size:11px;font-weight:700">✏️ EDITING</span>' : ''}
       </div>
       <div style="font-size:12px;color:#6b7280">${esc(cp.partName)} · ${esc(cp.customer)} · Rev ${cp.revision} · ${chars.length} characteristics</div>
@@ -1235,10 +1142,6 @@ async function renderCpView(cpId) {
     </div>
   </div>
 
-  ${cp.pfmeaOutdated ? `<div style="background:#fffbeb;border:2px solid #f59e0b;border-radius:10px;padding:12px 14px;margin-bottom:12px">
-    ⚠️ <b>PFMEA has been updated</b> since this Control Plan was generated.
-    <button class="btn btn-p btn-sm" style="margin-left:8px" onclick="QMS2.renderCpForPart(${cp.pfmeaPartId})">View Impact &amp; Update</button>
-  </div>` : ''}
 
   ${isApproved ? `<div style="background:#dcfce7;border:2px solid #16a34a;border-radius:10px;padding:10px 16px;margin-bottom:12px;display:flex;align-items:center;gap:10px">
     <span style="font-size:18px">🔒</span>
@@ -2512,7 +2415,6 @@ return {
   renderPfmea, pfmeaAddRow, pfmeaDelRow, pfmeaDupRow, _moveRow, _expandRow,
   _cellBlur, _cellChange, _cellKey, _autoResize, _updateRpn, _enterNext,
   _pfSave, _pfEdit, _pfCancelEdit, _pfNewRev, _pfNewRevConfirm, _pfStartNewRev, _showPfRevModal,
-  _showCpUpdatePrompt, _cpNewRevFromPfmea,
   _cpEdit, _cpCancelEdit, _cpSaveNow, _showCpRevModal, _cpNewRevConfirm,
   generateCP, renderCP, renderCpView, renderCpForPart, renderCpList,
   cpAddRow, cpDelRow, cpDupRow, _cpMov, _cpCellBlur, _cpCellChange, _cpCellKey,
@@ -2521,7 +2423,6 @@ return {
   renderArchive,
   renderChecksheets, fillCS, saveCS, viewCSRecord, delCSRecord,
   printPfmea, printCP, printCS,
-  showImpactDialog,
   renderGradeMaster, showGradeForm, saveGrade, deleteGrade, printGrade, _addElementRow,
 };
 })();
