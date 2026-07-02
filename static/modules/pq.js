@@ -156,8 +156,7 @@ const PQ = (() => {
         <span style="margin-left:auto;display:flex;gap:6px">
           ${locked
             ? `<button class="btn btn-sm" onclick="PQ._startEdit()">Edit</button>`
-            : `<button class="btn btn-sm" onclick="PQ._addStep()">+ Add Step</button>
-               <button class="btn btn-sm" style="background:#16a34a;color:#fff;border:none" onclick="PQ._saveAll()">Save</button>
+            : `<button class="btn btn-sm" style="background:#16a34a;color:#fff;border:none" onclick="PQ._saveAll()">Save</button>
                <button class="btn btn-o btn-sm" onclick="PQ._cancelEdit()">Cancel</button>`
           }
         </span>
@@ -167,7 +166,9 @@ const PQ = (() => {
         <div class="cb" style="padding:24px;display:flex;flex-direction:column;align-items:center;gap:0">
           ${flowHtml}
           ${!locked && !steps.length ? `
-            <button class="btn btn-o" onclick="PQ._addStep()" style="margin-top:12px">+ Add first step</button>` : ''}
+            <div style="padding:32px;text-align:center;color:#9ca3af">
+              <button class="btn btn-o" onclick="PQ._addStep()">+ Add first step</button>
+            </div>` : ''}
         </div>
       </div>
 
@@ -224,12 +225,27 @@ const PQ = (() => {
               </div>
            </div>`;
 
-      // Arrow below (not after last)
-      const arrow = isLast ? '' : `
-        <div style="display:flex;flex-direction:column;align-items:center">
-          <div style="width:2px;height:20px;background:#60a5fa"></div>
-          <div style="width:0;height:0;border-left:7px solid transparent;border-right:7px solid transparent;border-top:10px solid #60a5fa"></div>
-        </div>`;
+      // Connector below (arrow, and in edit mode an "add below" button)
+      const arrow = isLast
+        ? (locked ? '' : `
+            <div style="display:flex;flex-direction:column;align-items:center;margin-top:8px">
+              <button onclick="PQ._addStep()" title="Add step at end"
+                style="border:1px dashed #60a5fa;background:#eff6ff;color:#1d4ed8;border-radius:4px;
+                       padding:3px 14px;cursor:pointer;font-size:12px">+ Add step</button>
+            </div>`)
+        : locked
+          ? `<div style="display:flex;flex-direction:column;align-items:center">
+               <div style="width:2px;height:20px;background:#60a5fa"></div>
+               <div style="width:0;height:0;border-left:7px solid transparent;border-right:7px solid transparent;border-top:10px solid #60a5fa"></div>
+             </div>`
+          : `<div style="display:flex;flex-direction:column;align-items:center;gap:2px;position:relative">
+               <div style="width:2px;height:14px;background:#60a5fa"></div>
+               <button onclick="PQ._addStepAfter(${s.id})" title="Insert step below"
+                 style="border:1px dashed #60a5fa;background:#eff6ff;color:#1d4ed8;border-radius:4px;
+                        padding:2px 10px;cursor:pointer;font-size:11px;z-index:1">+ insert</button>
+               <div style="width:2px;height:14px;background:#60a5fa"></div>
+               <div style="width:0;height:0;border-left:7px solid transparent;border-right:7px solid transparent;border-top:10px solid #60a5fa"></div>
+             </div>`;
 
       return `<div style="display:flex;flex-direction:column;align-items:center">${box}</div>${arrow}`;
     }).join('');
@@ -243,29 +259,60 @@ const PQ = (() => {
   function _startEdit() { _s.editMode = true; _renderPfd(); }
   function _cancelEdit() { _s.editMode = false; _s.pending = {}; _renderPfd(); }
 
-  async function _saveAll() {
+  async function _flushPending() {
+    if (!Object.keys(_s.pending).length) return;
     const allSteps = await getAll('pq_pfd_steps');
     for (const [id, changes] of Object.entries(_s.pending)) {
       const existing = allSteps.find(s => s.id == id);
       if (existing) await save('pq_pfd_steps', Object.assign({}, existing, changes, { id: parseInt(id) }));
     }
     _s.pending = {};
+  }
+
+  async function _saveAll() {
+    await _flushPending();
     _s.editMode = false;
     toast('PFD saved');
     _renderPfd();
   }
 
+  // Add step at the end (header button)
   async function _addStep() {
-    // Flush any pending edits first
+    await _flushPending();
     const allSteps = await getAll('pq_pfd_steps');
     const existing = allSteps.filter(s => s.partId == _s.partId)
       .sort((a, b) => (a.sortOrder ?? a.id) - (b.sortOrder ?? b.id));
+    const maxOrder = existing.length ? Math.max(...existing.map(s => s.sortOrder ?? s.id)) : 0;
     const n = existing.length + 1;
     await save('pq_pfd_steps', {
       partId:    _s.partId,
       opNumber:  'OP' + String(n * 10).padStart(2, '0'),
       opName:    '',
-      sortOrder: n * 10,
+      sortOrder: maxOrder + 10,
+    });
+    _s.editMode = true;
+    _renderPfd();
+  }
+
+  // Insert a new step immediately after the given step id
+  async function _addStepAfter(afterId) {
+    await _flushPending();
+    const allSteps = await getAll('pq_pfd_steps');
+    const steps = allSteps.filter(s => s.partId == _s.partId)
+      .sort((a, b) => (a.sortOrder ?? a.id) - (b.sortOrder ?? b.id));
+    const idx = steps.findIndex(s => s.id == afterId);
+    const cur  = steps[idx];
+    const next = steps[idx + 1];
+    // Place new step halfway between cur and next sortOrders
+    const curOrder  = cur.sortOrder  ?? cur.id;
+    const nextOrder = next ? (next.sortOrder ?? next.id) : curOrder + 20;
+    const newOrder  = Math.round((curOrder + nextOrder) / 2);
+    const n = steps.length + 1;
+    await save('pq_pfd_steps', {
+      partId:    _s.partId,
+      opNumber:  'OP' + String(n * 10).padStart(2, '0'),
+      opName:    '',
+      sortOrder: newOrder,
     });
     _s.editMode = true;
     _renderPfd();
@@ -308,7 +355,7 @@ const PQ = (() => {
     newPart, editPart, _savePart, deletePart,
     openPfd,
     _startEdit, _cancelEdit, _saveAll,
-    _addStep, _deleteStep, _moveUp, _moveDown,
+    _addStep, _addStepAfter, _deleteStep, _moveUp, _moveDown,
     _cell,
   };
 })();
