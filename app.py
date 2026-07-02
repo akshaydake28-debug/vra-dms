@@ -633,7 +633,9 @@ QMS2_MODULES = [
     'qms2_grades','qms2_pfmea_templates','qms2_pfmea_parts','qms2_pfmea_rows',
     'qms2_cp_parts','qms2_cp_rows','qms2_cp_revisions',
     'qms2_cs_records','qms2_cs_results','qms2_images','qms2_cp_templates',
-    'qms2_op_order',  # operation order per part
+    'qms2_op_order',
+    # Process Quality (PQ) modules
+    'pq_parts','pq_pfd_steps','pq_pfmea_rows','pq_cp_rows','pq_revisions',
 ]
 
 def qms2_flat(r):
@@ -782,11 +784,216 @@ def qms2_clear_cp():
     db.session.commit()
     return jsonify({'ok': True, 'message': 'CP data cleared'})
 
+def seed_pq():
+    if GenericRecord.query.filter_by(module='pq_parts').count() > 0:
+        return
+    import datetime as dt
+    today = dt.date.today().isoformat()
+
+    # Sample part
+    part = GenericRecord(module='pq_parts', data=json.dumps({
+        'partNumber': 'VRA-DC-001',
+        'partName': 'ADC12 Die Cast Component',
+        'customer': 'Sample Customer',
+        'grade': 'ADC12',
+        'coreTeam': ['Production Manager', 'Quality Engineer', 'Process Engineer'],
+        'preparedBy': 'Quality Team',
+        'date': today,
+        'pfdRev': 'A', 'pfdStatus': 'Draft',
+        'pfmeaRev': 'A', 'pfmeaStatus': 'Draft',
+        'cpRev': 'A', 'cpStatus': 'Draft',
+        'revisionHistory': {}
+    }))
+    db.session.add(part)
+    db.session.flush()
+    pid = part.id
+
+    # PFD steps
+    pfd_steps = [
+        {'partId': pid, 'order': 1, 'opNumber': 'OP10', 'stepName': 'Raw Material Inspection',
+         'stepType': 'inspection', 'inputs': 'Incoming ADC12 ingots', 'outputs': 'Accepted/Rejected ingots',
+         'keyPoints': 'Check composition, hardness certificate, supplier CoC'},
+        {'partId': pid, 'order': 2, 'opNumber': 'OP20', 'stepName': 'Melting',
+         'stepType': 'operation', 'inputs': 'ADC12 ingots, returns', 'outputs': 'Molten metal at 650–680°C',
+         'keyPoints': 'Temperature control, degassing, dross removal'},
+        {'partId': pid, 'order': 3, 'opNumber': 'OP30', 'stepName': 'Die Casting',
+         'stepType': 'operation', 'inputs': 'Molten metal, die', 'outputs': 'Cast component',
+         'keyPoints': 'Injection pressure, die temp, cycle time, shot speed'},
+        {'partId': pid, 'order': 4, 'opNumber': 'OP40', 'stepName': 'Trimming / Fettling',
+         'stepType': 'operation', 'inputs': 'Cast component with flash', 'outputs': 'Trimmed component',
+         'keyPoints': 'Remove flash and gates, no damage to part surface'},
+        {'partId': pid, 'order': 5, 'opNumber': 'OP50', 'stepName': 'Shot Blasting',
+         'stepType': 'operation', 'inputs': 'Trimmed component', 'outputs': 'Clean surface component',
+         'keyPoints': 'Shot size, time, surface finish Ra'},
+        {'partId': pid, 'order': 6, 'opNumber': 'OP60', 'stepName': 'Fettling',
+         'stepType': 'operation', 'inputs': 'Shot blasted component', 'outputs': 'Deburred component',
+         'keyPoints': 'Remove remaining burrs, sharp edges'},
+        {'partId': pid, 'order': 7, 'opNumber': 'OP70', 'stepName': 'Machining',
+         'stepType': 'operation', 'inputs': 'Fettled component', 'outputs': 'Machined component',
+         'keyPoints': 'CNC parameters, tool wear, dimensional tolerances'},
+        {'partId': pid, 'order': 8, 'opNumber': 'OP80', 'stepName': 'Final Inspection',
+         'stepType': 'inspection', 'inputs': 'Machined component', 'outputs': 'OK / Rejected component',
+         'keyPoints': 'Dimensional check, visual inspection, hardness'},
+        {'partId': pid, 'order': 9, 'opNumber': 'OP90', 'stepName': 'Packing & Dispatch',
+         'stepType': 'operation', 'inputs': 'Inspected OK component', 'outputs': 'Packed & labelled component',
+         'keyPoints': 'Packaging material, label, quantity per box'},
+    ]
+    for s in pfd_steps:
+        db.session.add(GenericRecord(module='pq_pfd_steps', data=json.dumps(s)))
+
+    # PFMEA rows
+    pfmea_rows = [
+        {'partId': pid, 'opNumber': 'OP10', 'processStep': 'Raw Material Inspection',
+         'function': 'Verify chemical composition and quality of incoming ADC12 ingots',
+         'failureMode': 'Wrong grade or contaminated material accepted',
+         'failureEffect': 'Casting defects, poor mechanical properties, customer rejection',
+         'severity': 8, 'failureCause': 'No verification of CoC, supplier error, mix-up',
+         'occurrence': 3, 'currentControls': 'Visual inspection, CoC check, material traceability label',
+         'detection': 4, 'rpn': 96, 'recommendedAction': 'Implement incoming spectroscopy check for every batch',
+         'responsibility': 'QC Inspector', 'targetDate': '', 'status': 'Open', 'order': 1},
+        {'partId': pid, 'opNumber': 'OP20', 'processStep': 'Melting',
+         'function': 'Melt ADC12 ingots to required temperature and composition',
+         'failureMode': 'Temperature out of range (too high or too low)',
+         'failureEffect': 'Porosity, shrinkage, poor flow, casting defects',
+         'severity': 7, 'failureCause': 'Thermocouple failure, operator error, furnace malfunction',
+         'occurrence': 3, 'currentControls': 'Digital pyrometer, temperature log every 30 min',
+         'detection': 3, 'rpn': 63, 'recommendedAction': 'Install automatic temperature alarm and interlock',
+         'responsibility': 'Furnace Operator', 'targetDate': '', 'status': 'Open', 'order': 2},
+        {'partId': pid, 'opNumber': 'OP20', 'processStep': 'Melting',
+         'function': 'Degas molten metal to remove hydrogen porosity',
+         'failureMode': 'Insufficient degassing',
+         'failureEffect': 'Sub-surface porosity, part rejection at machining or customer end',
+         'severity': 7, 'failureCause': 'Degassing time too short, rotor speed incorrect',
+         'occurrence': 4, 'currentControls': 'Timed degassing cycle, visual dross check',
+         'detection': 5, 'rpn': 140, 'recommendedAction': 'Density index test on each heat before casting',
+         'responsibility': 'Furnace Operator', 'targetDate': '', 'status': 'Open', 'order': 3},
+        {'partId': pid, 'opNumber': 'OP30', 'processStep': 'Die Casting',
+         'function': 'Fill die cavity completely to produce sound casting',
+         'failureMode': 'Short shot / Misrun',
+         'failureEffect': 'Incomplete part, 100% rejection',
+         'severity': 9, 'failureCause': 'Low metal temperature, low injection pressure, blocked gate',
+         'occurrence': 3, 'currentControls': '100% visual check at machine, process parameter sheet',
+         'detection': 2, 'rpn': 54, 'recommendedAction': 'SPC on injection pressure, temperature interlocks',
+         'responsibility': 'Die Casting Operator', 'targetDate': '', 'status': 'Open', 'order': 4},
+        {'partId': pid, 'opNumber': 'OP30', 'processStep': 'Die Casting',
+         'function': 'Maintain porosity-free structure in casting',
+         'failureMode': 'Blow holes / Porosity',
+         'failureEffect': 'Leakage, low strength, rejection at machining or pressure test',
+         'severity': 8, 'failureCause': 'Trapped air, high plunger speed in first phase, poor venting',
+         'occurrence': 5, 'currentControls': 'Shot profile monitoring, die vacuum system',
+         'detection': 5, 'rpn': 200, 'recommendedAction': 'Introduce X-ray sampling plan for porosity',
+         'responsibility': 'Process Engineer', 'targetDate': '', 'status': 'Open', 'order': 5},
+        {'partId': pid, 'opNumber': 'OP70', 'processStep': 'Machining',
+         'function': 'Achieve dimensional tolerances per drawing',
+         'failureMode': 'Dimensions out of tolerance',
+         'failureEffect': 'Assembly failure, customer rejection',
+         'severity': 8, 'failureCause': 'Tool wear, fixture error, incorrect program',
+         'occurrence': 4, 'currentControls': 'First-off inspection, periodic dimensional check',
+         'detection': 3, 'rpn': 96, 'recommendedAction': 'SPC on critical dimensions, tool change frequency SOP',
+         'responsibility': 'Machining Operator', 'targetDate': '', 'status': 'Open', 'order': 6},
+        {'partId': pid, 'opNumber': 'OP80', 'processStep': 'Final Inspection',
+         'function': 'Detect and prevent defective parts from reaching customer',
+         'failureMode': 'Defective part passed to customer',
+         'failureEffect': 'Customer complaint, warranty claim, line stoppage',
+         'severity': 9, 'failureCause': 'Inspector error, inadequate sampling plan, gauge error',
+         'occurrence': 2, 'currentControls': '100% visual, dimensional sampling per AQL',
+         'detection': 3, 'rpn': 54, 'recommendedAction': 'Mistake-proof inspection with go/no-go gauges',
+         'responsibility': 'QC Inspector', 'targetDate': '', 'status': 'Open', 'order': 7},
+    ]
+    for row in pfmea_rows:
+        db.session.add(GenericRecord(module='pq_pfmea_rows', data=json.dumps(row)))
+
+    # Control Plan rows
+    cp_rows = [
+        {'partId': pid, 'opNumber': 'OP10', 'processStep': 'Raw Material Inspection',
+         'machine': 'Incoming Area', 'charNumber': 'OP10.01', 'charName': 'Chemical Composition',
+         'classification': 'Critical', 'specification': 'ADC12 per JIS H5302',
+         'tolerance': 'Si:9.6–12.0%, Fe:≤1.3%, Cu:1.5–3.5%', 'method': 'Spectrometer / CoC',
+         'gauge': 'OES Spectrometer', 'sampleSize': '1 per batch', 'frequency': 'Every incoming lot',
+         'controlMethod': 'Check supplier CoC + spectrometer test', 'reactionPlan': 'Reject lot, raise NCR',
+         'remarks': '', 'includeInChecksheet': True, 'order': 1},
+        {'partId': pid, 'opNumber': 'OP20', 'processStep': 'Melting',
+         'machine': 'Melting Furnace', 'charNumber': 'OP20.01', 'charName': 'Metal Temperature',
+         'classification': 'Critical', 'specification': '650–680°C',
+         'tolerance': '±5°C', 'method': 'Digital Pyrometer',
+         'gauge': 'K-type thermocouple', 'sampleSize': '1', 'frequency': 'Every 30 min',
+         'controlMethod': 'Temperature log sheet, visual check', 'reactionPlan': 'Adjust furnace, do not cast if out of range',
+         'remarks': '', 'includeInChecksheet': True, 'order': 2},
+        {'partId': pid, 'opNumber': 'OP20', 'processStep': 'Melting',
+         'machine': 'Melting Furnace', 'charNumber': 'OP20.02', 'charName': 'Degassing Time',
+         'classification': 'Special', 'specification': 'Min 10 minutes',
+         'tolerance': '±1 min', 'method': 'Timer',
+         'gauge': 'Digital timer', 'sampleSize': '1 per heat', 'frequency': 'Every heat',
+         'controlMethod': 'Timed degassing cycle on rotor', 'reactionPlan': 'Repeat degassing if time short',
+         'remarks': '', 'includeInChecksheet': True, 'order': 3},
+        {'partId': pid, 'opNumber': 'OP30', 'processStep': 'Die Casting',
+         'machine': 'Die Casting Machine', 'charNumber': 'OP30.01', 'charName': 'Injection Pressure',
+         'classification': 'Critical', 'specification': '800–1000 bar',
+         'tolerance': '±50 bar', 'method': 'Machine Display',
+         'gauge': 'Pressure transducer', 'sampleSize': '1 per shot', 'frequency': 'Continuous / every 10 shots',
+         'controlMethod': 'Machine parameter sheet, SPC chart', 'reactionPlan': 'Stop machine, check hydraulic system',
+         'remarks': '', 'includeInChecksheet': True, 'order': 4},
+        {'partId': pid, 'opNumber': 'OP30', 'processStep': 'Die Casting',
+         'machine': 'Die Casting Machine', 'charNumber': 'OP30.02', 'charName': 'Die Temperature',
+         'classification': 'Special', 'specification': '180–220°C',
+         'tolerance': '±10°C', 'method': 'Thermal Gun',
+         'gauge': 'Infrared thermometer', 'sampleSize': '1', 'frequency': 'Start of shift + every 50 shots',
+         'controlMethod': 'Die temperature log', 'reactionPlan': 'Wait for die to reach temp, adjust die cooling',
+         'remarks': '', 'includeInChecksheet': True, 'order': 5},
+        {'partId': pid, 'opNumber': 'OP30', 'processStep': 'Die Casting',
+         'machine': 'Die Casting Machine', 'charNumber': 'OP30.03', 'charName': 'Visual — No Short Shot',
+         'classification': 'Major', 'specification': 'No short shot / misrun',
+         'tolerance': 'Zero defects', 'method': 'Visual Inspection',
+         'gauge': 'Visual', 'sampleSize': '100%', 'frequency': '100%',
+         'controlMethod': '100% operator visual check at press', 'reactionPlan': 'Scrap, investigate cause',
+         'remarks': '', 'includeInChecksheet': True, 'order': 6},
+        {'partId': pid, 'opNumber': 'OP50', 'processStep': 'Shot Blasting',
+         'machine': 'Shot Blast Machine', 'charNumber': 'OP50.01', 'charName': 'Surface Finish',
+         'classification': 'Minor', 'specification': 'Ra ≤ 6.3 µm',
+         'tolerance': '', 'method': 'Surface Roughness Tester',
+         'gauge': 'Profilometer', 'sampleSize': '2 per batch', 'frequency': 'Per batch',
+         'controlMethod': 'Visual + profilometer check', 'reactionPlan': 'Re-blast or scrap if beyond limit',
+         'remarks': '', 'includeInChecksheet': False, 'order': 7},
+        {'partId': pid, 'opNumber': 'OP70', 'processStep': 'Machining',
+         'machine': 'CNC Machining Centre', 'charNumber': 'OP70.01', 'charName': 'Critical Bore Diameter',
+         'classification': 'Critical', 'specification': 'As per drawing',
+         'tolerance': '±0.05 mm', 'method': 'Bore Gauge',
+         'gauge': 'Digital bore gauge', 'sampleSize': 'First off + 1 per 50 pcs', 'frequency': 'First off + periodic',
+         'controlMethod': 'First-off inspection, SPC chart', 'reactionPlan': 'Stop machine, re-check tool, adjust offset',
+         'remarks': '', 'includeInChecksheet': True, 'order': 8},
+        {'partId': pid, 'opNumber': 'OP70', 'processStep': 'Machining',
+         'machine': 'CNC Machining Centre', 'charNumber': 'OP70.02', 'charName': 'Critical Length',
+         'classification': 'Critical', 'specification': 'As per drawing',
+         'tolerance': '±0.1 mm', 'method': 'Vernier Caliper / CMM',
+         'gauge': 'Vernier caliper', 'sampleSize': 'First off + 1 per 50 pcs', 'frequency': 'First off + periodic',
+         'controlMethod': 'First-off inspection record', 'reactionPlan': 'Stop, adjust, re-inspect',
+         'remarks': '', 'includeInChecksheet': True, 'order': 9},
+        {'partId': pid, 'opNumber': 'OP80', 'processStep': 'Final Inspection',
+         'machine': 'Inspection Table', 'charNumber': 'OP80.01', 'charName': 'Visual — No Cracks / Porosity',
+         'classification': 'Critical', 'specification': 'Zero visible defects',
+         'tolerance': 'Zero defects', 'method': 'Visual Inspection',
+         'gauge': 'Visual + 10x magnifier', 'sampleSize': '100%', 'frequency': '100%',
+         'controlMethod': '100% visual by QC', 'reactionPlan': 'Isolate, segregate, raise NCR',
+         'remarks': '', 'includeInChecksheet': True, 'order': 10},
+        {'partId': pid, 'opNumber': 'OP80', 'processStep': 'Final Inspection',
+         'machine': 'Inspection Table', 'charNumber': 'OP80.02', 'charName': 'Hardness',
+         'classification': 'Special', 'specification': '75–95 HRB',
+         'tolerance': '', 'method': 'Hardness Tester',
+         'gauge': 'Rockwell Hardness Tester', 'sampleSize': '2 per batch', 'frequency': 'Per batch',
+         'controlMethod': 'Hardness log sheet', 'reactionPlan': 'Segregate, investigate heat treatment / composition',
+         'remarks': '', 'includeInChecksheet': True, 'order': 11},
+    ]
+    for row in cp_rows:
+        db.session.add(GenericRecord(module='pq_cp_rows', data=json.dumps(row)))
+
+    db.session.commit()
+
 with app.app_context():
     try:
         db.create_all()
         seed_users()
         seed_qms2()
+        seed_pq()
         # Note: seed_defaults() removed — default data comes from backup restore
     except Exception as e:
         print(f"Startup warning: {e}")
