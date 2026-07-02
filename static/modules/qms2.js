@@ -65,8 +65,17 @@ const STATUS_COLOR = {Draft:'#6b7280','Under Review':'#d97706',Approved:'#16a34a
 let _state = {
   parts:[], rows:[], cpParts:[], cpChars:[], cpTemplates:[], grades:[],
   currentPartId: null, currentCpId: null,
-  dirty: new Set(), saveTimer: null
+  dirty: new Set(), saveTimer: null,
+  pfmeaLocked: false
 };
+
+// Warn user if there are unsaved edits and they try to close/refresh the tab
+window.addEventListener('beforeunload', e => {
+  if(Object.keys(_pendingSaves).length || Object.keys(_cpPending).length){
+    e.preventDefault();
+    e.returnValue = 'You have unsaved PFMEA / Control Plan edits. Leave anyway?';
+  }
+});
 
 // ── API ───────────────────────────────────────────────────────────────
 const api = (m,p,b) => fetch(p,{method:m,headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined}).then(r=>r.json());
@@ -408,6 +417,11 @@ async function _generatePfmeaRows(partId, grade, cloneFrom) {
 
 // ── PFMEA Spreadsheet ─────────────────────────────────────────────────
 async function renderPfmea(partId) {
+  // Flush any pending saves for the previously open part before switching
+  if(_state.currentPartId && _state.currentPartId !== partId && !_state.pfmeaLocked){
+    clearTimeout(_state.saveTimer);
+    await _flushSaves();
+  }
   const [parts, rows] = await Promise.all([
     GET('/api/qms2/pfmea_parts'), GET(`/api/qms2/pfmea_rows?partId=${partId}`)]);
   const part = parts.find(p=>p.id===partId);
@@ -1138,6 +1152,11 @@ async function renderCpList() {
 
 // ── Control Plan Spreadsheet View ──────────────────────────────────────
 async function renderCpView(cpId) {
+  // Flush any pending CP saves for the previously open CP before switching
+  if(_state.currentCpId && _state.currentCpId !== cpId){
+    clearTimeout(_cpSaveTimer);
+    await _cpFlush();
+  }
   const [cps, chars, revs] = await Promise.all([
     GET('/api/qms2/cp_parts'),
     GET(`/api/qms2/cp_rows?cpId=${cpId}`),
