@@ -66,7 +66,9 @@ let _state = {
   parts:[], rows:[], cpParts:[], cpChars:[], cpTemplates:[], grades:[],
   currentPartId: null, currentCpId: null,
   dirty: new Set(), saveTimer: null,
-  pfmeaLocked: false
+  pfmeaLocked: false,
+  editMode: false,
+  cpEditMode: false
 };
 
 // Warn user if there are unsaved edits and they try to close/refresh the tab
@@ -228,6 +230,10 @@ const SS_STYLE = `
 
 // ── Dashboard ─────────────────────────────────────────────────────────
 async function renderDashboard() {
+  // Reset edit modes when navigating away
+  _state.editMode = false; _state.cpEditMode = false;
+  for(const k of Object.keys(_pendingSaves)) delete _pendingSaves[k];
+  for(const k of Object.keys(_cpPending)) delete _cpPending[k];
   const [parts, cps] = await Promise.all([GET('/api/qms2/pfmea_parts'), GET('/api/qms2/cp_parts')]);
   _state.parts = parts; _state.cpParts = cps;
   const approved = cps.filter(c=>c.status==='Approved').length;
@@ -438,7 +444,7 @@ async function renderPfmea(partId) {
 
   const pfRev = part.pfmeaRevision || 'A';
   const pfmeaStatus = part.pfmeaStatus || 'Draft';
-  const locked = pfmeaStatus === 'Released';
+  const locked = !_state.editMode; // always locked unless user clicked Edit
   _state.pfmeaLocked = locked;
   const pfmeaDocNum = `PFMEA-${part.partNumber}-REV-${pfRev}`;
   const pfRevHist = part.revisionHistory || [];
@@ -454,8 +460,9 @@ async function renderPfmea(partId) {
         <span style="font-family:monospace;font-size:11px;color:#6b7280;background:#f1f5f9;
           padding:2px 8px;border-radius:4px;border:1px solid #e2e8f0">${pfmeaDocNum}</span>
         <span style="font-family:monospace;font-size:11px;padding:2px 8px;border-radius:4px;font-weight:700;
-          background:${locked?'#dcfce7':'#fefce8'};color:${locked?'#16a34a':'#92400e'}">
-          ${locked?'🔒 Released':'✏️ Draft'}</span>
+          background:${pfmeaStatus==='Released'?'#dcfce7':'#fefce8'};color:${pfmeaStatus==='Released'?'#16a34a':'#92400e'}">
+          ${pfmeaStatus==='Released'?'🔒 Released':'📝 Draft'}</span>
+        ${_state.editMode ? '<span style="background:#fee2e2;color:#dc2626;padding:2px 10px;border-radius:4px;font-size:11px;font-weight:700;animation:pulse 1.5s infinite">✏️ EDITING</span>' : ''}
       </div>
       <div style="font-size:12px;color:#6b7280">${esc(part.partName)} · ${esc(part.customer)} · ${rows.length} failure modes</div>
     </div>
@@ -463,22 +470,34 @@ async function renderPfmea(partId) {
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.renderDashboard()">← Back</button>
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.renderNewPart(${partId})">✏️ Edit Part</button>
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.printPfmea(${partId})">🖨 Print</button>
-      ${locked
-        ? `<button class="btn btn-p btn-sm no-print" onclick="QMS2._pfStartNewRev(${partId})">✏️ Start New Revision</button>`
-        : `<button class="btn btn-p btn-sm no-print" onclick="QMS2._pfNewRev(${partId})">💾 Save &amp; Release Revision</button>`}
+      ${_state.editMode
+        ? `<button class="btn btn-p btn-sm no-print" onclick="QMS2._pfNewRev(${partId})">💾 Save Revision</button>
+           <button class="btn btn-o btn-sm no-print" style="color:#dc2626;border-color:#dc2626" onclick="QMS2._pfCancelEdit(${partId})">✗ Cancel</button>`
+        : pfmeaStatus==='Released'
+          ? `<button class="btn btn-p btn-sm no-print" onclick="QMS2._pfStartNewRev(${partId})">✏️ Start New Revision</button>`
+          : `<button class="btn btn-p btn-sm no-print" onclick="QMS2._pfEdit(${partId})">✏️ Edit</button>`}
       ${hasCp
         ?`<button class="btn btn-o btn-sm no-print" onclick="QMS2.renderCpForPart(${partId})">📄 Control Plan</button>`
         :`<button class="btn btn-o btn-sm no-print" onclick="QMS2.generateCP(${partId})">📄 Generate Control Plan →</button>`}
     </div>
   </div>
 
-  ${locked ? `<div style="background:#dcfce7;border:2px solid #16a34a;border-radius:10px;padding:12px 16px;margin-bottom:12px;display:flex;align-items:center;gap:10px">
+  ${!_state.editMode && pfmeaStatus==='Released' ? `<div style="background:#dcfce7;border:2px solid #16a34a;border-radius:10px;padding:12px 16px;margin-bottom:12px;display:flex;align-items:center;gap:10px">
     <span style="font-size:20px">🔒</span>
     <div>
       <div style="font-weight:700;color:#166534;font-size:13px">PFMEA Rev ${pfRev} — Released &amp; Locked</div>
-      <div style="font-size:12px;color:#166534;margin-top:2px">This revision has been officially saved. All cells are read-only. Click <b>✏️ Start New Revision</b> to begin editing a new revision.</div>
+      <div style="font-size:12px;color:#166534;margin-top:2px">This is a read-only official revision. Click <b>✏️ Start New Revision</b> to begin editing a new revision.</div>
     </div>
-  </div>` : ''}
+  </div>` : !_state.editMode ? `<div style="background:#fefce8;border:2px solid #f59e0b;border-radius:10px;padding:12px 16px;margin-bottom:12px;display:flex;align-items:center;gap:10px">
+    <span style="font-size:20px">👁</span>
+    <div>
+      <div style="font-weight:700;color:#92400e;font-size:13px">View Mode — Read Only</div>
+      <div style="font-size:12px;color:#92400e;margin-top:2px">Click <b>✏️ Edit</b> to make changes. All edits require a change summary before saving.</div>
+    </div>
+  </div>` : `<div style="background:#fee2e2;border:2px solid #dc2626;border-radius:10px;padding:10px 16px;margin-bottom:12px;display:flex;align-items:center;gap:10px">
+    <span style="font-size:18px">✏️</span>
+    <div style="font-size:12px;color:#991b1b"><b>Editing mode</b> — changes are held in memory. Click <b>💾 Save Revision</b> to commit with a change summary, or <b>✗ Cancel</b> to discard all changes.</div>
+  </div>`}
 
   ${pfRevHist.length ? `<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;margin-bottom:10px">
     <div style="font-size:11px;font-weight:700;color:#0d2f6e;margin-bottom:6px">📋 Revision History</div>
@@ -495,9 +514,9 @@ async function renderPfmea(partId) {
   </div>` : ''}
 
   <div style="font-size:11px;color:#6b7280;margin-bottom:8px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-    <span>${locked
-      ? '🔒 Revision is <b>Released</b> — read-only. Click <b>✏️ Start New Revision</b> to make changes.'
-      : '✏️ <b>Draft</b> — click any cell to edit · auto-save active · click <b>💾 Save &amp; Release Revision</b> to officially lock this revision'}</span>
+    <span>${_state.editMode
+      ? '✏️ <b>Editing</b> — click any cell · Tab/Enter navigate · click <b>💾 Save Revision</b> when done'
+      : '👁 <b>View mode</b> — click <b>✏️ Edit</b> to make changes'}</span>
     <span style="display:flex;gap:5px;align-items:center">
       SOD:
       <span style="background:#dcfce7;color:#166534;padding:1px 6px;border-radius:3px;font-weight:600">1–2</span>
@@ -621,14 +640,14 @@ function _renderPfmeaRow(row, num, stepChanged=false, locked=false) {
         oninput="QMS2._updateRpn(this)" style="background:transparent"></td>
     <td class="rpn-cell ${rc}" id="rpn-${id}" style="width:52px">
       <div class="rpn-val">${r}</div></td>
-    <td style="min-width:150px">
-      <input class="ss-cell" data-field="recommendedAction" data-id="${id}"
-        list="dl-reaction" value="${esc(row.recommendedAction||'')}" ${ro}
-        onblur="QMS2._cellBlur(this)" placeholder="Action…"></td>
-    <td style="min-width:110px">
-      <input class="ss-cell" data-field="responsibility" data-id="${id}"
-        list="dl-responsibility" value="${esc(row.responsibility||'')}" ${ro}
-        onblur="QMS2._cellBlur(this)" placeholder="Owner…"></td>
+    <td style="min-width:150px"><textarea class="ss-cell" data-field="recommendedAction" data-id="${id}" rows="1"
+      list="dl-reaction" ${ro} onblur="QMS2._cellBlur(this)"
+      oninput="QMS2._autoResize(this)" onkeydown="QMS2._cellKey(event,this)"
+      placeholder="Action…">${esc(row.recommendedAction||'')}</textarea></td>
+    <td style="min-width:110px"><textarea class="ss-cell" data-field="responsibility" data-id="${id}" rows="1"
+      list="dl-responsibility" ${ro} onblur="QMS2._cellBlur(this)"
+      oninput="QMS2._autoResize(this)" onkeydown="QMS2._cellKey(event,this)"
+      placeholder="Owner…">${esc(row.responsibility||'')}</textarea></td>
     <td style="width:100px">
       <input class="ss-cell" type="date" data-field="targetDate" data-id="${id}"
         value="${row.targetDate||''}" ${ro} onblur="QMS2._cellBlur(this)"
@@ -747,12 +766,12 @@ function _enterNext(el) {
 // Batch save with debounce
 const _pendingSaves = {};
 function _schedSave(id, field, val) {
-  if(_state.pfmeaLocked) return; // Released revision — no writes
+  if(_state.pfmeaLocked) return; // not in edit mode — block all writes
   if(!_pendingSaves[id]) _pendingSaves[id] = {};
   _pendingSaves[id][field] = val;
-  _showSaving();
-  clearTimeout(_state.saveTimer);
-  _state.saveTimer = setTimeout(_flushSaves, 800);
+  // Show "unsaved changes" indicator — no auto-flush, user must click Save
+  const ind = document.getElementById('ss-saving-ind');
+  if(ind){ ind.textContent = '● Unsaved changes'; ind.classList.add('show'); }
 }
 
 async function _flushSaves() {
@@ -775,6 +794,18 @@ async function _pfSave(partId){
   clearTimeout(_state.saveTimer);
   await _flushSaves();
   toast('Draft changes saved ✅','s');
+}
+
+function _pfEdit(partId){
+  _state.editMode = true;
+  renderPfmea(partId);
+}
+
+function _pfCancelEdit(partId){
+  // Discard all pending changes
+  for(const k of Object.keys(_pendingSaves)) delete _pendingSaves[k];
+  _state.editMode = false;
+  renderPfmea(partId);
 }
 
 async function _pfNewRev(partId){
@@ -841,7 +872,8 @@ async function _pfNewRevConfirm(partId){
   });
 
   document.getElementById('pf-rev-modal')?.remove();
-  toast(`PFMEA Rev ${curRev} released & locked 🔒`, 's');
+  _state.editMode = false;
+  toast(`PFMEA Rev ${curRev} saved & locked 🔒`, 's');
 
   // Check if linked CP needs updating
   const cps = await GET('/api/qms2/cp_parts');
@@ -861,7 +893,8 @@ async function _pfStartNewRev(partId){
   await POST('/api/qms2/pfmea_parts', {
     ...part, pfmeaRevision:newRev, pfmeaStatus:'Draft'
   });
-  toast(`PFMEA Rev ${newRev} — draft started ✏️`, 's');
+  _state.editMode = true;
+  toast(`PFMEA Rev ${newRev} — editing started ✏️`, 's');
   renderPfmea(partId);
 }
 
@@ -1166,6 +1199,7 @@ async function renderCpView(cpId) {
   if(!cp){ toast('CP not found','d'); return; }
   _state.currentCpId = cpId;
   const isApproved = cp.status === 'Approved';
+  const cpLocked = !_state.cpEditMode || isApproved;
 
   // Sort chars by opNumber then charNumber
   chars.sort((a,b)=>(a.opNumber||'').localeCompare(b.opNumber||'') ||
@@ -1173,7 +1207,7 @@ async function renderCpView(cpId) {
 
   setC(`${SS_STYLE}
   ${mkDL('dl-meth', DD.detectionMethod)}${mkDL('dl-freq', DD.frequency)}${mkDL('dl-react', DD.reactionPlan)}
-  <div class="ss-saving" id="ss-saving-ind">Saving…</div>
+  <div class="ss-saving" id="ss-saving-ind">● Unsaved changes</div>
   <div class="part-header">
     <div>
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px;flex-wrap:wrap">
@@ -1181,31 +1215,46 @@ async function renderCpView(cpId) {
         <span class="q2-badge" style="background:${STATUS_COLOR[cp.status]||'#6b7280'}22;color:${STATUS_COLOR[cp.status]||'#6b7280'}">${cp.status||'Draft'}</span>
         <span class="grade-pill">${esc(cp.grade)}</span>
         ${cp.pfmeaOutdated ? '<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:600">⚠️ PFMEA updated</span>' : ''}
+        ${_state.cpEditMode && !isApproved ? '<span style="background:#fee2e2;color:#dc2626;padding:2px 10px;border-radius:4px;font-size:11px;font-weight:700">✏️ EDITING</span>' : ''}
       </div>
       <div style="font-size:12px;color:#6b7280">${esc(cp.partName)} · ${esc(cp.customer)} · Rev ${cp.revision} · ${chars.length} characteristics</div>
     </div>
     <div style="display:flex;gap:7px;flex-wrap:wrap">
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.renderDashboard()">← Back</button>
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.renderPfmea(${cp.pfmeaPartId})">📋 PFMEA</button>
-      ${!isApproved ? `<button class="btn btn-o btn-sm no-print" onclick="QMS2.cpAddRow()">+ Add Row</button>` : ''}
+      ${_state.cpEditMode && !isApproved ? `<button class="btn btn-o btn-sm no-print" onclick="QMS2.cpAddRow()">+ Add Row</button>` : ''}
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.printCP(${cpId})">🖨 Print</button>
       ${isApproved ? `<button class="btn btn-o btn-sm no-print" onclick="QMS2.renderChecksheets(${cpId})">📋 Checksheets</button>` : ''}
-      ${!isApproved ? `<button class="btn btn-p btn-sm no-print" onclick="QMS2.newCPRev(${cpId})">💾 Save New Revision</button>` : ''}
-      ${isApproved ? `<button class="btn btn-p btn-sm no-print" onclick="QMS2.newCPRev(${cpId})">💾 Save New Revision</button>` : ''}
+      ${_state.cpEditMode && !isApproved
+        ? `<button class="btn btn-p btn-sm no-print" onclick="QMS2.newCPRev(${cpId})">💾 Save Revision</button>
+           <button class="btn btn-o btn-sm no-print" style="color:#dc2626;border-color:#dc2626" onclick="QMS2._cpCancelEdit(${cpId})">✗ Cancel</button>`
+        : !isApproved
+          ? `<button class="btn btn-p btn-sm no-print" onclick="QMS2._cpEdit(${cpId})">✏️ Edit</button>`
+          : `<button class="btn btn-p btn-sm no-print" onclick="QMS2.newCPRev(${cpId})">💾 Save New Revision</button>`}
       <button class="btn btn-o btn-sm no-print" onclick="QMS2._archiveCP(${cpId})">🗄 Archive</button>
     </div>
   </div>
 
   ${cp.pfmeaOutdated ? `<div style="background:#fffbeb;border:2px solid #f59e0b;border-radius:10px;padding:12px 14px;margin-bottom:12px">
     ⚠️ <b>PFMEA has been updated</b> since this Control Plan was generated.
-    <button class="btn btn-p btn-sm" style="margin-left:8px" onclick="QMS2.renderCpForPart(${cp.pfmeaPartId})">View Impact & Update</button>
+    <button class="btn btn-p btn-sm" style="margin-left:8px" onclick="QMS2.renderCpForPart(${cp.pfmeaPartId})">View Impact &amp; Update</button>
   </div>` : ''}
+
+  ${isApproved ? `<div style="background:#dcfce7;border:2px solid #16a34a;border-radius:10px;padding:10px 16px;margin-bottom:12px;display:flex;align-items:center;gap:10px">
+    <span style="font-size:18px">🔒</span>
+    <div style="font-size:12px;color:#166534"><b>Approved &amp; Locked</b> — read-only. Use <b>💾 Save New Revision</b> to create a new editable revision.</div>
+  </div>` : !_state.cpEditMode ? `<div style="background:#fefce8;border:2px solid #f59e0b;border-radius:10px;padding:10px 16px;margin-bottom:12px;display:flex;align-items:center;gap:10px">
+    <span style="font-size:18px">👁</span>
+    <div style="font-size:12px;color:#92400e"><b>View Mode</b> — Click <b>✏️ Edit</b> to make changes. All edits require a change summary before saving.</div>
+  </div>` : `<div style="background:#fee2e2;border:2px solid #dc2626;border-radius:10px;padding:10px 16px;margin-bottom:12px;display:flex;align-items:center;gap:10px">
+    <span style="font-size:18px">✏️</span>
+    <div style="font-size:12px;color:#991b1b"><b>Editing mode</b> — changes held in memory. Click <b>💾 Save Revision</b> to commit with a change summary, or <b>✗ Cancel</b> to discard.</div>
+  </div>`}
 
   <div style="display:grid;grid-template-columns:1fr 220px;gap:14px;align-items:start">
     <div>
       <div style="font-size:11px;color:#6b7280;margin-bottom:6px">
-        💡 Click cell · Tab/Enter navigate · Auto-save
-        ${isApproved ? ' · <span style="color:#16a34a;font-weight:600">APPROVED — locked</span>' : ''}
+        ${_state.cpEditMode ? '✏️ Click cell · Tab/Enter navigate' : '👁 View mode — click ✏️ Edit to make changes'}
         &nbsp;|&nbsp;<span style="background:#f0fdf4;padding:1px 5px;border-radius:3px;font-size:10px">From PFMEA</span>
         <span style="background:#fefce8;padding:1px 5px;border-radius:3px;font-size:10px">Custom</span>
       </div>
@@ -1231,10 +1280,10 @@ async function renderCpView(cpId) {
               <th style="min-width:80px">Remarks</th>
               <th class="no-print" style="width:10px"></th>
             </tr></thead>
-            <tbody id="cp-body">${_renderCpRows(chars, isApproved)}</tbody>
+            <tbody id="cp-body">${_renderCpRows(chars, cpLocked)}</tbody>
           </table>
         </div>
-        ${!isApproved ? `<button class="ss-add-row no-print" onclick="QMS2.cpAddRow()">+ Add Characteristic</button>` : ''}
+        ${!cpLocked ? `<button class="ss-add-row no-print" onclick="QMS2.cpAddRow()">+ Add Characteristic</button>` : ''}
       </div>
     </div>
     <div>
@@ -2221,22 +2270,22 @@ async function _tryGradeAutoFill(rowId, specValue, tr){
   _autoResize(tolInput); // expand cell height to show all chemicals
   if(!_cpPending[rowId]) _cpPending[rowId]={};
   _cpPending[rowId]['tolerance'] = tolStr;
-  _showSaving();
-  clearTimeout(_cpSaveTimer);
-  _cpSaveTimer = setTimeout(_cpFlush, 900);
+  const ind = document.getElementById('ss-saving-ind');
+  if(ind){ ind.textContent = '● Unsaved changes'; ind.classList.add('show'); }
   toast(`✓ Tolerance auto-filled from ${grade.grade} (${grade.standard||'Grade Master'})`,'s');
 }
 
 function _cpCellBlur(el){
+  if(!_state.cpEditMode) return; // view mode — block all writes
   const id = +el.dataset.id || +el.dataset['id'];
   const field = el.dataset.field || el.dataset['field'] || el.dataset.f;
   if(!id || !field) return;
   if(!_cpPending[id]) _cpPending[id] = {};
   _cpPending[id][field] = el.value;
   if(field==='specification') _tryGradeAutoFill(id, el.value, el.closest('tr'));
-  _showSaving();
-  clearTimeout(_cpSaveTimer);
-  _cpSaveTimer = setTimeout(_cpFlush, 900);
+  // Show unsaved indicator — no auto-flush
+  const ind = document.getElementById('ss-saving-ind');
+  if(ind){ ind.textContent = '● Unsaved changes'; ind.classList.add('show'); }
 }
 
 function _cpCellChange(el){ _cpCellBlur(el); }
@@ -2340,6 +2389,17 @@ async function approveCP(cpId){
   toast('Approved ✅','s'); renderCpView(cpId);
 }
 
+function _cpEdit(cpId){
+  _state.cpEditMode = true;
+  renderCpView(cpId);
+}
+
+function _cpCancelEdit(cpId){
+  for(const k of Object.keys(_cpPending)) delete _cpPending[k];
+  _state.cpEditMode = false;
+  renderCpView(cpId);
+}
+
 async function newCPRev(cpId){
   clearTimeout(_cpSaveTimer);
   await _cpFlush();
@@ -2403,7 +2463,8 @@ async function _cpNewRevConfirm(cpId){
     changedBy:changedBy||Auth?.user?.name||'', summary});
 
   document.getElementById('cp-rev-modal')?.remove();
-  toast(`Control Plan Rev ${newRev} created ✅`, 's');
+  _state.cpEditMode = false;
+  toast(`Control Plan Rev ${newRev} saved ✅`, 's');
   renderCpView(cpId);
 }
 
@@ -2450,9 +2511,9 @@ return {
   renderDashboard, renderNewPart, showGrade, savePart,
   renderPfmea, pfmeaAddRow, pfmeaDelRow, pfmeaDupRow, _moveRow, _expandRow,
   _cellBlur, _cellChange, _cellKey, _autoResize, _updateRpn, _enterNext,
-  _pfSave, _pfNewRev, _pfNewRevConfirm, _pfStartNewRev, _showPfRevModal,
+  _pfSave, _pfEdit, _pfCancelEdit, _pfNewRev, _pfNewRevConfirm, _pfStartNewRev, _showPfRevModal,
   _showCpUpdatePrompt, _cpNewRevFromPfmea,
-  _cpSaveNow, _showCpRevModal, _cpNewRevConfirm,
+  _cpEdit, _cpCancelEdit, _cpSaveNow, _showCpRevModal, _cpNewRevConfirm,
   generateCP, renderCP, renderCpView, renderCpForPart, renderCpList,
   cpAddRow, cpDelRow, cpDupRow, _cpMov, _cpCellBlur, _cpCellChange, _cpCellKey,
   submitCP, approveCP, newCPRev, refreshCpFromPfmea, _archiveCP,
