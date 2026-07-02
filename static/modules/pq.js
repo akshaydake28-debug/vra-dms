@@ -236,7 +236,9 @@ const PQ = (() => {
 
   async function _renderPfd() {
     const pid = _s.partId;
-    const [parts, allSteps] = await Promise.all([getAll('pq_parts'), getAll('pq_pfd_steps')]);
+    const [parts, allSteps, allRevs] = await Promise.all([
+      getAll('pq_parts'), getAll('pq_pfd_steps'), getAll('pq_revisions')
+    ]);
     const part = parts.find(p => p.id == pid);
     if (!part) { toast('Part not found', 'e'); renderDashboard(); return; }
 
@@ -355,18 +357,71 @@ const PQ = (() => {
         </table>
       </div>
 
-      <!-- Flow diagram -->
-      <div class="card">
-        <div class="cb" style="padding:24px;display:flex;flex-direction:column;align-items:center">
-          ${steps.length
-            ? _buildFlow(steps, locked)
-            : locked
-              ? `<div style="padding:32px;text-align:center;color:#9ca3af">No steps — click <b>Edit</b> to add</div>`
-              : `<div style="padding:12px;text-align:center">
-                   <button class="btn btn-o" onclick="PQ._addStep()">+ Add first step</button>
-                 </div>`
-          }
+      <!-- Main content + sidebar -->
+      <div style="display:grid;grid-template-columns:1fr 240px;gap:14px;align-items:start">
+
+        <!-- Flow diagram -->
+        <div class="card">
+          <div class="cb" style="padding:24px;display:flex;flex-direction:column;align-items:center">
+            ${steps.length
+              ? _buildFlow(steps, locked)
+              : locked
+                ? `<div style="padding:32px;text-align:center;color:#9ca3af">No steps — click <b>Edit</b> to add</div>`
+                : `<div style="padding:12px;text-align:center">
+                     <button class="btn btn-o" onclick="PQ._addStep()">+ Add first step</button>
+                   </div>`
+            }
+          </div>
         </div>
+
+        <!-- Sidebar -->
+        <div class="no-print">
+          <!-- Info -->
+          <div class="card" style="margin-bottom:14px">
+            <div class="ch"><h5>Info</h5></div>
+            <div class="cb" style="padding:11px">
+              ${[
+                ['Part Number', part.partNumber||''],
+                ['Part Name',   part.partName||''],
+                ['Material',    part.material||''],
+                ['Date',        part.date||''],
+                ['Approved by', part.approvedBy||'—'],
+              ].map(([l,v]) => `
+                <div style="padding:5px 0;border-bottom:1px solid #f0f3f9">
+                  <div style="font-size:10.5px;color:#9ca3af;text-transform:uppercase;letter-spacing:.3px">${l}</div>
+                  <div style="font-size:12.5px;font-weight:600;margin-top:1px">${esc(String(v))}</div>
+                </div>`).join('')}
+            </div>
+          </div>
+
+          <!-- Revision history -->
+          <div class="card">
+            <div class="ch"><h5>Revisions</h5></div>
+            <div class="cb" style="padding:8px">
+              ${allRevs
+                .filter(r => r.partId == pid && r.docType === 'pfd')
+                .sort((a, b) => b.id - a.id)
+                .map(r => {
+                  const isCurrent = r.revision === part.pfdRev;
+                  const stBadge = r.status === 'Released'
+                    ? `<span class="badge ba" style="font-size:10px">Released</span>`
+                    : r.status === 'Pending Approval'
+                      ? `<span class="badge bp" style="font-size:10px">Pending</span>`
+                      : `<span class="badge bd" style="font-size:10px">Draft</span>`;
+                  return `<div style="padding:6px 7px;background:${isCurrent?'#edf1fb':'#f9fafc'};border-radius:6px;margin-bottom:3px;border:1px solid ${isCurrent?'#c5d0f0':'#e5e7eb'}">
+                    <div style="display:flex;justify-content:space-between;align-items:center">
+                      <span class="mono" style="font-weight:700;color:#0d2f6e">Rev ${esc(r.revision)}</span>
+                      ${stBadge}
+                    </div>
+                    <div class="muted" style="font-size:11px;margin-top:2px">${esc(r.date||'')} · ${esc(r.changedBy||'')}</div>
+                    ${r.changeSummary ? `<div style="font-size:11px;color:#374151;margin-top:2px">${esc(r.changeSummary)}</div>` : ''}
+                  </div>`;
+                }).join('') || `<div style="color:#9ca3af;font-size:12px;padding:8px">No revision history yet.</div>`
+              }
+            </div>
+          </div>
+        </div>
+
       </div>
     `);
   }
@@ -461,6 +516,9 @@ const PQ = (() => {
     ));
   }
 
+  const _userName = () => (typeof Auth !== 'undefined' && Auth.user?.name) ? Auth.user.name : 'User';
+  const _fmtDate  = () => new Date().toISOString().slice(0, 10);
+
   async function _saveAll() {
     const summary = prompt('Change summary (required):');
     if (summary === null) return;
@@ -471,6 +529,7 @@ const PQ = (() => {
     const parts  = await getAll('pq_parts');
     const part   = parts.find(p => p.id == _s.partId);
     const newRev = nextRev(part.pfdRev || 'A');
+
     await save('pq_parts', Object.assign({}, part, {
       id:                part.id,
       pfdRev:            newRev,
@@ -478,6 +537,17 @@ const PQ = (() => {
       lastChangeSummary: summary.trim(),
       lastChangedAt:     new Date().toISOString(),
     }));
+
+    // Log revision entry
+    await save('pq_revisions', {
+      partId:        _s.partId,
+      docType:       'pfd',
+      revision:      newRev,
+      status:        'Pending Approval',
+      changeSummary: summary.trim(),
+      changedBy:     _userName(),
+      date:          _fmtDate(),
+    });
 
     _s.editMode = false;
     toast(`Submitted for approval — Rev ${newRev}`);
@@ -488,12 +558,27 @@ const PQ = (() => {
     if (!confirm('Approve and release this PFD?')) return;
     const parts = await getAll('pq_parts');
     const part  = parts.find(p => p.id == _s.partId);
+    const by    = _userName();
+
     await save('pq_parts', Object.assign({}, part, {
-      id:           part.id,
-      pfdStatus:    'Released',
-      approvedBy:   typeof Auth !== 'undefined' ? Auth.user?.name : 'User',
-      approvedAt:   new Date().toISOString(),
+      id:         part.id,
+      pfdStatus:  'Released',
+      approvedBy: by,
+      approvedAt: new Date().toISOString(),
     }));
+
+    // Update the matching revision entry to Released
+    const allRevs = await getAll('pq_revisions');
+    const revEntry = allRevs.find(r => r.partId == _s.partId && r.docType === 'pfd' && r.revision === part.pfdRev);
+    if (revEntry) {
+      await save('pq_revisions', Object.assign({}, revEntry, {
+        id:         revEntry.id,
+        status:     'Released',
+        approvedBy: by,
+        approvedAt: _fmtDate(),
+      }));
+    }
+
     toast('PFD Released');
     _renderPfd();
   }
