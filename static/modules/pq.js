@@ -425,6 +425,35 @@ const PQ = (() => {
         </div>
 
       </div>
+
+      <!-- Revision History Table -->
+      <div style="margin-top:24px">
+        <div style="font-size:9pt;font-weight:bold;margin-bottom:6px;color:#1e3a5f">REVISION HISTORY</div>
+        <table style="width:100%;border-collapse:collapse;font-size:9.5pt">
+          <thead><tr>
+            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Rev</th>
+            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Date</th>
+            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Prepared By</th>
+            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Approved By</th>
+            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Change Summary</th>
+          </tr></thead>
+          <tbody>
+            ${(() => {
+              let entries = allRevs.filter(r => r.partId == pid && r.docType === 'pfd').sort((a, b) => a.id - b.id);
+              if (!entries.length) {
+                entries = [{ revision: part.pfdRev||'A', date: part.date||'', changedBy: part.preparedBy||'', approvedBy: part.approvedBy||'Pending', changeSummary: part.lastChangeSummary||'Initial revision' }];
+              }
+              return entries.map(r => `<tr>
+                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.revision||'')}</td>
+                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.date||'')}</td>
+                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.changedBy||'')}</td>
+                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.approvedBy||'Pending')}</td>
+                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.changeSummary||'')}</td>
+              </tr>`).join('');
+            })()}
+          </tbody>
+        </table>
+      </div>
     `);
   }
 
