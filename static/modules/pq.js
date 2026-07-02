@@ -21,11 +21,14 @@ const PQ = (() => {
     if (!r.ok) throw new Error(await r.text());
     return r.json();
   };
-  const getAll = mod => api('GET', `/api/qms2/${mod}`);
-  const getOne = (mod, id) => api('GET', `/api/qms2/${mod}/${id}`);
-  const post   = (mod, data) => api('POST', `/api/qms2/${mod}`, data);
-  const put    = (mod, id, data) => api('PUT', `/api/qms2/${mod}/${id}`, data);
-  const del    = (mod, id) => api('DELETE', `/api/qms2/${mod}/${id}`);
+  const getAll  = mod => api('GET', `/api/qms2/${mod}`);
+  const getOne  = async (mod, id) => {
+    const all = await getAll(mod);
+    return all.find(r => r.id == id) || null;
+  };
+  const post    = (mod, data) => api('POST', `/api/qms2/${mod}`, data);
+  const put     = (mod, id, data) => api('POST', `/api/qms2/${mod}`, Object.assign({}, data, { id }));
+  const del     = (mod, id) => api('DELETE', `/api/qms2/${mod}/${id}`);
 
   const setC = html => document.getElementById('content').innerHTML = html;
   const esc  = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -159,8 +162,7 @@ const PQ = (() => {
     };
     try {
       if (pid) {
-        const existing = await getOne('pq_parts', pid);
-        const ex = existing.data || existing;
+        const ex = await getOne('pq_parts', pid);
         // Preserve rev/status fields
         data.pfdRev     = ex.pfdRev     || 'A';
         data.pfdStatus  = ex.pfdStatus  || 'Draft';
@@ -349,8 +351,7 @@ const PQ = (() => {
   async function _pfdFlush() {
     for (const [id, changes] of Object.entries(_s.pfdPending)) {
       const rec = await getOne('pq_pfd_steps', id);
-      const d = Object.assign({}, rec.data || rec, changes);
-      await put('pq_pfd_steps', id, d);
+      await put('pq_pfd_steps', id, Object.assign({}, rec, changes));
     }
     _s.pfdPending = {};
   }
@@ -571,8 +572,7 @@ const PQ = (() => {
   async function _pfmeaFlush() {
     for (const [id, changes] of Object.entries(_s.pfmeaPending)) {
       const rec = await getOne('pq_pfmea_rows', id);
-      const d = Object.assign({}, rec.data || rec, changes);
-      await put('pq_pfmea_rows', id, d);
+      await put('pq_pfmea_rows', id, Object.assign({}, rec, changes));
     }
     _s.pfmeaPending = {};
   }
@@ -767,8 +767,7 @@ const PQ = (() => {
   async function _cpFlush() {
     for (const [id, changes] of Object.entries(_s.cpPending)) {
       const rec = await getOne('pq_cp_rows', id);
-      const d = Object.assign({}, rec.data || rec, changes);
-      await put('pq_cp_rows', id, d);
+      await put('pq_cp_rows', id, Object.assign({}, rec, changes));
     }
     _s.cpPending = {};
   }
