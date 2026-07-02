@@ -423,6 +423,9 @@ async function renderPfmea(partId) {
   rows.forEach(r=>{ (grouped[r.processStep]||(grouped[r.processStep]=[])).push(r); });
 
   const pfRev = part.pfmeaRevision || 'A';
+  const pfmeaStatus = part.pfmeaStatus || 'Draft';
+  const locked = pfmeaStatus === 'Released';
+  _state.pfmeaLocked = locked;
   const pfmeaDocNum = `PFMEA-${part.partNumber}-REV-${pfRev}`;
   const pfRevHist = part.revisionHistory || [];
   setC(`${SS_STYLE}
@@ -436,6 +439,9 @@ async function renderPfmea(partId) {
           padding:2px 10px;border-radius:4px;font-weight:700">Rev ${pfRev}</span>
         <span style="font-family:monospace;font-size:11px;color:#6b7280;background:#f1f5f9;
           padding:2px 8px;border-radius:4px;border:1px solid #e2e8f0">${pfmeaDocNum}</span>
+        <span style="font-family:monospace;font-size:11px;padding:2px 8px;border-radius:4px;font-weight:700;
+          background:${locked?'#dcfce7':'#fefce8'};color:${locked?'#16a34a':'#92400e'}">
+          ${locked?'🔒 Released':'✏️ Draft'}</span>
       </div>
       <div style="font-size:12px;color:#6b7280">${esc(part.partName)} · ${esc(part.customer)} · ${rows.length} failure modes</div>
     </div>
@@ -443,12 +449,22 @@ async function renderPfmea(partId) {
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.renderDashboard()">← Back</button>
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.renderNewPart(${partId})">✏️ Edit Part</button>
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.printPfmea(${partId})">🖨 Print</button>
-      <button class="btn btn-p btn-sm no-print" onclick="QMS2._pfNewRev(${partId})">💾 Save New Revision</button>
+      ${locked
+        ? `<button class="btn btn-p btn-sm no-print" onclick="QMS2._pfStartNewRev(${partId})">✏️ Start New Revision</button>`
+        : `<button class="btn btn-p btn-sm no-print" onclick="QMS2._pfNewRev(${partId})">💾 Save &amp; Release Revision</button>`}
       ${hasCp
         ?`<button class="btn btn-o btn-sm no-print" onclick="QMS2.renderCpForPart(${partId})">📄 Control Plan</button>`
         :`<button class="btn btn-o btn-sm no-print" onclick="QMS2.generateCP(${partId})">📄 Generate Control Plan →</button>`}
     </div>
   </div>
+
+  ${locked ? `<div style="background:#dcfce7;border:2px solid #16a34a;border-radius:10px;padding:12px 16px;margin-bottom:12px;display:flex;align-items:center;gap:10px">
+    <span style="font-size:20px">🔒</span>
+    <div>
+      <div style="font-weight:700;color:#166534;font-size:13px">PFMEA Rev ${pfRev} — Released &amp; Locked</div>
+      <div style="font-size:12px;color:#166534;margin-top:2px">This revision has been officially saved. All cells are read-only. Click <b>✏️ Start New Revision</b> to begin editing a new revision.</div>
+    </div>
+  </div>` : ''}
 
   ${pfRevHist.length ? `<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;margin-bottom:10px">
     <div style="font-size:11px;font-weight:700;color:#0d2f6e;margin-bottom:6px">📋 Revision History</div>
@@ -465,7 +481,9 @@ async function renderPfmea(partId) {
   </div>` : ''}
 
   <div style="font-size:11px;color:#6b7280;margin-bottom:8px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-    <span>💡 Click any cell to edit · changes auto-save · when done, click <b>💾 Save New Revision</b> to officially record a revision with change summary</span>
+    <span>${locked
+      ? '🔒 Revision is <b>Released</b> — read-only. Click <b>✏️ Start New Revision</b> to make changes.'
+      : '✏️ <b>Draft</b> — click any cell to edit · auto-save active · click <b>💾 Save &amp; Release Revision</b> to officially lock this revision'}</span>
     <span style="display:flex;gap:5px;align-items:center">
       SOD:
       <span style="background:#dcfce7;color:#166534;padding:1px 6px;border-radius:3px;font-weight:600">1–2</span>
@@ -512,95 +530,97 @@ async function renderPfmea(partId) {
           <th style="width:12px" class="no-print"></th>
         </tr></thead>
         <tbody id="pfmea-tbody">
-          ${_renderPfmeaRows(rows)}
+          ${_renderPfmeaRows(rows, locked)}
         </tbody>
       </table>
     </div>
-    <button class="ss-add-row no-print" onclick="QMS2.pfmeaAddRow()">+ Add Row &nbsp;·&nbsp; Double-click any row to expand</button>
+    ${!locked ? `<button class="ss-add-row no-print" onclick="QMS2.pfmeaAddRow()">+ Add Row &nbsp;·&nbsp; Double-click any row to expand</button>` : ''}
   </div>`);
 
   _bindPfmeaEvents();
 }
 
-function _renderPfmeaRows(rows) {
+function _renderPfmeaRows(rows, locked=false) {
   if(!rows.length) return `<tr><td colspan="16" style="padding:24px;text-align:center;color:#9ca3af">
     No rows yet. Click "+ Add Row" below or press Enter on any row.</td></tr>`;
   let lastStep = null;
   return rows.map((row,i) => {
     const stepChanged = row.processStep !== lastStep;
     lastStep = row.processStep;
-    return _renderPfmeaRow(row, i+1, stepChanged);
+    return _renderPfmeaRow(row, i+1, stepChanged, locked);
   }).join('');
 }
 
-function _renderPfmeaRow(row, num, stepChanged=false) {
+function _renderPfmeaRow(row, num, stepChanged=false, locked=false) {
   const r = rpn(row.severity, row.occurrence, row.detection);
   const sc = sodClass(row.severity), oc = sodClass(row.occurrence), dc = sodClass(row.detection);
   const rc = rpnClass(r);
   const id = row.id;
   const opNum = row.opNumber || stepToOp(row.processStep) || '';
-  return `<tr data-id="${id}" data-part="${row.partId}" ondblclick="QMS2._expandRow(event,${id})" class="${stepChanged?'ss-step-divider':''}">
+  const ro = locked ? 'readonly' : '';
+  const dis = locked ? 'disabled' : '';
+  return `<tr data-id="${id}" data-part="${row.partId}" ${!locked?`ondblclick="QMS2._expandRow(event,${id})"`:''}  class="${stepChanged?'ss-step-divider':''}">
     <td class="ss-row-num-td">
       <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
         <span>${num}</span>
-        <div class="ss-row-actions">
+        ${!locked ? `<div class="ss-row-actions">
           <button class="ss-row-btn" title="Delete" onclick="event.stopPropagation();QMS2.pfmeaDelRow(${id})">✕</button>
           <button class="ss-row-btn dup" title="Duplicate" onclick="event.stopPropagation();QMS2.pfmeaDupRow(${id})">⧉</button>
           <button class="ss-row-btn" title="Move up" onclick="event.stopPropagation();QMS2._moveRow(${id},-1)">↑</button>
           <button class="ss-row-btn" title="Move down" onclick="event.stopPropagation();QMS2._moveRow(${id},1)">↓</button>
-        </div>
+        </div>` : ''}
       </div>
     </td>
     <td style="position:sticky;left:36px;z-index:2;background:#f1f5f9;min-width:70px;border-right:1px solid #e2e8f0">
       <input class="ss-cell" data-field="opNumber" data-id="${id}"
-        value="${esc(opNum)}" placeholder="OP30"
+        value="${esc(opNum)}" placeholder="OP30" ${ro}
         onblur="QMS2._cellBlur(this)"
         style="font-weight:700;color:#0d2f6e;font-size:12px;text-align:center">
     </td>
     <td class="ss-col-step">
-      <select class="ss-cell" data-field="processStep" data-id="${id}" onchange="QMS2._cellChange(this)" style="font-size:11px;font-weight:600;color:#0d2f6e">
+      <select class="ss-cell" data-field="processStep" data-id="${id}" ${dis} onchange="QMS2._cellChange(this)" style="font-size:11px;font-weight:600;color:#0d2f6e">
         ${DEFAULT_OPS.map(o=>`<option value="${o.step}" ${row.processStep===o.step?'selected':''}>${o.step}</option>`).join('')}
       </select>
     </td>
-    <td style="min-width:150px"><textarea class="ss-cell" data-field="function" data-id="${id}" rows="1"
+    <td style="min-width:150px"><textarea class="ss-cell" data-field="function" data-id="${id}" rows="1" ${ro}
       onblur="QMS2._cellBlur(this)" oninput="QMS2._autoResize(this)" onkeydown="QMS2._cellKey(event,this)">${esc(row.function||'')}</textarea></td>
-    <td style="min-width:150px"><textarea class="ss-cell" data-field="failureMode" data-id="${id}" rows="1"
+    <td style="min-width:150px"><textarea class="ss-cell" data-field="failureMode" data-id="${id}" rows="1" ${ro}
       onblur="QMS2._cellBlur(this)" oninput="QMS2._autoResize(this)" onkeydown="QMS2._cellKey(event,this)"
       style="color:#dc2626;font-weight:500">${esc(row.failureMode||'')}</textarea></td>
-    <td style="min-width:140px"><textarea class="ss-cell" data-field="failureEffect" data-id="${id}" rows="1"
+    <td style="min-width:140px"><textarea class="ss-cell" data-field="failureEffect" data-id="${id}" rows="1" ${ro}
       onblur="QMS2._cellBlur(this)" oninput="QMS2._autoResize(this)" onkeydown="QMS2._cellKey(event,this)">${esc(row.failureEffect||'')}</textarea></td>
     <td style="width:40px" class="${sc}">
       <input class="ss-cell ss-num" type="number" min="1" max="10" data-field="severity"
-        data-id="${id}" value="${row.severity||5}" onblur="QMS2._cellBlur(this)"
+        data-id="${id}" value="${row.severity||5}" ${ro} onblur="QMS2._cellBlur(this)"
         oninput="QMS2._updateRpn(this)" style="background:transparent"></td>
-    <td style="min-width:150px"><textarea class="ss-cell" data-field="failureCause" data-id="${id}" rows="1"
+    <td style="min-width:150px"><textarea class="ss-cell" data-field="failureCause" data-id="${id}" rows="1" ${ro}
       onblur="QMS2._cellBlur(this)" oninput="QMS2._autoResize(this)" onkeydown="QMS2._cellKey(event,this)">${esc(row.failureCause||'')}</textarea></td>
     <td style="width:40px" class="${oc}">
       <input class="ss-cell ss-num" type="number" min="1" max="10" data-field="occurrence"
-        data-id="${id}" value="${row.occurrence||3}" onblur="QMS2._cellBlur(this)"
+        data-id="${id}" value="${row.occurrence||3}" ${ro} onblur="QMS2._cellBlur(this)"
         oninput="QMS2._updateRpn(this)" style="background:transparent"></td>
-    <td style="min-width:150px"><textarea class="ss-cell" data-field="currentControls" data-id="${id}" rows="1"
+    <td style="min-width:150px"><textarea class="ss-cell" data-field="currentControls" data-id="${id}" rows="1" ${ro}
       onblur="QMS2._cellBlur(this)" oninput="QMS2._autoResize(this)" onkeydown="QMS2._cellKey(event,this)">${esc(row.currentControls||'')}</textarea></td>
     <td style="width:40px" class="${dc}">
       <input class="ss-cell ss-num" type="number" min="1" max="10" data-field="detection"
-        data-id="${id}" value="${row.detection||3}" onblur="QMS2._cellBlur(this)"
+        data-id="${id}" value="${row.detection||3}" ${ro} onblur="QMS2._cellBlur(this)"
         oninput="QMS2._updateRpn(this)" style="background:transparent"></td>
     <td class="rpn-cell ${rc}" id="rpn-${id}" style="width:52px">
       <div class="rpn-val">${r}</div></td>
     <td style="min-width:150px">
       <input class="ss-cell" data-field="recommendedAction" data-id="${id}"
-        list="dl-reaction" value="${esc(row.recommendedAction||'')}"
+        list="dl-reaction" value="${esc(row.recommendedAction||'')}" ${ro}
         onblur="QMS2._cellBlur(this)" placeholder="Action…"></td>
     <td style="min-width:110px">
       <input class="ss-cell" data-field="responsibility" data-id="${id}"
-        list="dl-responsibility" value="${esc(row.responsibility||'')}"
+        list="dl-responsibility" value="${esc(row.responsibility||'')}" ${ro}
         onblur="QMS2._cellBlur(this)" placeholder="Owner…"></td>
     <td style="width:100px">
       <input class="ss-cell" type="date" data-field="targetDate" data-id="${id}"
-        value="${row.targetDate||''}" onblur="QMS2._cellBlur(this)"
+        value="${row.targetDate||''}" ${ro} onblur="QMS2._cellBlur(this)"
         style="font-size:11px;padding:5px 4px"></td>
     <td style="width:90px">
-      <select class="ss-cell" data-field="status" data-id="${id}" onchange="QMS2._cellChange(this)" style="font-size:11px">
+      <select class="ss-cell" data-field="status" data-id="${id}" ${dis} onchange="QMS2._cellChange(this)" style="font-size:11px">
         ${['Open','In Progress','Closed','On Hold'].map(s=>`<option ${row.status===s?'selected':''}>${s}</option>`).join('')}
       </select></td>
     <td class="no-print" style="width:12px"></td>
@@ -713,6 +733,7 @@ function _enterNext(el) {
 // Batch save with debounce
 const _pendingSaves = {};
 function _schedSave(id, field, val) {
+  if(_state.pfmeaLocked) return; // Released revision — no writes
   if(!_pendingSaves[id]) _pendingSaves[id] = {};
   _pendingSaves[id][field] = val;
   _showSaving();
@@ -756,7 +777,7 @@ function _showPfRevModal(partId){
   modal.innerHTML = `
   <div style="background:#fff;border-radius:12px;width:100%;max-width:480px;box-shadow:0 20px 60px #0004">
     <div style="padding:14px 18px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between">
-      <h4 style="font-size:15px;font-weight:700;color:#0d2f6e">📝 Save New PFMEA Revision</h4>
+      <h4 style="font-size:15px;font-weight:700;color:#0d2f6e">🔒 Save &amp; Release PFMEA Revision</h4>
       <button onclick="document.getElementById('pf-rev-modal').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#6b7280">✕</button>
     </div>
     <div style="padding:18px;display:flex;flex-direction:column;gap:12px">
@@ -792,29 +813,42 @@ async function _pfNewRevConfirm(partId){
   const parts = await GET('/api/qms2/pfmea_parts');
   const part = parts.find(p=>p.id===partId); if(!part) return;
   const curRev = part.pfmeaRevision || 'A';
-  const newRev = REVS[REVS.indexOf(curRev)+1] || 'Z';
 
-  // Build revision history — append new entry
+  // Rev stays the same — it was bumped when the new revision was started
   const history = part.revisionHistory || [];
-  // Mark previous current as superseded (already done by list, newest is current)
-  history.push({ rev:newRev, date:today(), changedBy:changedBy||Auth?.user?.name||'', summary });
+  // Update or add entry for current rev with summary
+  const existing = history.find(h=>h.rev===curRev);
+  if(existing){ existing.date=today(); existing.changedBy=changedBy||Auth?.user?.name||''; existing.summary=summary; }
+  else { history.push({ rev:curRev, date:today(), changedBy:changedBy||Auth?.user?.name||'', summary }); }
 
   await POST('/api/qms2/pfmea_parts', {
-    ...part, pfmeaRevision:newRev, revisionHistory:history,
-    revisionNote:summary, revisionDate:today()
+    ...part, pfmeaRevision:curRev, pfmeaStatus:'Released',
+    revisionHistory:history, revisionNote:summary, revisionDate:today()
   });
 
   document.getElementById('pf-rev-modal')?.remove();
-  toast(`PFMEA Rev ${newRev} saved ✅`, 's');
+  toast(`PFMEA Rev ${curRev} released & locked 🔒`, 's');
 
   // Check if linked CP needs updating
   const cps = await GET('/api/qms2/cp_parts');
   const linkedCp = cps.find(c=>c.pfmeaPartId===partId && c.status!=='Archived' && c.status!=='Obsolete' && c.status!=='Superseded');
   if(linkedCp){
-    _showCpUpdatePrompt(partId, linkedCp.id, newRev);
+    _showCpUpdatePrompt(partId, linkedCp.id, curRev);
   } else {
     renderPfmea(partId);
   }
+}
+
+async function _pfStartNewRev(partId){
+  const parts = await GET('/api/qms2/pfmea_parts');
+  const part = parts.find(p=>p.id===partId); if(!part) return;
+  const curRev = part.pfmeaRevision || 'A';
+  const newRev = REVS[REVS.indexOf(curRev)+1] || 'Z';
+  await POST('/api/qms2/pfmea_parts', {
+    ...part, pfmeaRevision:newRev, pfmeaStatus:'Draft'
+  });
+  toast(`PFMEA Rev ${newRev} — draft started ✏️`, 's');
+  renderPfmea(partId);
 }
 
 function _showCpUpdatePrompt(partId, cpId, pfRev){
@@ -856,6 +890,7 @@ function _hideSaving() {
 async function pfmeaAddRow(step) {
   const partId = _state.currentPartId;
   if(!partId) return;
+  if(_state.pfmeaLocked){ toast('PFMEA is Released — click "✏️ Start New Revision" to edit','d'); return; }
   const rec = {
     partId, opNumber: step?stepToOp(step):'OP10', processStep: step||STEPS[0],
     function:'', failureMode:'', failureEffect:'',
@@ -880,6 +915,7 @@ async function pfmeaAddRow(step) {
 }
 
 async function pfmeaDelRow(id) {
+  if(_state.pfmeaLocked){ toast('PFMEA is Released — click "✏️ Start New Revision" to edit','d'); return; }
   if(!confirm('Delete this PFMEA row?')) return;
   await DEL(`/api/qms2/pfmea_rows/${id}`);
   const tr = document.querySelector(`#pfmea-tbody tr[data-id="${id}"]`);
@@ -893,6 +929,7 @@ async function pfmeaDelRow(id) {
 }
 
 async function pfmeaDupRow(id) {
+  if(_state.pfmeaLocked){ toast('PFMEA is Released — click "✏️ Start New Revision" to edit','d'); return; }
   const rows = await GET(`/api/qms2/pfmea_rows?partId=${_state.currentPartId}`);
   const row = rows.find(r=>r.id===id);
   if(!row) return;
@@ -2201,6 +2238,10 @@ function _cpCellKey(e, el){
 async function _cpFlush(){
   const cpId = S.currentCpId;
   if(!cpId) return;
+  // Don't write if CP is locked (Approved or Superseded)
+  const cps = await GET('/api/qms2/cp_parts');
+  const cp = cps.find(c=>c.id===cpId);
+  if(cp && (cp.status==='Approved' || cp.status==='Superseded')){ _hideSaving(); return; }
   for(const [id, changes] of Object.entries(_cpPending)){
     delete _cpPending[id];
     const all = await GET(`/api/qms2/cp_rows?cpId=${cpId}`);
@@ -2390,7 +2431,7 @@ return {
   renderDashboard, renderNewPart, showGrade, savePart,
   renderPfmea, pfmeaAddRow, pfmeaDelRow, pfmeaDupRow, _moveRow, _expandRow,
   _cellBlur, _cellChange, _cellKey, _autoResize, _updateRpn, _enterNext,
-  _pfSave, _pfNewRev, _pfNewRevConfirm, _showPfRevModal,
+  _pfSave, _pfNewRev, _pfNewRevConfirm, _pfStartNewRev, _showPfRevModal,
   _showCpUpdatePrompt, _cpNewRevFromPfmea,
   _cpSaveNow, _showCpRevModal, _cpNewRevConfirm,
   generateCP, renderCP, renderCpView, renderCpForPart, renderCpList,
