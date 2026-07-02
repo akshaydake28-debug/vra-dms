@@ -476,9 +476,6 @@ async function renderPfmea(partId) {
         : pfmeaStatus==='Released'
           ? `<button class="btn btn-p btn-sm no-print" onclick="QMS2._pfStartNewRev(${partId})">✏️ Start New Revision</button>`
           : `<button class="btn btn-p btn-sm no-print" onclick="QMS2._pfEdit(${partId})">✏️ Edit</button>`}
-      ${hasCp
-        ?`<button class="btn btn-o btn-sm no-print" onclick="QMS2.renderCpForPart(${partId})">📄 Control Plan</button>`
-        :`<button class="btn btn-o btn-sm no-print" onclick="QMS2.generateCP(${partId})">📄 Generate Control Plan →</button>`}
     </div>
   </div>
 
@@ -1128,7 +1125,6 @@ async function renderCpView(cpId) {
     </div>
     <div style="display:flex;gap:7px;flex-wrap:wrap">
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.renderDashboard()">← Back</button>
-      <button class="btn btn-o btn-sm no-print" onclick="QMS2.renderPfmea(${cp.pfmeaPartId})">📋 PFMEA</button>
       ${_state.cpEditMode && !isApproved ? `<button class="btn btn-o btn-sm no-print" onclick="QMS2.cpAddRow()">+ Add Row</button>` : ''}
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.printCP(${cpId})">🖨 Print</button>
       ${isApproved ? `<button class="btn btn-o btn-sm no-print" onclick="QMS2.renderChecksheets(${cpId})">📋 Checksheets</button>` : ''}
