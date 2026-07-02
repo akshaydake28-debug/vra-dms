@@ -441,13 +441,12 @@ async function renderPfmea(partId) {
     </div>
     <div style="display:flex;gap:7px;flex-wrap:wrap">
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.renderDashboard()">← Back</button>
-      <button class="btn btn-o btn-sm no-print" onclick="QMS2.renderNewPart(${partId})">✏️ Edit</button>
-      <button class="btn btn-p btn-sm no-print" onclick="QMS2._pfNewRev(${partId})">📝 Save New Revision</button>
+      <button class="btn btn-o btn-sm no-print" onclick="QMS2.renderNewPart(${partId})">✏️ Edit Part</button>
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.printPfmea(${partId})">🖨 Print</button>
-      <button class="btn btn-o btn-sm no-print" onclick="QMS2._archivePart(${partId})">🗄 Archive</button>
+      <button class="btn btn-p btn-sm no-print" onclick="QMS2._pfNewRev(${partId})">💾 Save New Revision</button>
       ${hasCp
-        ?`<button class="btn btn-p btn-sm no-print" onclick="QMS2.renderCpForPart(${partId})">📄 Control Plan</button>`
-        :`<button class="btn btn-p btn-sm no-print" onclick="QMS2.generateCP(${partId})">📄 Generate Control Plan →</button>`}
+        ?`<button class="btn btn-o btn-sm no-print" onclick="QMS2.renderCpForPart(${partId})">📄 Control Plan</button>`
+        :`<button class="btn btn-o btn-sm no-print" onclick="QMS2.generateCP(${partId})">📄 Generate Control Plan →</button>`}
     </div>
   </div>
 
@@ -466,7 +465,7 @@ async function renderPfmea(partId) {
   </div>` : ''}
 
   <div style="font-size:11px;color:#6b7280;margin-bottom:8px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-    <span>💡 Click cell to edit · Tab = next · Enter = new row · Double-click = expand · Changes auto-saved · Click <b>Save New Revision</b> to commit with change summary</span>
+    <span>💡 Click any cell to edit · changes auto-save · when done, click <b>💾 Save New Revision</b> to officially record a revision with change summary</span>
     <span style="display:flex;gap:5px;align-items:center">
       SOD:
       <span style="background:#dcfce7;color:#166534;padding:1px 6px;border-radius:3px;font-weight:600">1–2</span>
@@ -1132,15 +1131,11 @@ async function renderCpView(cpId) {
     <div style="display:flex;gap:7px;flex-wrap:wrap">
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.renderDashboard()">← Back</button>
       <button class="btn btn-o btn-sm no-print" onclick="QMS2.renderPfmea(${cp.pfmeaPartId})">📋 PFMEA</button>
-      ${!isApproved ? `<button class="btn btn-o btn-sm no-print" onclick="QMS2.cpAddRow()">+ Row</button>
-        <button class="btn btn-o btn-sm no-print" onclick="QMS2.refreshCpFromPfmea(${cpId})">🔄 Sync PFMEA</button>` : ''}
-      ${!isApproved ? `<button class="btn btn-p btn-sm no-print" onclick="QMS2.newCPRev(${cpId})">📝 Save New Revision</button>` : ''}
-      <button class="btn btn-o btn-sm no-print" onclick="QMS2.printCP(${cpId})">🖨 Print All</button>
-      <button class="btn btn-o btn-sm no-print" onclick="QMS2._printSelectOp(${cpId})">🖨 Print by Op</button>
-      ${!isApproved ? `<button class="btn btn-w btn-sm no-print" onclick="QMS2.submitCP(${cpId})">📤 Submit</button>` : ''}
-      ${cp.status==='Under Review'&&Auth?.user?.role==='APPROVER' ? `<button class="btn btn-g btn-sm no-print" onclick="QMS2.approveCP(${cpId})">✓ Approve</button>` : ''}
-      ${isApproved ? `<button class="btn btn-o btn-sm no-print" onclick="QMS2.newCPRev(${cpId})">↑ New Rev</button>
-        <button class="btn btn-p btn-sm no-print" onclick="QMS2.renderChecksheets(${cpId})">📋 Checksheets</button>` : ''}
+      ${!isApproved ? `<button class="btn btn-o btn-sm no-print" onclick="QMS2.cpAddRow()">+ Add Row</button>` : ''}
+      <button class="btn btn-o btn-sm no-print" onclick="QMS2.printCP(${cpId})">🖨 Print</button>
+      ${isApproved ? `<button class="btn btn-o btn-sm no-print" onclick="QMS2.renderChecksheets(${cpId})">📋 Checksheets</button>` : ''}
+      ${!isApproved ? `<button class="btn btn-p btn-sm no-print" onclick="QMS2.newCPRev(${cpId})">💾 Save New Revision</button>` : ''}
+      ${isApproved ? `<button class="btn btn-p btn-sm no-print" onclick="QMS2.newCPRev(${cpId})">💾 Save New Revision</button>` : ''}
       <button class="btn btn-o btn-sm no-print" onclick="QMS2._archiveCP(${cpId})">🗄 Archive</button>
     </div>
   </div>
