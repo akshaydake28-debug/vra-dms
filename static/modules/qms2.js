@@ -2304,7 +2304,7 @@ function _cpCellKey(e, el){
 }
 
 async function _cpFlush(){
-  const cpId = S.currentCpId;
+  const cpId = _state.currentCpId;
   if(!cpId) return;
   // Don't write if CP is locked (Approved or Superseded)
   const cps = await GET('/api/qms2/cp_parts');
@@ -2327,7 +2327,7 @@ async function _cpSaveNow(cpId){
 
 // ── CP Row CRUD ───────────────────────────────────────────────────────
 async function cpAddRow(){
-  const cpId = S.currentCpId; if(!cpId) return;
+  const cpId = _state.currentCpId; if(!cpId) return;
   const all = await GET(`/api/qms2/cp_rows?cpId=${cpId}`);
   const rec = {
     cpId, opNumber:'OP10', processStep:DEFAULT_OPS[0].step,
@@ -2357,7 +2357,7 @@ async function cpDelRow(id){
 }
 
 async function cpDupRow(id){
-  const cpId = S.currentCpId;
+  const cpId = _state.currentCpId;
   const all = await GET(`/api/qms2/cp_rows?cpId=${cpId}`);
   const r = all.find(x=>x.id===id); if(!r) return;
   const {id:_, ...clean} = r; clean.source = 'custom';
