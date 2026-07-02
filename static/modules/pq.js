@@ -398,11 +398,13 @@ const PQ = (() => {
           <div class="card">
             <div class="ch"><h5>Revisions</h5></div>
             <div class="cb" style="padding:8px">
-              ${allRevs
-                .filter(r => r.partId == pid && r.docType === 'pfd')
-                .sort((a, b) => b.id - a.id)
-                .map(r => {
-                  const isCurrent = r.revision === part.pfdRev;
+              ${(() => {
+                let entries = allRevs.filter(r => r.partId == pid && r.docType === 'pfd').sort((a, b) => b.id - a.id);
+                if (!entries.length) {
+                  entries = [{ revision: part.pfdRev||'A', status: part.pfdStatus||'Draft', date: part.date||'', changedBy: part.approvedBy||part.preparedBy||'', changeSummary: part.lastChangeSummary||'Initial revision', _fallback: true }];
+                }
+                return entries.map(r => {
+                  const isCurrent = r._fallback || r.revision === part.pfdRev;
                   const stBadge = r.status === 'Released'
                     ? `<span class="badge ba" style="font-size:10px">Released</span>`
                     : r.status === 'Pending Approval'
@@ -416,8 +418,8 @@ const PQ = (() => {
                     <div class="muted" style="font-size:11px;margin-top:2px">${esc(r.date||'')} · ${esc(r.changedBy||'')}</div>
                     ${r.changeSummary ? `<div style="font-size:11px;color:#374151;margin-top:2px">${esc(r.changeSummary)}</div>` : ''}
                   </div>`;
-                }).join('') || `<div style="color:#9ca3af;font-size:12px;padding:8px">No revision history yet.</div>`
-              }
+                }).join('');
+              })()}
             </div>
           </div>
         </div>
