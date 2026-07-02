@@ -40,8 +40,9 @@ const PQ = (() => {
     const parts = await getAll('pq_parts');
 
     const statusBadge = st => {
-      if (st === 'Released') return `<span class="badge ba">Released</span>`;
-      if (st === 'Superseded') return `<span class="badge bs">Superseded</span>`;
+      if (st === 'Released')          return `<span class="badge ba">Released</span>`;
+      if (st === 'Pending Approval')  return `<span class="badge bp">⏳ Pending</span>`;
+      if (st === 'Superseded')        return `<span class="badge bs">Superseded</span>`;
       return `<span class="badge bd">Draft</span>`;
     };
 
@@ -244,20 +245,32 @@ const PQ = (() => {
       .sort((a, b) => (a.sortOrder ?? a.id) - (b.sortOrder ?? b.id));
 
     const locked   = !_s.editMode;
-    const released = part.pfdStatus === 'Released';
+    const status   = part.pfdStatus || 'Draft';
+    const released = status === 'Released';
+    const pending  = status === 'Pending Approval';
     const docNo    = `VRA-PFD-${part.partNumber||'XXX'}-REV-${part.pfdRev||'A'}`;
 
     // Status badge
-    const badge = released
-      ? `<span class="badge ba">Released</span>`
-      : `<span class="badge bd">Draft</span>`;
+    const badge = released ? `<span class="badge ba">Released</span>`
+                : pending  ? `<span class="badge bp">⏳ Pending Approval</span>`
+                           : `<span class="badge bd">Draft</span>`;
 
-    // Action buttons
-    const actions = locked
-      ? `<button class="btn btn-o btn-sm" onclick="window.print()">🖨 Print</button>
-         <button class="btn btn-p btn-sm" onclick="PQ._startEdit()">✏️ Edit</button>`
-      : `<button class="btn btn-g btn-sm" onclick="PQ._saveAll()">💾 Save</button>
-         <button class="btn btn-o btn-sm" onclick="PQ._cancelEdit()">Cancel</button>`;
+    // Action buttons — mimic document module flow
+    // Draft/Rejected → Edit → Save (→ Pending Approval)
+    // Pending Approval → Approve or back to Edit
+    // Released → New Revision (→ Draft with bumped rev)
+    const actions = _s.editMode
+      ? `<button class="btn btn-g btn-sm" onclick="PQ._saveAll()">📤 Submit for Approval</button>
+         <button class="btn btn-o btn-sm" onclick="PQ._cancelEdit()">Cancel</button>`
+      : released
+        ? `<button class="btn btn-o btn-sm" onclick="window.print()">🖨 Print</button>
+           <button class="btn btn-o btn-sm" onclick="PQ._newRevision()">🔄 New Revision</button>`
+        : pending
+          ? `<button class="btn btn-o btn-sm" onclick="window.print()">🖨 Print</button>
+             <button class="btn btn-g btn-sm" onclick="PQ._approve()">✓ Approve</button>
+             <button class="btn btn-p btn-sm" onclick="PQ._startEdit()">✏️ Edit</button>`
+          : `<button class="btn btn-o btn-sm" onclick="window.print()">🖨 Print</button>
+             <button class="btn btn-p btn-sm" onclick="PQ._startEdit()">✏️ Edit</button>`;
 
     setC(`
       <style>
@@ -289,7 +302,10 @@ const PQ = (() => {
       </div>
 
       ${_s.editMode ? `<div class="alert al-d no-print" style="margin-bottom:12px">
-        ✏️ Editing — click <b>Save</b> when done. You will be prompted for a change summary and the revision will be updated automatically.
+        ✏️ Editing — click <b>Submit for Approval</b> when done. Enter a change summary and the revision will increment automatically.
+      </div>` : ''}
+      ${pending && !_s.editMode ? `<div class="alert al-w no-print" style="margin-bottom:12px">
+        ⏳ This document is pending approval. Click <b>Approve</b> to release it, or <b>Edit</b> to revise.
       </div>` : ''}
 
       <!-- Document header (printed) -->
@@ -333,7 +349,7 @@ const PQ = (() => {
             </td>
             <td style="padding:6px 12px">
               <div style="font-size:9px;color:#6b7280;font-weight:600;text-transform:uppercase">Status</div>
-              <div style="font-weight:700;margin-top:2px;color:${released?'#16a34a':'#d97706'}">${esc(part.pfdStatus||'Draft')}</div>
+              <div style="font-weight:700;margin-top:2px;color:${released?'#16a34a':pending?'#d97706':'#6b7280'}">${esc(status)}</div>
             </td>
           </tr>
         </table>
@@ -446,27 +462,52 @@ const PQ = (() => {
   }
 
   async function _saveAll() {
-    // Require change summary
-    const summary = prompt('Change summary (required to save):');
-    if (summary === null) return;          // user cancelled
+    const summary = prompt('Change summary (required):');
+    if (summary === null) return;
     if (!summary.trim()) { toast('Please enter a change summary', 'e'); return; }
 
     await _flushPending();
 
-    // Bump revision
-    const parts = await getAll('pq_parts');
-    const part  = parts.find(p => p.id == _s.partId);
+    const parts  = await getAll('pq_parts');
+    const part   = parts.find(p => p.id == _s.partId);
     const newRev = nextRev(part.pfdRev || 'A');
     await save('pq_parts', Object.assign({}, part, {
-      id:        part.id,
-      pfdRev:    newRev,
-      pfdStatus: 'Draft',
+      id:                part.id,
+      pfdRev:            newRev,
+      pfdStatus:         'Pending Approval',
       lastChangeSummary: summary.trim(),
-      lastChangedAt: new Date().toISOString(),
+      lastChangedAt:     new Date().toISOString(),
     }));
 
     _s.editMode = false;
-    toast(`Saved — now Rev ${newRev}`);
+    toast(`Submitted for approval — Rev ${newRev}`);
+    _renderPfd();
+  }
+
+  async function _approve() {
+    if (!confirm('Approve and release this PFD?')) return;
+    const parts = await getAll('pq_parts');
+    const part  = parts.find(p => p.id == _s.partId);
+    await save('pq_parts', Object.assign({}, part, {
+      id:           part.id,
+      pfdStatus:    'Released',
+      approvedBy:   typeof Auth !== 'undefined' ? Auth.user?.name : 'User',
+      approvedAt:   new Date().toISOString(),
+    }));
+    toast('PFD Released');
+    _renderPfd();
+  }
+
+  async function _newRevision() {
+    if (!confirm('Start a new revision? The current Released version will be superseded.')) return;
+    const parts = await getAll('pq_parts');
+    const part  = parts.find(p => p.id == _s.partId);
+    await save('pq_parts', Object.assign({}, part, {
+      id:        part.id,
+      pfdStatus: 'Draft',
+    }));
+    _s.editMode = true;
+    toast('New revision started — make your changes then Submit for Approval');
     _renderPfd();
   }
 
@@ -543,7 +584,7 @@ const PQ = (() => {
     renderDashboard,
     newPart, editPart, _savePart, deletePart, _toggleTemplateSelect,
     openPfd,
-    _startEdit, _cancelEdit, _saveAll,
+    _startEdit, _cancelEdit, _saveAll, _approve, _newRevision,
     _addStep, _addStepAfter, _deleteStep, _moveUp, _moveDown,
     _cell,
   };
