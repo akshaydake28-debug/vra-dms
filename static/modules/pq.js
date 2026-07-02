@@ -86,18 +86,24 @@ const PQ = (() => {
     _partForm(parts.find(p => p.id == pid) || null);
   }
 
-  function _partForm(p) {
+  async function _partForm(p) {
     const isNew = !p;
+    // For new parts, load existing parts to offer as templates
+    const allParts = isNew ? await getAll('pq_parts') : [];
+    const templateOpts = allParts.map(t =>
+      `<option value="${t.id}">${esc(t.partNumber||'')} — ${esc(t.partName||'')}</option>`
+    ).join('');
+
     setC(`
       <div class="ph">
         <h2>${isNew ? '➕ New Part' : '✏️ Edit Part'}</h2>
         <button class="btn btn-o" onclick="PQ.renderDashboard()">← Back</button>
       </div>
-      <div class="card" style="max-width:520px">
+      <div class="card" style="max-width:560px">
         <div class="cb" style="display:flex;flex-direction:column;gap:14px;padding:20px">
           <div>
             <label class="lbl">Part Number *</label>
-            <input id="f-pno" class="input fc" value="${esc(p?.partNumber||'')}" placeholder="e.g. VRA-DC-001">
+            <input id="f-pno" class="input fc" value="${esc(p?.partNumber||'')}" placeholder="e.g. VRA-DC-002">
           </div>
           <div>
             <label class="lbl">Part Name *</label>
@@ -111,6 +117,29 @@ const PQ = (() => {
             <label class="lbl">Date</label>
             <input id="f-date" type="date" class="input fc" value="${esc(p?.date||new Date().toISOString().slice(0,10))}" style="width:180px">
           </div>
+
+          ${isNew && allParts.length ? `
+          <div style="border-top:1px solid #e5e7eb;padding-top:14px">
+            <label class="lbl">PFD Template</label>
+            <p style="font-size:12px;color:#6b7280;margin:4px 0 8px">Copy process steps from an existing part, or start with a blank PFD.</p>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+                <input type="radio" name="pfd-src" value="blank" checked onchange="PQ._toggleTemplateSelect(this.value)">
+                Start from scratch (blank PFD)
+              </label>
+              <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+                <input type="radio" name="pfd-src" value="template" onchange="PQ._toggleTemplateSelect(this.value)">
+                Copy PFD from existing part
+              </label>
+              <div id="template-select" style="display:none;margin-left:24px">
+                <select id="f-tmpl" class="input fc" style="width:100%">
+                  <option value="">— select a part —</option>
+                  ${templateOpts}
+                </select>
+              </div>
+            </div>
+          </div>` : ''}
+
           <div style="display:flex;gap:8px;margin-top:4px">
             <button class="btn btn-p" onclick="PQ._savePart(${p?.id||'null'})">Save</button>
             <button class="btn btn-o" onclick="PQ.renderDashboard()">Cancel</button>
@@ -119,27 +148,71 @@ const PQ = (() => {
       </div>`);
   }
 
+  function _toggleTemplateSelect(val) {
+    const el = document.getElementById('template-select');
+    if (el) el.style.display = val === 'template' ? 'block' : 'none';
+  }
+
   async function _savePart(pid) {
     const pno   = document.getElementById('f-pno').value.trim();
     const pname = document.getElementById('f-pname').value.trim();
     if (!pno || !pname) { toast('Part number and name are required', 'e'); return; }
+
     const data = {
       partNumber: pno,
       partName:   pname,
       material:   document.getElementById('f-mat').value.trim(),
       date:       document.getElementById('f-date').value,
-      pfdRev:     pid ? undefined : 'A',   // keep existing rev on edit
-      pfdStatus:  pid ? undefined : 'Draft',
+      pfdRev:    'A',
+      pfdStatus: 'Draft',
     };
+
     if (pid) {
-      // Preserve existing rev/status
+      // Preserve existing rev/status on edit
       const parts = await getAll('pq_parts');
       const existing = parts.find(p => p.id == pid);
       if (existing) { data.pfdRev = existing.pfdRev; data.pfdStatus = existing.pfdStatus; }
       data.id = pid;
+      await save('pq_parts', data);
+      toast('Part saved');
+      renderDashboard();
+      return;
     }
-    await save('pq_parts', data);
-    toast('Part saved');
+
+    // New part — check if user wants to copy from a template
+    const srcRadio = document.querySelector('input[name="pfd-src"]:checked');
+    const srcVal   = srcRadio ? srcRadio.value : 'blank';
+    const tmplId   = srcVal === 'template'
+      ? (document.getElementById('f-tmpl')?.value || '')
+      : '';
+
+    if (srcVal === 'template' && !tmplId) {
+      toast('Please select a template part', 'e'); return;
+    }
+
+    const newPart = await save('pq_parts', data);
+    const newPid  = newPart.id;
+
+    if (tmplId) {
+      // Copy PFD steps from template part
+      const allSteps = await getAll('pq_pfd_steps');
+      const srcSteps = allSteps
+        .filter(s => s.partId == tmplId)
+        .sort((a, b) => (a.sortOrder ?? a.id) - (b.sortOrder ?? b.id));
+
+      for (const s of srcSteps) {
+        await save('pq_pfd_steps', {
+          partId:    newPid,
+          opNumber:  s.opNumber,
+          opName:    s.opName,
+          sortOrder: s.sortOrder ?? s.id,
+        });
+      }
+      toast(`Part created with ${srcSteps.length} steps copied from template`);
+    } else {
+      toast('Part created — open PFD to add steps');
+    }
+
     renderDashboard();
   }
 
@@ -468,7 +541,7 @@ const PQ = (() => {
   // ── Public ────────────────────────────────────────────────────────────
   return {
     renderDashboard,
-    newPart, editPart, _savePart, deletePart,
+    newPart, editPart, _savePart, deletePart, _toggleTemplateSelect,
     openPfd,
     _startEdit, _cancelEdit, _saveAll,
     _addStep, _addStepAfter, _deleteStep, _moveUp, _moveDown,
