@@ -1698,6 +1698,11 @@ hr{border:none;border-top:1px solid #ccc;margin:12px 0}
 .rev-page{margin-top:18px;padding-top:10px;border-top:1.5px solid #000;page-break-inside:avoid}
 .rev-page h4{font-size:9.5pt;font-weight:bold;text-transform:uppercase;letter-spacing:.5px;padding-bottom:4px;margin-bottom:8px}
 .page-num::after{content:" " counter(page) " of " counter(pages)}
+/* Strip editor inline colors in content */
+#doc-content,#doc-content *{color:#000!important}
+#doc-content b,#doc-content strong{font-weight:bold}
+#doc-content i,#doc-content em{font-style:italic}
+#doc-content u{text-decoration:underline}
 @media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 </style></head><body>
 <table class="wrap">
@@ -1733,7 +1738,7 @@ hr{border:none;border-top:1px solid #ccc;margin:12px 0}
   </td></tr></tfoot>
   <tbody><tr><td>
     <div class="lang-notice">🌐 This is a ${cached.langName} translation of ${doc.docNumber} Rev ${doc.revision}. For official records, refer to the original English document.</div>
-    ${cached.html}
+    <div id="doc-content">${cached.html}</div>
     <div class="rev-page">
       <h4>Revision History / आवृत्ती इतिहास</h4>
       <table>
@@ -1812,6 +1817,12 @@ td,th{border:1px solid #ccc;padding:5px 8px;text-align:left;vertical-align:top}
 th{background:#ececec;font-weight:bold}
 .rev-table th{background:#1e3a5f;color:#fff}
 .page-num::after{content:" " counter(page) " of " counter(pages)}
+/* Strip editor inline colors — force black text in content area */
+#doc-content,#doc-content *{color:#000!important}
+#doc-content b,#doc-content strong{font-weight:bold}
+#doc-content i,#doc-content em{font-style:italic}
+#doc-content u{text-decoration:underline}
+#doc-content h1,#doc-content h2,#doc-content h3,#doc-content h4{color:#000!important}
 </style>
 <script>
 var _isLandscape=${landscape?'true':'false'};
@@ -1868,7 +1879,7 @@ function doPrint(){
   </table>
 </td></tr></thead>
 <tbody><tr><td>
-  <div style="font-size:10.5pt;line-height:1.8;padding:8px 0">
+  <div id="doc-content" style="font-size:10.5pt;line-height:1.8;padding:8px 0">
     ${ver?.content||'<p style="color:#999">No content.</p>'}
   </div>
 </td></tr></tbody>
