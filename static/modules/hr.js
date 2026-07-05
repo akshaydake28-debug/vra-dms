@@ -427,86 +427,71 @@ async function _hrRenderMatrixCards(){
     return m!==undefined?m.level:null;
   }
 
-  function levelColor(lv){
-    if(lv===2) return '#16a34a';
-    if(lv===1) return '#2563eb';
-    if(lv===0) return '#dc2626';
-    if(lv===-1) return '#9ca3af';
-    return '#f59e0b'; // null = not assessed
-  }
-  function levelLabel(lv){
-    if(lv===null) return'?';
-    if(lv===-1) return'N/R';
-    return String(lv);
+  function sel(empId,skillId){
+    const lv=getLevel(empId,skillId);
+    const col=lv===2?'#16a34a':lv===1?'#2563eb':lv===0?'#dc2626':lv===-1?'#9ca3af':'#d97706';
+    return`<select class="hr-mat-sel" data-eid="${empId}" data-sid="${skillId}"
+      style="border:none;background:transparent;font-size:12px;font-weight:700;cursor:pointer;width:44px;text-align:center;color:${col}">
+      <option value="" ${lv===null?'selected':''}>?</option>
+      <option value="-1" ${lv===-1?'selected':''}>N/R</option>
+      <option value="0" ${lv===0?'selected':''}>0</option>
+      <option value="1" ${lv===1?'selected':''}>1</option>
+      <option value="2" ${lv===2?'selected':''}>2</option>
+    </select>`;
   }
 
-  function empCard(e, skillList){
-    const empSkills=skillList.filter(s=>s.category===e.category);
-    const levels=empSkills.map(s=>({s,lv:getLevel(e.id,s.id)}));
-    const gaps=levels.filter(x=>x.lv!==null&&x.lv!==-1&&x.lv<1);
-    const notAssessed=levels.filter(x=>x.lv===null);
-    const gapCount=gaps.length+notAssessed.length;
-    return`<div style="background:#fff;border-radius:10px;border:1px solid #e2e8f0;box-shadow:0 1px 4px rgba(0,0,0,.07);padding:14px;break-inside:avoid">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
-        <div>
-          <div style="font-weight:700;font-size:13px;color:#0d2f6e">${esc(e.name)}</div>
-          <div style="font-size:11px;color:#64748b;margin-top:1px">${esc(e.designation)} &nbsp;·&nbsp; <span style="font-family:monospace">${esc(e.empCode)}</span></div>
-        </div>
-        ${gapCount>0?`<span style="background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;border-radius:5px;font-size:10px;font-weight:700;padding:2px 7px">⚠️ ${gapCount} gap${gapCount>1?'s':''}</span>`
-          :`<span style="background:#f0fdf4;color:#16a34a;border:1px solid #bbf7d0;border-radius:5px;font-size:10px;font-weight:700;padding:2px 7px">✅ OK</span>`}
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px">
-        ${empSkills.map(s=>{
-          const lv=getLevel(e.id,s.id);
-          const isGap=lv===null||(lv!==null&&lv!==-1&&lv<1);
-          return`<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 7px;border-radius:5px;background:${isGap?'#fef9ec':'#f8fafc'};border:1px solid ${isGap?'#fde68a':'#e5e7eb'}">
-            <span style="font-size:10.5px;color:#374151;flex:1;margin-right:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(s.skillName)}">${esc(s.skillName)}</span>
-            <select class="hr-mat-sel" data-eid="${e.id}" data-sid="${s.id}"
-              style="border:1px solid #d1d5db;border-radius:4px;background:#fff;font-size:11px;font-weight:700;cursor:pointer;width:46px;text-align:center;padding:1px 0;color:${levelColor(lv)}">
-              <option value="" ${lv===null?'selected':''}>?</option>
-              <option value="-1" ${lv===-1?'selected':''}>N/R</option>
-              <option value="0" ${lv===0?'selected':''}>0</option>
-              <option value="1" ${lv===1?'selected':''}>1</option>
-              <option value="2" ${lv===2?'selected':''}>2</option>
-            </select>
-          </div>`;
+  function matTable(label,empList,skillList){
+    if(!empList.length) return`<tr><td colspan="3" style="padding:12px;color:#9ca3af;font-style:italic">No active employees</td></tr>`;
+    return`
+      <tr><td colspan="${2+skillList.length}" style="background:#1e3a5f;color:#fff;font-weight:700;font-size:12px;padding:8px 12px;letter-spacing:.3px">
+        ${label} &nbsp;<span style="font-weight:400;font-size:11px;opacity:.7">${empList.length} employee(s) · ${skillList.length} skills</span>
+      </td></tr>
+      <tr style="background:#f0f4f8">
+        <th style="padding:7px 10px;text-align:left;font-size:11px;border:1px solid #d1d5db;min-width:130px;white-space:nowrap">Employee</th>
+        <th style="padding:7px 8px;text-align:left;font-size:11px;border:1px solid #d1d5db;min-width:100px">Designation</th>
+        ${skillList.map(s=>`<th style="padding:5px 4px;text-align:center;font-size:10px;border:1px solid #d1d5db;min-width:52px;max-width:70px;word-break:break-word;white-space:normal">${esc(s.skillName)}</th>`).join('')}
+      </tr>
+      ${empList.map((e,i)=>{
+        const levels=skillList.map(s=>getLevel(e.id,s.id));
+        const gapCount=levels.filter((lv,i2)=>lv===null||(lv!==null&&lv!==-1&&lv<1)).length;
+        return`<tr style="background:${i%2===0?'#fff':'#f8fafc'}">
+          <td style="padding:6px 10px;border:1px solid #e5e7eb;font-weight:600;font-size:12px;white-space:nowrap">
+            ${esc(e.name)}<br><span style="font-size:10px;color:#9ca3af;font-weight:400">${esc(e.empCode)}</span>
+          </td>
+          <td style="padding:6px 8px;border:1px solid #e5e7eb;font-size:11px;color:#64748b">${esc(e.designation)}</td>
+          ${skillList.map(s=>`<td style="text-align:center;padding:2px;border:1px solid #e5e7eb">${sel(e.id,s.id)}</td>`).join('')}
+        </tr>`;
+      }).join('')}
+      <tr style="background:#fafafa">
+        <td colspan="2" style="padding:6px 10px;font-size:11px;color:#64748b;border:1px solid #e5e7eb;font-style:italic">Gaps = ? (not assessed) or 0 (training needed)</td>
+        ${skillList.map(s=>{
+          const vals=empList.map(e=>getLevel(e.id,s.id));
+          const gaps=vals.filter(v=>v===null||(v!==null&&v!==-1&&v<1)).length;
+          return`<td style="text-align:center;padding:4px 2px;border:1px solid #e5e7eb;font-size:10px;font-weight:700;color:${gaps>0?'#b91c1c':'#16a34a'}">${gaps>0?gaps+'⚠':'✓'}</td>`;
         }).join('')}
-      </div>
-      ${gaps.length?`<div style="margin-top:8px;padding:6px 8px;background:#fef2f2;border-radius:5px;border:1px solid #fecaca;font-size:10.5px;color:#b91c1c">
-        <strong>Training needed:</strong> ${gaps.map(x=>esc(x.s.skillName)).join(', ')}
-      </div>`:''}
-      ${notAssessed.length?`<div style="margin-top:4px;padding:6px 8px;background:#fffbeb;border-radius:5px;border:1px solid #fde68a;font-size:10.5px;color:#92400e">
-        <strong>Not assessed:</strong> ${notAssessed.map(x=>esc(x.s.skillName)).join(', ')}
-      </div>`:''}
-    </div>`;
-  }
-
-  function section(title,empList,skillList,docNum){
-    if(!empList.length) return`<div style="margin-bottom:24px"><h3 style="color:#0d2f6e;font-size:13px;font-weight:700;border-bottom:2px solid #0d2f6e;padding-bottom:5px;margin-bottom:12px">${title}</h3><div style="color:#9ca3af;font-size:12px">No active employees in this category.</div></div>`;
-    return`<div style="margin-bottom:28px">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
-        <h3 style="color:#0d2f6e;font-size:13px;font-weight:700;border-bottom:2px solid #0d2f6e;padding-bottom:5px;flex:1">${title} &nbsp;<span style="font-weight:400;font-size:11px;color:#64748b">${docNum} · ${empList.length} employee(s) · ${skillList.filter(s=>s.category===empList[0]?.category).length} skills</span></h3>
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px">
-        ${empList.map(e=>empCard(e,skillList)).join('')}
-      </div>
-    </div>`;
+      </tr>`;
   }
 
   const body=document.getElementById('mat-body');
   if(!body) return;
   body.innerHTML=`
-    <div style="margin-bottom:12px;padding:10px 14px;background:#fff;border-radius:8px;border:1px solid #e2e8f0;font-size:12px;color:#374151">
+    <div style="margin-bottom:10px;font-size:11.5px;color:#374151">
       <strong>Legend:</strong> &nbsp;
-      <span style="color:#f59e0b;font-weight:700">?</span> = Not Assessed &nbsp;|&nbsp;
-      <span style="color:#dc2626;font-weight:700">0</span> = Training Identified (Gap) &nbsp;|&nbsp;
-      <span style="color:#2563eb;font-weight:700">1</span> = Can Perform Job &nbsp;|&nbsp;
-      <span style="color:#16a34a;font-weight:700">2</span> = Expert / Can Train Others &nbsp;|&nbsp;
-      <span style="color:#9ca3af;font-weight:700">N/R</span> = Not Required
+      <span style="color:#d97706;font-weight:700">?</span> Not Assessed &nbsp;·&nbsp;
+      <span style="color:#dc2626;font-weight:700">0</span> Training Needed &nbsp;·&nbsp;
+      <span style="color:#2563eb;font-weight:700">1</span> Can Perform &nbsp;·&nbsp;
+      <span style="color:#16a34a;font-weight:700">2</span> Expert &nbsp;·&nbsp;
+      <span style="color:#9ca3af;font-weight:700">N/R</span> Not Required
     </div>
-    ${section('White Collar — Skill Matrix',staffEmps,skills,'VRA-HR-002')}
-    ${section('Blue Collar — Skill Matrix',workerEmps,skills,'VRA-HR-005')}
-  `;
+    <div class="card">
+      <div style="overflow-x:auto">
+        <table style="border-collapse:collapse;font-size:12px;width:100%">
+          ${matTable('White Collar — Skill Matrix (VRA-HR-002)',staffEmps,staffSkills)}
+          <tr><td colspan="${2+Math.max(staffSkills.length,workerSkills.length)}" style="height:18px;background:#f1f5f9"></td></tr>
+          ${matTable('Blue Collar — Skill Matrix (VRA-HR-005)',workerEmps,workerSkills)}
+        </table>
+      </div>
+    </div>`;
 }
 
 async function hrSaveMatrix(){
