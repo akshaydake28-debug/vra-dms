@@ -564,8 +564,63 @@ async function hrPrintOneMatrix(empId){
   const matrix=window._hrMatMatrix||[];
   const e=emps.find(x=>x.id===empId); if(!e) return;
   const empSkills=skills.filter(s=>s.category===e.category);
-  function lv(skillId){ const m=matrix.find(x=>x.empId===e.id&&x.skillId===skillId); return m!==undefined?m.level:null; }
-  _hrPrintMatrixDoc([{e,skills:empSkills,lv}]);
+  const today=new Date().toLocaleDateString('en-IN');
+
+  function getLevel(skillId){ const m=matrix.find(x=>x.empId===e.id&&x.skillId===skillId); return m!==undefined?m.level:null; }
+  function lvText(v){ if(v===null)return'Not Assessed'; if(v===-1)return'Not Required'; if(v===0)return'Training Needed'; if(v===1)return'Can Perform'; return'Expert'; }
+  function lvBg(v){ if(v===2)return'#dcfce7'; if(v===1)return'#dbeafe'; if(v===0)return'#fee2e2'; if(v===-1)return'#f3f4f6'; return'#fef9c3'; }
+  function lvScore(v){ if(v===null)return'?'; if(v===-1)return'N/R'; return String(v); }
+
+  const gaps=empSkills.filter(s=>{ const v=getLevel(s.id); return v===null||(v!==-1&&v<1); });
+  const rows=empSkills.map((s,i)=>{
+    const lv=getLevel(s.id);
+    const isGap=lv===null||(lv!==-1&&lv<1);
+    return`<tr style="background:${isGap?'#fff5f5':i%2?'#f9fafb':'#fff'}">
+      <td style="padding:6px 10px;border:1px solid #d1d5db;font-size:9pt">${i+1}. ${esc(s.skillName)}</td>
+      <td style="padding:6px 8px;border:1px solid #d1d5db;text-align:center;font-weight:700;font-size:10pt;background:${lvBg(lv)};width:50px">${lvScore(lv)}</td>
+      <td style="padding:6px 10px;border:1px solid #d1d5db;font-size:8.5pt;color:#444">${lvText(lv)}</td>
+      <td style="padding:6px 8px;border:1px solid #d1d5db;text-align:center;width:60px">${isGap?'<span style="color:#b91c1c;font-weight:700">⚠ Gap</span>':'<span style="color:#15803d">✓ OK</span>'}</td>
+    </tr>`;
+  }).join('');
+
+  const w=window.open('','_blank');
+  w.document.write(`<!DOCTYPE html><html><head><title>Skill Matrix — ${esc(e.name)}</title>
+  <style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:Arial,sans-serif;font-size:10pt;color:#000;padding:20px}
+  @page{size:A4 portrait;margin:14mm 15mm 18mm 15mm}
+  @media print{body{padding:0}}
+  </style></head><body>
+  <div style="border-bottom:2px solid #1e3a5f;padding-bottom:10px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:flex-end">
+    <div>
+      <div style="font-size:14pt;font-weight:bold;color:#1e3a5f">V R Alucast — Employee Skill Matrix</div>
+      <div style="font-size:9pt;color:#555;margin-top:3px">${e.category==='Staff'?'VRA-HR-002':'VRA-HR-005'} · Printed: ${today}</div>
+    </div>
+    <div style="text-align:right;font-size:9pt;color:#555">
+      <div style="font-size:8pt">Legend: ? = Not Assessed | 0 = Training Needed | 1 = Can Perform | 2 = Expert | N/R = Not Required</div>
+    </div>
+  </div>
+  <div style="background:#1e3a5f;color:#fff;padding:10px 14px;border-radius:4px 4px 0 0;display:flex;justify-content:space-between;align-items:center">
+    <div>
+      <div style="font-weight:700;font-size:12pt">${esc(e.name)}</div>
+      <div style="font-size:9pt;opacity:.85;margin-top:2px">${esc(e.designation)} · ${esc(e.empCode)} · ${e.category==='Staff'?'White Collar':'Blue Collar'}</div>
+    </div>
+    <div style="font-size:9pt;opacity:.8">${gaps.length?`⚠ ${gaps.length} gap${gaps.length>1?'s':''}`:' All Skills OK'}</div>
+  </div>
+  <table style="width:100%;border-collapse:collapse">
+    <thead><tr style="background:#f1f5f9">
+      <th style="padding:7px 10px;border:1px solid #d1d5db;text-align:left;font-size:9pt">Skill / Competency</th>
+      <th style="padding:7px 8px;border:1px solid #d1d5db;text-align:center;font-size:9pt;width:50px">Score</th>
+      <th style="padding:7px 10px;border:1px solid #d1d5db;text-align:left;font-size:9pt">Status</th>
+      <th style="padding:7px 8px;border:1px solid #d1d5db;text-align:center;font-size:9pt;width:60px">Gap</th>
+    </tr></thead>
+    <tbody>${rows||`<tr><td colspan="4" style="padding:20px;text-align:center;color:#9ca3af">No skills defined.</td></tr>`}</tbody>
+  </table>
+  ${gaps.length?`<div style="margin-top:12px;padding:8px 12px;background:#fef2f2;border:1px solid #fecaca;border-radius:4px;font-size:9pt;color:#b91c1c">
+    <strong>Training needed:</strong> ${gaps.map(s=>esc(s.skillName)).join(' · ')}
+  </div>`:''}
+  <script>window.onload=()=>window.print()<\/script></body></html>`);
+  w.document.close();
 }
 
 async function hrPrintAllMatrix(){
