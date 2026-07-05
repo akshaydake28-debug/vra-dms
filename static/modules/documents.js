@@ -1658,6 +1658,11 @@ async function printTranslated(docId) {
     d.querySelectorAll('p,li,ul,ol,div,td,th,tr,h1,h2,h3,h4,h5,h6').forEach(el=>{
       el.style.color=''; el.style.fontWeight=''; el.style.fontSize='';
     });
+    // Strip fixed widths from tables so they fit the page
+    d.querySelectorAll('table').forEach(el=>{
+      el.style.width=''; el.style.minWidth=''; el.style.maxWidth='';
+      el.removeAttribute('width');
+    });
     d.querySelectorAll('span').forEach(el=>{
       el.style.color=''; el.style.fontWeight='';
       if(!el.getAttribute('style')&&!el.className) el.replaceWith(...el.childNodes);
@@ -1783,14 +1788,16 @@ async function printDoc(id){
 
   function sanitiseContent(html){
     const d=document.createElement('div'); d.innerHTML=html;
-    // Strip inline color and font-weight from block/structural elements
     d.querySelectorAll('p,li,ul,ol,div,td,th,tr,h1,h2,h3,h4,h5,h6').forEach(el=>{
       el.style.color=''; el.style.fontWeight=''; el.style.fontSize='';
     });
-    // Also strip from spans that are ONLY wrapping color/weight (no other purpose)
+    // Strip fixed widths from tables so they fit the page
+    d.querySelectorAll('table').forEach(el=>{
+      el.style.width=''; el.style.minWidth=''; el.style.maxWidth='';
+      el.removeAttribute('width');
+    });
     d.querySelectorAll('span').forEach(el=>{
       el.style.color=''; el.style.fontWeight='';
-      // If span has no remaining style and no class, unwrap it
       if(!el.getAttribute('style')&&!el.className) el.replaceWith(...el.childNodes);
     });
     return d.innerHTML;
@@ -1840,16 +1847,18 @@ p{margin-bottom:8px;line-height:1.75}
 ul,ol{margin:5px 0 10px 22px;line-height:1.75}
 li{margin-bottom:3px}
 table{width:100%;border-collapse:collapse;margin:10px 0;font-size:9.5pt}
-td,th{border:1px solid #ccc;padding:5px 8px;text-align:left;vertical-align:top}
+td,th{border:1px solid #ccc;padding:5px 8px;text-align:left;vertical-align:top;word-break:break-word;overflow-wrap:break-word}
 th{background:#ececec;font-weight:bold}
 .rev-table th{background:#1e3a5f;color:#fff}
 .page-num::after{content:" " counter(page) " of " counter(pages)}
+/* Force all content tables to fit page width */
+#doc-content table{width:100%!important;max-width:100%!important;table-layout:fixed!important}
+#doc-content td,#doc-content th{word-break:break-word!important;overflow-wrap:break-word!important}
 /* Strip editor inline colors — force black text in content area */
 #doc-content,#doc-content *{color:#000!important}
 #doc-content b,#doc-content strong{font-weight:bold}
 #doc-content i,#doc-content em{font-style:italic}
 #doc-content u{text-decoration:underline}
-#doc-content h1,#doc-content h2,#doc-content h3,#doc-content h4{color:#000!important}
 </style>
 <script>
 var _isLandscape=${landscape?'true':'false'};
