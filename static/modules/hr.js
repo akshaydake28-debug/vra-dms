@@ -377,7 +377,7 @@ async function hrPrintEmployeeList(){
     <td>${e.doj||'—'}</td>
     <td style="font-weight:bold">${e.status||'Active'}</td>
   </tr>`).join('');
-  _hrOpenPrintWindow(`<!DOCTYPE html><html><head><title>Employee Register</title><style>${hrPrintCSS()}</style></head><body>
+  _hrOpenPrintWindow(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Employee Register</title><style>${hrPrintCSS()}</style></head><body>
   ${hrPrintHeader('VRA-HR-001','00','EMPLOYEE REGISTER','V R Alucast — All Employees',today)}
   <table class="data">
     <thead><tr><th>#</th><th>Emp Code</th><th>Name</th><th>Category</th><th>Designation</th><th>Education</th><th>Experience</th><th>DOJ</th><th>Status</th></tr></thead>
@@ -557,7 +557,7 @@ function _hrShowEmpMatrix(idx){
 }
 
 function _hrOpenPrintWindow(html){
-  const blob=new Blob([html],{type:'text/html'});
+  const blob=new Blob([html],{type:'text/html;charset=utf-8'});
   const url=URL.createObjectURL(blob);
   const a=document.createElement('a');
   a.href=url; a.target='_blank'; a.rel='noopener';
@@ -591,7 +591,7 @@ async function hrPrintOneMatrix(empId){
   }).join('');
 
   const docNum=e.category==='Staff'?'VRA-HR-002':'VRA-HR-005';
-  const html=`<!DOCTYPE html><html><head><title>Skill Matrix — ${esc(e.name)}</title>
+  const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Skill Matrix — ${esc(e.name)}</title>
   <style>${hrPrintCSS()}</style></head><body>
   ${hrPrintHeader(docNum,'Current','Employee Skill Matrix',`${esc(e.name)} — ${esc(e.designation)} (${esc(e.empCode)})`,today)}
   <h2>${esc(e.name)} — ${e.category==='Staff'?'White Collar':'Blue Collar'}</h2>
@@ -652,7 +652,7 @@ async function hrPrintAllMatrix(){
   const workerSkills=skills.filter(s=>s.category==='Worker');
 
   const printCSS=hrPrintCSS().replace('@page{size:A4;','@page{size:A4 landscape;');
-  _hrOpenPrintWindow(`<!DOCTYPE html><html><head><title>Skill Matrix Register</title>
+  _hrOpenPrintWindow(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Skill Matrix Register</title>
   <style>${printCSS}
   table.sm{width:100%;border-collapse:collapse;font-size:8pt}
   table.sm th{background:#ececec;font-weight:bold;padding:5px 6px;border:1px solid #000;text-align:center}
@@ -708,7 +708,7 @@ async function hrPrintMatrix(filterTitle,docNum){
     return String(m.level);
   }
 
-  _hrOpenPrintWindow(`<!DOCTYPE html><html><head><title>Skill Matrix</title>
+  _hrOpenPrintWindow(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Skill Matrix</title>
   <style>${hrPrintCSS()}
   table.sm th{font-size:7.5pt;padding:4px 5px;border:1px solid #000;text-align:center;word-break:break-word;max-width:60px;white-space:normal}
   table.sm td{padding:4px 5px;border:1px solid #000;font-size:8.5pt;text-align:center}
@@ -823,7 +823,7 @@ async function hrPrintGap(){
     <td style="font-weight:bold">${g.status}</td>
     <td></td>
   </tr>`).join('');
-  _hrOpenPrintWindow(`<!DOCTYPE html><html><head><title>TNI Report</title><style>${hrPrintCSS()}</style></head><body>
+  _hrOpenPrintWindow(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>TNI Report</title><style>${hrPrintCSS()}</style></head><body>
   ${hrPrintHeader('VRA-HR-003','00','TRAINING NEED IDENTIFICATION (TNI)','V R Alucast — Gap Analysis Report',today)}
   <table class="data">
     <thead><tr><th>Emp Code</th><th>Name</th><th>Category</th><th>Designation</th><th>Skill / Training Need</th><th>Level</th><th>Status</th><th>Target Date</th></tr></thead>
@@ -1077,7 +1077,7 @@ async function hrPrintTraining(id){
     <td></td><td></td><td></td><td></td><td></td>
   </tr>`).join('');
 
-  _hrOpenPrintWindow(`<!DOCTYPE html><html><head><title>${t.trNumber}</title>
+  _hrOpenPrintWindow(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${t.trNumber}</title>
 <style>
 ${hrPrintCSS()}
 .info-grid{display:grid;grid-template-columns:130px 1fr 130px 1fr;gap:0;border:1px solid #000;margin-bottom:10px}
@@ -1230,7 +1230,7 @@ async function hrPrintConsolidatedRegister(filterYear){
   const satCount=trainings.filter(t=>t.effectiveness==='Satisfactory').length;
   const retrainCount=trainings.filter(t=>t.effectiveness==='Retraining').length;
 
-  _hrOpenPrintWindow(`<!DOCTYPE html><html><head><title>Training Register ${year}</title>
+  _hrOpenPrintWindow(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Training Register ${year}</title>
 <style>
 ${hrPrintCSS()}
 @page{size:A4 landscape;margin:12mm 14mm 16mm 14mm}
@@ -1501,7 +1501,7 @@ async function hrPrintDocsNeeded(){
     return (docIds||[]).map(did=>{const d=allDocs.find(x=>x.id===did);return d?`${d.docNumber} — ${d.title}`:'';}).filter(Boolean).join('; ');
   }
 
-  _hrOpenPrintWindow(`<!DOCTYPE html><html><head><title>Skill Document Mapping</title><style>${hrPrintCSS()}</style></head><body>
+  _hrOpenPrintWindow(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Skill Document Mapping</title><style>${hrPrintCSS()}</style></head><body>
   ${hrPrintHeader('VRA-HR-004','00','SKILL — DOCUMENT MAPPING REPORT','V R Alucast — Training Document Readiness',today)}
 
   <h2>Section 1 — Skills Needing Documents (${noDocSkills.length})</h2>
@@ -1615,7 +1615,7 @@ async function hrPrintSchedule(){
       <td style="text-align:center">${t.effectiveness||'—'}</td>
     </tr>`;
   }).join('');
-  _hrOpenPrintWindow(`<!DOCTYPE html><html><head><title>Training Schedule</title><style>${hrPrintCSS()}</style></head><body>
+  _hrOpenPrintWindow(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Training Schedule</title><style>${hrPrintCSS()}</style></head><body>
   ${hrPrintHeader('VRA-TR-003','00','ANNUAL TRAINING PLAN & SCHEDULE','V R Alucast — Training Calendar',today)}
   <table class="data">
     <thead><tr><th>TR No.</th><th>Topic</th><th>Skill Area</th><th>Type</th><th>Date</th><th>Trainer</th><th>Attendees</th><th>Status</th><th>Eff %</th></tr></thead>
