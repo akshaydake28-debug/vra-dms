@@ -412,11 +412,6 @@ function renderCreate(p={}){
             </select></div>
           <div class="fg"><label class="lbl">Title <span style="color:red">*</span></label>
             <input class="fc" id="c-title" placeholder="Document title…"></div>
-          <div class="fg"><label class="lbl">Page Orientation</label>
-            <select class="fc" id="c-orient">
-              <option value="portrait">Portrait (vertical)</option>
-              <option value="landscape">Landscape (horizontal)</option>
-            </select></div>
           <div style="font-size:11px;color:#9ca3af;margin-bottom:10px">Number auto-assigned on save</div>
           <div style="display:flex;flex-direction:column;gap:7px">
             <button class="btn btn-p" style="width:100%" onclick="saveCreate()">💾 Save as Draft</button>
@@ -443,7 +438,7 @@ function renderCreate(p={}){
 async function saveCreate(){
   const title=document.getElementById('c-title').value.trim();
   const type=document.getElementById('c-type').value;
-  const orient=document.getElementById('c-orient')?.value||'portrait';
+  const orient='portrait';
   const content=getEditorHTML();
   if(!title){toast('⚠️ Enter a document title','d');return}
   const u=Auth.user;
@@ -492,7 +487,6 @@ async function viewDoc(id){
       ${canApprove?`<button class="btn btn-g btn-sm" onclick="showApproveM(${id})">✓ Approve</button>
         <button class="btn btn-r btn-sm" onclick="showRejectM(${id})">✗ Reject</button>`:''}
       <button class="btn btn-p btn-sm" onclick="printDoc(${id})">🖨 Print</button>
-      <button class="btn btn-sm" style="background:#eff6ff;color:#1d4ed8;border:1px solid #93c5fd" onclick="printDoc(${id},true)" title="Print in landscape/horizontal orientation">↔ Landscape</button>
       <button class="btn btn-sm" style="background:#f0fdf4;color:#166534;border:1px solid #86efac" onclick="showTranslatePicker(${id})">🌐 Translate</button>
     </div>
   </div>
@@ -1421,10 +1415,10 @@ hr{border:none;border-top:1px solid #ccc;margin:12px 0}
 // ══════════════════════════════════════════════════════
 //  PRINT DOCUMENT
 // ══════════════════════════════════════════════════════
-async function printDoc(id, landscape=false){
+async function printDoc(id){
   const doc = await DB.getDoc(id);
   if(!doc){ toast('Document not found','d'); return; }
-  if(doc.orientation==='landscape') landscape=true;
+  const landscape = false;
   const ver = await DB.getVer(id, doc.revision);
   const allVers = await DB.getAllVers(id);
   const typeName_ = ALL_TYPES[doc.docType]?.name || doc.docType;
@@ -1505,9 +1499,7 @@ function doPrint(){
   <span style="font-size:13px;color:#fff;font-weight:700">V R ALUCAST</span>
   <span style="font-size:11px;color:#94a3b8">|</span>
   <span style="font-size:11px;color:#cbd5e1">${esc(doc.docNumber)} — ${esc(doc.title)}</span>
-  <span style="font-size:10px;color:#64748b;background:#334155;padding:2px 8px;border-radius:4px">${landscape?'Landscape':'Portrait'}</span>
   <div style="flex:1"></div>
-  <span style="font-size:11px;color:#94a3b8">Content auto-scales to fit page on print</span>
   <button onclick="doPrint()" style="padding:8px 20px;background:#2563eb;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;letter-spacing:0.3px">🖨 Print / Save PDF</button>
 </div>
 <div id="page-wrap">
