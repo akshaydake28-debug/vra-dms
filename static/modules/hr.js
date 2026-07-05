@@ -558,6 +558,15 @@ function _hrShowEmpMatrix(idx){
     </div>`;
 }
 
+function _hrOpenPrintWindow(html){
+  const blob=new Blob([html],{type:'text/html'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.target='_blank'; a.rel='noopener';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url),60000);
+}
+
 async function hrPrintOneMatrix(empId){
   const emps=window._hrMatEmps||[];
   const skills=window._hrMatSkills||[];
@@ -583,8 +592,7 @@ async function hrPrintOneMatrix(empId){
     </tr>`;
   }).join('');
 
-  const w=window.open('','_blank');
-  w.document.write(`<!DOCTYPE html><html><head><title>Skill Matrix — ${esc(e.name)}</title>
+  const html=`<!DOCTYPE html><html><head><title>Skill Matrix — ${esc(e.name)}</title>
   <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:Arial,sans-serif;font-size:10pt;color:#000;padding:20px}
@@ -596,9 +604,7 @@ async function hrPrintOneMatrix(empId){
       <div style="font-size:14pt;font-weight:bold;color:#1e3a5f">V R Alucast — Employee Skill Matrix</div>
       <div style="font-size:9pt;color:#555;margin-top:3px">${e.category==='Staff'?'VRA-HR-002':'VRA-HR-005'} · Printed: ${today}</div>
     </div>
-    <div style="text-align:right;font-size:9pt;color:#555">
-      <div style="font-size:8pt">Legend: ? = Not Assessed | 0 = Training Needed | 1 = Can Perform | 2 = Expert | N/R = Not Required</div>
-    </div>
+    <div style="font-size:8pt;color:#555">Legend: ? = Not Assessed | 0 = Training Needed | 1 = Can Perform | 2 = Expert | N/R = Not Required</div>
   </div>
   <div style="background:#1e3a5f;color:#fff;padding:10px 14px;border-radius:4px 4px 0 0;display:flex;justify-content:space-between;align-items:center">
     <div>
@@ -619,8 +625,8 @@ async function hrPrintOneMatrix(empId){
   ${gaps.length?`<div style="margin-top:12px;padding:8px 12px;background:#fef2f2;border:1px solid #fecaca;border-radius:4px;font-size:9pt;color:#b91c1c">
     <strong>Training needed:</strong> ${gaps.map(s=>esc(s.skillName)).join(' · ')}
   </div>`:''}
-  <script>window.onload=()=>window.print()<\/script></body></html>`);
-  w.document.close();
+  <script>window.onload=()=>{ window.print(); }<\/script></body></html>`;
+  _hrOpenPrintWindow(html);
 }
 
 async function hrPrintAllMatrix(){
@@ -665,8 +671,7 @@ async function hrPrintAllMatrix(){
   const staffSkills=skills.filter(s=>s.category==='Staff');
   const workerSkills=skills.filter(s=>s.category==='Worker');
 
-  const w=window.open('','_blank');
-  w.document.write(`<!DOCTYPE html><html><head><title>Skill Matrix</title>
+  _hrOpenPrintWindow(`<!DOCTYPE html><html><head><title>Skill Matrix</title>
   <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:Arial,sans-serif;font-size:9pt;color:#000;padding:16px}
@@ -683,7 +688,6 @@ async function hrPrintAllMatrix(){
   ${matTable('White Collar — Skill Matrix','VRA-HR-002',staffEmps,staffSkills)}
   ${matTable('Blue Collar — Skill Matrix','VRA-HR-005',workerEmps,workerSkills)}
   <script>window.onload=()=>window.print()<\/script></body></html>`);
-  w.document.close();
 }
 
 async function hrSaveMatrix(){
