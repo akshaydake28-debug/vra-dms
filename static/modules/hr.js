@@ -394,29 +394,23 @@ async function hrPrintEmployeeList(){
 //  SKILL MATRIX  (separate overlay window — progress cards)
 // ══════════════════════════════════════════════════════
 async function hrRenderSkillMatrix(){
+  try {
   await hrSeedDefaults();
   await hrDeduplicateSkills();
-  const ov=document.createElement('div');ov.id='hr-mat-ov';
-  ov.style='position:fixed;top:0;left:0;right:0;bottom:0;z-index:3000;background:#f1f5f9;overflow-y:auto;display:flex;flex-direction:column';
-  ov.innerHTML=`<div style="position:sticky;top:0;z-index:10;background:#1e3a5f;color:#fff;padding:12px 20px;display:flex;align-items:center;gap:14px;box-shadow:0 2px 8px rgba(0,0,0,.3)">
-    <span style="font-size:15px;font-weight:700">📊 Skill Matrix — Employee Progress Cards</span>
-    <span id="mat-updated" style="font-size:11px;color:#93c5fd;margin-left:4px"></span>
-    <div style="flex:1"></div>
-    <button class="btn btn-p btn-sm" onclick="hrSaveMatrix()">💾 Save &amp; Update</button>
-    <button class="btn btn-sm" style="background:#334155;color:#fff;border:1px solid #475569" onclick="hrManageSkills()">⚙️ Manage Skills</button>
-    <button class="btn btn-sm" style="background:#334155;color:#fff;border:1px solid #475569" onclick="hrPrintMatrix('White Collar — Skill Matrix','VRA-HR-002')">🖨️ Print White Collar</button>
-    <button class="btn btn-sm" style="background:#334155;color:#fff;border:1px solid #475569" onclick="hrPrintMatrix('Blue Collar — Skill Matrix','VRA-HR-005')">🖨️ Print Blue Collar</button>
-    <button class="btn btn-sm" style="background:#7f1d1d;color:#fff;border:none" onclick="document.getElementById('hr-mat-ov').remove()">✕ Close</button>
+  const updAt=localStorage.getItem('hr_matrix_updated_at')||'';
+  setC(`<div class="ph">
+    <h2>📊 Skill Matrix — Employee Progress Cards</h2>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <span id="mat-updated" style="font-size:11px;color:#6b7280">${updAt?'Last updated: '+updAt:''}</span>
+      <button class="btn btn-p" onclick="hrSaveMatrix()">💾 Save &amp; Update</button>
+      <button class="btn btn-o" onclick="hrManageSkills()">⚙️ Manage Skills</button>
+      <button class="btn btn-o" onclick="hrPrintMatrix('White Collar — Skill Matrix','VRA-HR-002')">🖨️ White Collar</button>
+      <button class="btn btn-o" onclick="hrPrintMatrix('Blue Collar — Skill Matrix','VRA-HR-005')">🖨️ Blue Collar</button>
+    </div>
   </div>
-  <div style="padding:20px;flex:1" id="mat-body">
-    <div style="padding:40px;text-align:center;color:#64748b">Loading…</div>
-  </div>`;
-  document.body.appendChild(ov);
-
-  const updAt=localStorage.getItem('hr_matrix_updated_at');
-  if(updAt) document.getElementById('mat-updated').textContent='Last updated: '+updAt;
-
+  <div id="mat-body"><div style="padding:40px;text-align:center;color:#9ca3af">Loading…</div></div>`);
   await _hrRenderMatrixCards();
+  } catch(err){ console.error('hrRenderSkillMatrix error:',err); toast('Error: '+err.message,'d'); }
 }
 
 async function _hrRenderMatrixCards(){
@@ -517,11 +511,12 @@ async function _hrRenderMatrixCards(){
 
 async function hrSaveMatrix(){
   const sels=document.querySelectorAll('.hr-mat-sel');
+  const allMat=await db.hrSkillMatrix.toArray().catch(()=>[]);
   for(const sel of sels){
     const empId=parseInt(sel.dataset.eid), skillId=parseInt(sel.dataset.sid);
     const raw=sel.value;
     const level=raw===''?null:parseInt(raw);
-    const existing=await db.hrSkillMatrix.where({empId,skillId}).first().catch(()=>null);
+    const existing=allMat.find(x=>x.empId===empId&&x.skillId===skillId);
     if(existing) await db.hrSkillMatrix.update(existing.id,{level,updatedAt:new Date().toISOString()});
     else if(level!==null) await db.hrSkillMatrix.add({empId,skillId,level,updatedAt:new Date().toISOString()});
   }
