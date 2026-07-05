@@ -281,10 +281,39 @@ const PQ = (() => {
           aside, .topbar { display:none !important; }
           .main { margin:0 !important; }
           .content { padding:8px !important; }
+          .pfd-print-hdr { display:table-header-group !important; }
+          .pfd-print-ftr { display:table-footer-group !important; }
+          @page { size:A4; margin:14mm 15mm 18mm 15mm; }
+          @page { counter-increment: page; }
+          .pfd-pgnum::after { content: counter(page); }
         }
+        .pfd-print-hdr { display:none; }
+        .pfd-print-ftr { display:none; }
+        .pfd-page-wrap { display:table; width:100%; }
+        .pfd-page-body { display:table-row-group; }
         .btn-g { background:#16a34a;color:#fff;border:none; }
         .btn-g:hover { background:#15803d; }
       </style>
+      <!-- Print-only repeating header -->
+      <div class="pfd-print-hdr">
+        <table style="width:100%;border-collapse:collapse;border-bottom:2px solid #000;padding-bottom:6px;margin-bottom:8px">
+          <tr>
+            <td style="width:30%;font-weight:bold;font-size:12pt">V R ALUCAST<br><span style="font-size:7.5pt;font-weight:normal;color:#555">High Pressure Die Casting | ISO 9001</span></td>
+            <td style="width:40%;text-align:center;font-weight:bold;font-size:11pt">PROCESS FLOW DIAGRAM<br><span style="font-size:8pt;font-weight:normal;color:#555">${esc(part.partName||'')}</span></td>
+            <td style="width:30%;text-align:right;font-size:8.5pt;line-height:1.7"><b>Doc No:</b> ${esc(docNo)}<br><b>Rev:</b> ${esc(part.pfdRev||'A')}<br><b>Status:</b> ${esc(status)}</td>
+          </tr>
+        </table>
+      </div>
+      <!-- Print-only repeating footer -->
+      <div class="pfd-print-ftr">
+        <table style="width:100%;border-collapse:collapse;border-top:1px solid #000;padding-top:4px;margin-top:6px">
+          <tr>
+            <td style="font-size:7.5pt;color:#444">${esc(docNo)} Rev ${esc(part.pfdRev||'A')}</td>
+            <td style="text-align:center;font-size:7.5pt;color:#444">V R ALUCAST — CONFIDENTIAL</td>
+            <td style="text-align:right;font-size:7.5pt;color:#444">Page <span class="pfd-pgnum"></span></td>
+          </tr>
+        </table>
+      </div>
 
       <!-- Page header (hidden on print) -->
       <div class="ph no-print">

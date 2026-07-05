@@ -1325,8 +1325,14 @@ async function printTranslated(docId) {
     <td>${esc(v.changeSummary||'')}</td>
   </tr>`).join('');
 
-  const w = window.open('','_blank','width=900,height=700');
-  w.document.write(`<!DOCTYPE html><html><head>
+  function openTransBlob(html){
+    const blob=new Blob([html],{type:'text/html'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a'); a.href=url; a.target='_blank'; a.rel='noopener';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url),60000);
+  }
+  openTransBlob(`<!DOCTYPE html><html><head>
 <title>${doc.docNumber} — ${cached.langName}</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -1362,6 +1368,7 @@ hr{border:none;border-top:1px solid #ccc;margin:12px 0}
 .lang-notice{background:#f0fdf4;border:1px solid #86efac;border-radius:5px;padding:6px 10px;font-size:8pt;color:#166534;margin-bottom:12px}
 .rev-page{margin-top:18px;padding-top:10px;border-top:1.5px solid #000;page-break-inside:avoid}
 .rev-page h4{font-size:9.5pt;font-weight:bold;text-transform:uppercase;letter-spacing:.5px;padding-bottom:4px;margin-bottom:8px}
+.page-num::after{content:" " counter(page) " of " counter(pages)}
 @media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 </style></head><body>
 <table class="wrap">
@@ -1392,7 +1399,7 @@ hr{border:none;border-top:1px solid #ccc;margin:12px 0}
     <table class="ftr"><tr>
       <td>${doc.docNumber} | Rev ${doc.revision} | ${cached.langName}</td>
       <td style="text-align:center">V R ALUCAST — CONFIDENTIAL</td>
-      <td style="text-align:right">Prepared: ${esc(ver?.preparedBy||'—')}</td>
+      <td style="text-align:right"><span class="page-num">Page</span></td>
     </tr></table>
   </td></tr></tfoot>
   <tbody><tr><td>
@@ -1407,9 +1414,8 @@ hr{border:none;border-top:1px solid #ccc;margin:12px 0}
     </div>
   </td></tr></tbody>
 </table>
-<script>window.onload=function(){window.print();setTimeout(()=>window.close(),2000)}<\/script>
+<script>window.onload=function(){window.print()}<\/script>
 </body></html>`);
-  w.document.close();
 }
 
 // ══════════════════════════════════════════════════════
@@ -1429,8 +1435,14 @@ async function printDoc(id){
     <td>${esc(v.changeSummary||'')}</td>
   </tr>`).join('');
 
-  const w = window.open('','_blank','width=1000,height=750');
-  w.document.write(`<!DOCTYPE html><html><head>
+  function openPrintBlob(html){
+    const blob=new Blob([html],{type:'text/html'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a'); a.href=url; a.target='_blank'; a.rel='noopener';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url),60000);
+  }
+  openPrintBlob(`<!DOCTYPE html><html><head>
 <title>${doc.docNumber} — ${esc(doc.title)}</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -1555,5 +1567,4 @@ function doPrint(){
 
 </div>
 </body></html>`);
-  w.document.close();
 }
