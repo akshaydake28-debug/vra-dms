@@ -404,8 +404,7 @@ async function hrRenderSkillMatrix(){
       <span id="mat-updated" style="font-size:11px;color:#6b7280">${updAt?'Last updated: '+updAt:''}</span>
       <button class="btn btn-p" onclick="hrSaveMatrix()">💾 Save &amp; Update</button>
       <button class="btn btn-o" onclick="hrManageSkills()">⚙️ Manage Skills</button>
-      <button class="btn btn-o" onclick="hrPrintMatrix('White Collar — Skill Matrix','VRA-HR-002')">🖨️ White Collar</button>
-      <button class="btn btn-o" onclick="hrPrintMatrix('Blue Collar — Skill Matrix','VRA-HR-005')">🖨️ Blue Collar</button>
+      <button class="btn btn-o" onclick="hrPrintAllMatrix()">🖨️ Print All Employees</button>
     </div>
   </div>
   <div id="mat-body"><div style="padding:40px;text-align:center;color:#9ca3af">Loading…</div></div>`);
@@ -422,85 +421,172 @@ async function _hrRenderMatrixCards(){
   const staffSkills=skills.filter(s=>s.category==='Staff');
   const workerSkills=skills.filter(s=>s.category==='Worker');
 
-  function getLevel(empId,skillId){
-    const m=matrix.find(x=>x.empId===empId&&x.skillId===skillId);
-    return m!==undefined?m.level:null;
-  }
-
-  function cellBg(lv){
-    if(lv===2) return{bg:'#dcfce7',fg:'#15803d'};
-    if(lv===1) return{bg:'#dbeafe',fg:'#1d4ed8'};
-    if(lv===0) return{bg:'#fee2e2',fg:'#b91c1c'};
-    if(lv===-1) return{bg:'#f3f4f6',fg:'#9ca3af'};
-    return{bg:'#fef9c3',fg:'#92400e'}; // null
-  }
-
-  function matSection(label,empList,skillList){
-    if(!empList.length) return`<div style="color:#9ca3af;font-style:italic;padding:12px 0">No active employees.</div>`;
-    const rotH=skillList.map(s=>`
-      <th style="border:1px solid #e5e7eb;padding:0;width:46px;min-width:46px;max-width:46px;vertical-align:bottom;background:#f8fafc">
-        <div style="writing-mode:vertical-rl;transform:rotate(180deg);white-space:nowrap;font-size:10px;font-weight:600;color:#374151;padding:6px 3px;text-align:left;max-height:110px;overflow:hidden">${esc(s.skillName)}</div>
-      </th>`).join('');
-    const rows=empList.map((e,i)=>{
-      const lvs=skillList.map(s=>getLevel(e.id,s.id));
-      const gaps=lvs.filter(v=>v===null||(v!==null&&v!==-1&&v<1)).length;
-      return`<tr>
-        <td style="padding:5px 10px;border:1px solid #e5e7eb;white-space:nowrap;background:${i%2?'#f8fafc':'#fff'};position:sticky;left:0;z-index:1;min-width:140px">
-          <div style="font-weight:600;font-size:12px;color:#0d2f6e">${esc(e.name)}</div>
-          <div style="font-size:10px;color:#9ca3af">${esc(e.designation)}</div>
-        </td>
-        ${skillList.map((s,si)=>{
-          const lv=lvs[si];
-          const {bg,fg}=cellBg(lv);
-          const label=lv===null?'?':lv===-1?'N/R':String(lv);
-          return`<td style="text-align:center;padding:2px;border:1px solid #e5e7eb;background:#fff">
-            <select class="hr-mat-sel" data-eid="${e.id}" data-sid="${s.id}"
-              style="width:42px;height:28px;border:none;border-radius:4px;background:${bg};color:${fg};font-weight:700;font-size:12px;cursor:pointer;text-align:center">
-              <option value="" ${lv===null?'selected':''}>?</option>
-              <option value="-1" ${lv===-1?'selected':''}>N/R</option>
-              <option value="0" ${lv===0?'selected':''}>0</option>
-              <option value="1" ${lv===1?'selected':''}>1</option>
-              <option value="2" ${lv===2?'selected':''}>2</option>
-            </select>
-          </td>`;
-        }).join('')}
-        <td style="text-align:center;padding:4px 8px;border:1px solid #e5e7eb;font-size:11px;font-weight:700;color:${gaps?'#b91c1c':'#15803d'};background:${gaps?'#fef2f2':'#f0fdf4'};white-space:nowrap">
-          ${gaps?'⚠ '+gaps+' gap'+(gaps>1?'s':''):'✓ OK'}
-        </td>
-      </tr>`;
-    }).join('');
-    return`<div style="margin-bottom:0">
-      <div style="background:#1e3a5f;color:#fff;padding:8px 14px;font-weight:700;font-size:12.5px;border-radius:6px 6px 0 0">
-        ${label}
-        <span style="font-weight:400;font-size:11px;opacity:.7;margin-left:8px">${empList.length} employee(s) · ${skillList.length} skills</span>
-      </div>
-      <div style="overflow-x:auto;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 6px 6px">
-        <table style="border-collapse:collapse;font-size:12px;min-width:100%">
-          <thead><tr>
-            <th style="border:1px solid #e5e7eb;padding:6px 10px;text-align:left;background:#f8fafc;font-size:11px;white-space:nowrap;position:sticky;left:0;z-index:2;min-width:140px">Employee</th>
-            ${rotH}
-            <th style="border:1px solid #e5e7eb;padding:6px 8px;background:#f8fafc;font-size:11px;white-space:nowrap;min-width:70px">Status</th>
-          </tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>
-    </div>`;
-  }
+  // Store all emps for navigation
+  const allEmps=[...staffEmps,...workerEmps];
+  window._hrMatEmps=allEmps;
+  window._hrMatSkills=skills;
+  window._hrMatMatrix=matrix;
+  window._hrMatIdx=0;
 
   const body=document.getElementById('mat-body');
   if(!body) return;
-  body.innerHTML=`
-    <div style="margin-bottom:10px;font-size:11.5px;color:#374151;padding:8px 12px;background:#fff;border:1px solid #e5e7eb;border-radius:6px">
-      <strong>Legend:</strong> &nbsp;
-      <span style="background:#fef9c3;color:#92400e;padding:1px 6px;border-radius:3px;font-weight:700;font-size:11px">?</span> Not Assessed &nbsp;
-      <span style="background:#fee2e2;color:#b91c1c;padding:1px 6px;border-radius:3px;font-weight:700;font-size:11px">0</span> Training Needed &nbsp;
-      <span style="background:#dbeafe;color:#1d4ed8;padding:1px 6px;border-radius:3px;font-weight:700;font-size:11px">1</span> Can Perform &nbsp;
-      <span style="background:#dcfce7;color:#15803d;padding:1px 6px;border-radius:3px;font-weight:700;font-size:11px">2</span> Expert &nbsp;
-      <span style="background:#f3f4f6;color:#9ca3af;padding:1px 6px;border-radius:3px;font-weight:700;font-size:11px">N/R</span> Not Required
+  _hrShowEmpMatrix(0);
+}
+
+function _hrShowEmpMatrix(idx){
+  const emps=window._hrMatEmps||[];
+  const skills=window._hrMatSkills||[];
+  const matrix=window._hrMatMatrix||[];
+  if(!emps.length){ document.getElementById('mat-body').innerHTML='<div style="padding:40px;text-align:center;color:#9ca3af">No active employees.</div>'; return; }
+  idx=Math.max(0,Math.min(idx,emps.length-1));
+  window._hrMatIdx=idx;
+  const e=emps[idx];
+  const empSkills=skills.filter(s=>s.category===e.category);
+
+  function getLevel(skillId){
+    const m=matrix.find(x=>x.empId===e.id&&x.skillId===skillId);
+    return m!==undefined?m.level:null;
+  }
+  function lvBadge(lv){
+    if(lv===2)  return{bg:'#dcfce7',fg:'#15803d',label:'2 — Expert'};
+    if(lv===1)  return{bg:'#dbeafe',fg:'#1d4ed8',label:'1 — Can Perform'};
+    if(lv===0)  return{bg:'#fee2e2',fg:'#b91c1c',label:'0 — Training Needed'};
+    if(lv===-1) return{bg:'#f3f4f6',fg:'#9ca3af',label:'N/R — Not Required'};
+    return{bg:'#fef9c3',fg:'#92400e',label:'? — Not Assessed'};
+  }
+
+  const gaps=empSkills.filter(s=>{ const v=getLevel(s.id); return v===null||(v!==-1&&v<1); });
+  const rows=empSkills.map((s,i)=>{
+    const lv=getLevel(s.id);
+    const {bg,fg}=lvBadge(lv);
+    const isGap=lv===null||(lv!==-1&&lv<1);
+    return`<tr style="background:${i%2?'#f8fafc':'#fff'}${isGap?';outline:1px solid #fca5a5':''}">
+      <td style="padding:8px 12px;border:1px solid #e5e7eb;font-size:12px;font-weight:500;color:#111827">${i+1}. ${esc(s.skillName)}</td>
+      <td style="padding:6px 8px;border:1px solid #e5e7eb;text-align:center;width:160px">
+        <select class="hr-mat-sel" data-eid="${e.id}" data-sid="${s.id}"
+          style="width:150px;padding:5px 8px;border:1px solid ${isGap?'#fca5a5':'#d1d5db'};border-radius:6px;background:${bg};color:${fg};font-weight:700;font-size:12px;cursor:pointer">
+          <option value="" ${lv===null?'selected':''}>? — Not Assessed</option>
+          <option value="-1" ${lv===-1?'selected':''}>N/R — Not Required</option>
+          <option value="0" ${lv===0?'selected':''}>0 — Training Needed</option>
+          <option value="1" ${lv===1?'selected':''}>1 — Can Perform</option>
+          <option value="2" ${lv===2?'selected':''}>2 — Expert</option>
+        </select>
+      </td>
+      <td style="padding:6px 10px;border:1px solid #e5e7eb;width:120px;text-align:center">
+        ${isGap
+          ?`<span style="background:#fee2e2;color:#b91c1c;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:600">⚠ Gap</span>`
+          :`<span style="background:#f0fdf4;color:#15803d;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:600">✓ OK</span>`}
+      </td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('mat-body').innerHTML=`
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+      <button class="btn btn-o" onclick="_hrShowEmpMatrix(${idx-1})" ${idx===0?'disabled':''}>← Prev</button>
+      <span style="font-size:12px;color:#6b7280">${idx+1} of ${emps.length} employees</span>
+      <button class="btn btn-o" onclick="_hrShowEmpMatrix(${idx+1})" ${idx===emps.length-1?'disabled':''}>Next →</button>
+      <select class="fc" style="width:220px;font-size:12px" onchange="_hrShowEmpMatrix(parseInt(this.value))">
+        ${emps.map((em,i)=>`<option value="${i}" ${i===idx?'selected':''}>${esc(em.name)} — ${esc(em.designation)}</option>`).join('')}
+      </select>
+      <span style="flex:1"></span>
+      <button class="btn btn-o btn-sm" onclick="hrPrintOneMatrix(${e.id})">🖨 Print This</button>
     </div>
-    ${matSection('White Collar — Skill Matrix',staffEmps,staffSkills)}
-    <div style="height:20px"></div>
-    ${matSection('Blue Collar — Skill Matrix',workerEmps,workerSkills)}`;
+
+    <div class="card">
+      <div class="ch" style="background:${e.category==='Staff'?'#eff6ff':'#f0fdf4'}">
+        <div>
+          <div style="font-weight:700;font-size:14px;color:#0d2f6e">${esc(e.name)}</div>
+          <div style="font-size:11.5px;color:#64748b;margin-top:2px">${esc(e.designation)} &nbsp;·&nbsp; <span style="font-family:monospace">${esc(e.empCode)}</span> &nbsp;·&nbsp; ${hrCatLabel(e.category)}</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          ${gaps.length
+            ?`<span style="background:#fee2e2;color:#b91c1c;border:1px solid #fecaca;border-radius:6px;padding:4px 12px;font-size:12px;font-weight:700">⚠ ${gaps.length} gap${gaps.length>1?'s':''}</span>`
+            :`<span style="background:#f0fdf4;color:#15803d;border:1px solid #bbf7d0;border-radius:6px;padding:4px 12px;font-size:12px;font-weight:700">✓ All OK</span>`}
+        </div>
+      </div>
+      <table style="border-collapse:collapse;width:100%">
+        <thead><tr style="background:#f8fafc">
+          <th style="padding:8px 12px;text-align:left;border:1px solid #e5e7eb;font-size:11px;color:#6b7280">Skill / Competency</th>
+          <th style="padding:8px 12px;text-align:center;border:1px solid #e5e7eb;font-size:11px;color:#6b7280;width:160px">Rating</th>
+          <th style="padding:8px 12px;text-align:center;border:1px solid #e5e7eb;font-size:11px;color:#6b7280;width:120px">Status</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      ${gaps.length?`<div style="padding:10px 14px;background:#fef2f2;border-top:1px solid #fecaca;font-size:12px;color:#b91c1c">
+        <strong>Training needed:</strong> ${gaps.map(s=>esc(s.skillName)).join(' · ')}
+      </div>`:''}
+    </div>`;
+}
+
+async function hrPrintOneMatrix(empId){
+  const emps=window._hrMatEmps||[];
+  const skills=window._hrMatSkills||[];
+  const matrix=window._hrMatMatrix||[];
+  const e=emps.find(x=>x.id===empId); if(!e) return;
+  const empSkills=skills.filter(s=>s.category===e.category);
+  function lv(skillId){ const m=matrix.find(x=>x.empId===e.id&&x.skillId===skillId); return m!==undefined?m.level:null; }
+  _hrPrintMatrixDoc([{e,skills:empSkills,lv}]);
+}
+
+async function hrPrintAllMatrix(){
+  const allMat=await db.hrSkillMatrix.toArray().catch(()=>[]);
+  window._hrMatMatrix=allMat;
+  const emps=window._hrMatEmps||[];
+  const skills=window._hrMatSkills||[];
+  const items=emps.map(e=>{
+    const empSkills=skills.filter(s=>s.category===e.category);
+    return{e,skills:empSkills,lv:(sid)=>{ const m=allMat.find(x=>x.empId===e.id&&x.skillId===sid); return m!==undefined?m.level:null; }};
+  });
+  _hrPrintMatrixDoc(items);
+}
+
+function _hrPrintMatrixDoc(items){
+  const today=new Date().toLocaleDateString('en-IN');
+  const empBlocks=items.map(({e,skills,lv})=>{
+    function lvText(v){ if(v===null)return'—'; if(v===-1)return'N/R'; return String(v); }
+    function lvBg(v){ if(v===2)return'#dcfce7'; if(v===1)return'#dbeafe'; if(v===0)return'#fee2e2'; if(v===-1)return'#f3f4f6'; return'#fef9c3'; }
+    const rows=skills.map((s,i)=>{
+      const v=lv(s.id);
+      return`<tr style="background:${i%2?'#f9fafb':'#fff'}">
+        <td style="padding:5px 10px;border:1px solid #d1d5db;font-size:9pt">${i+1}. ${s.skillName}</td>
+        <td style="padding:5px 8px;border:1px solid #d1d5db;text-align:center;font-weight:700;font-size:10pt;background:${lvBg(v)};width:60px">${lvText(v)}</td>
+        <td style="padding:5px 8px;border:1px solid #d1d5db;font-size:8.5pt;color:#555;width:140px">${v===null?'Not Assessed':v===-1?'Not Required':v===0?'Training Needed':v===1?'Can Perform Job':'Expert / Can Train'}</td>
+      </tr>`;
+    }).join('');
+    return`<div style="page-break-inside:avoid;margin-bottom:20px;border:1.5px solid #1e3a5f;border-radius:6px;overflow:hidden">
+      <div style="background:#1e3a5f;color:#fff;padding:8px 14px;display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <div style="font-weight:700;font-size:11pt">${e.name}</div>
+          <div style="font-size:8.5pt;opacity:.8">${e.designation} · ${e.empCode} · ${hrCatLabel(e.category)}</div>
+        </div>
+        <div style="font-size:9pt;opacity:.7">Assessed: ${today}</div>
+      </div>
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:#f1f5f9">
+          <th style="padding:5px 10px;border:1px solid #d1d5db;text-align:left;font-size:9pt">Skill / Competency</th>
+          <th style="padding:5px 8px;border:1px solid #d1d5db;text-align:center;font-size:9pt;width:60px">Rating</th>
+          <th style="padding:5px 8px;border:1px solid #d1d5db;text-align:left;font-size:9pt;width:140px">Status</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+  }).join('');
+
+  const w=window.open('','_blank');
+  w.document.write(`<!DOCTYPE html><html><head><title>Skill Matrix</title>
+  <style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:Arial,sans-serif;font-size:10pt;color:#000;padding:20px;background:#fff}
+  @page{size:A4;margin:14mm 15mm 18mm 15mm}
+  @media print{body{padding:0}}
+  h1{font-size:13pt;font-weight:bold;color:#1e3a5f;margin-bottom:4px}
+  .legend{font-size:8.5pt;color:#555;margin-bottom:16px;padding:6px 10px;border:1px solid #d1d5db;border-radius:4px}
+  </style></head><body>
+  <h1>V R Alucast — Skill Matrix Register</h1>
+  <div class="legend"><strong>Legend:</strong> &nbsp; ? = Not Assessed &nbsp;|&nbsp; 0 = Training Needed &nbsp;|&nbsp; 1 = Can Perform Job &nbsp;|&nbsp; 2 = Expert / Can Train Others &nbsp;|&nbsp; N/R = Not Required &nbsp;&nbsp;&nbsp; <strong>Date:</strong> ${today}</div>
+  ${empBlocks}
+  <script>window.onload=()=>window.print()<\/script></body></html>`);
+  w.document.close();
 }
 
 async function hrSaveMatrix(){
