@@ -21,6 +21,36 @@ async function hrRefreshTRNum(){
   if(numEl) numEl.value=newNum;
   if(prevEl) prevEl.textContent=newNum;
 }
+// ── DEDUPLICATE SKILLS (run on each matrix open) ──────
+async function hrDeduplicateSkills(){
+  const all = await db.hrSkillDefs.toArray().catch(()=>[]);
+  const seen = {}; // key: category+name → first id
+  const toDelete = [];
+  const remap = {}; // deletedId → keepId
+  for(const s of all.sort((a,b)=>a.id-b.id)){
+    const key = s.category + '||' + s.skillName.trim().toLowerCase();
+    if(seen[key] !== undefined){
+      toDelete.push(s.id);
+      remap[s.id] = seen[key];
+    } else {
+      seen[key] = s.id;
+    }
+  }
+  if(!toDelete.length) return;
+  // Remap hrSkillMatrix entries pointing to deleted skill ids
+  for(const [delId, keepId] of Object.entries(remap)){
+    const entries = await db.hrSkillMatrix.where('skillId').equals(parseInt(delId)).toArray().catch(()=>[]);
+    for(const entry of entries){
+      // Only keep if no entry for keepId+empId already exists
+      const exists = await db.hrSkillMatrix.where({empId:entry.empId, skillId:keepId}).first().catch(()=>null);
+      if(!exists) await db.hrSkillMatrix.update(entry.id, {skillId:keepId});
+      else await db.hrSkillMatrix.delete(entry.id);
+    }
+    await db.hrSkillDefs.delete(parseInt(delId));
+  }
+  console.log(`HR: removed ${toDelete.length} duplicate skill(s)`);
+}
+
 // ── SEEDING DEFAULT SKILLS ────────────────────────────
 async function hrSeedDefaults(){
   if(await db.hrSkillDefs.count().catch(()=>0)) return;
@@ -235,6 +265,8 @@ async function hrOpenEmpForm(id=null){
   const staffDesig=['Managing Partner','Production In-charge','QA In-charge','Shift Supervisor','QC Inspector'];
   const workerDesig=['CNC Operator','VMC Operator','Conventional Operator','Final Inspector','Helper','PDC Operator'];
   const allDesig=[...staffDesig,...workerDesig];
+  const curDesig=e?.designation||'';
+  const isCustomDesig=curDesig&&!allDesig.includes(curDesig);
   const ov=document.createElement('div');ov.className='overlay';ov.id='hr-emp-ov';
   ov.innerHTML=`<div class="modal" style="width:520px;max-height:90vh;overflow-y:auto">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
@@ -252,9 +284,13 @@ async function hrOpenEmpForm(id=null){
           <option value="Worker" ${e?.category==='Worker'?'selected':''}>Blue Collar</option>
         </select></div>
       <div class="fg"><label class="lbl">Designation *</label>
-        <select class="fc" id="hre-desig">
-          ${allDesig.map(d=>`<option value="${d}" ${e?.designation===d?'selected':''}>${d}</option>`).join('')}
-        </select></div>
+        <select class="fc" id="hre-desig" onchange="hrToggleCustomDesig()">
+          ${allDesig.map(d=>`<option value="${d}" ${!isCustomDesig&&curDesig===d?'selected':''}>${d}</option>`).join('')}
+          <option value="__other__" ${isCustomDesig?'selected':''}>Other / Custom…</option>
+        </select>
+        <input class="fc" id="hre-custom-desig" value="${esc(isCustomDesig?curDesig:'')}" placeholder="Enter designation"
+          style="margin-top:6px;display:${isCustomDesig?'block':'none'}">
+      </div>
       <div class="fg"><label class="lbl">Education</label>
         <input class="fc" id="hre-edu" value="${esc(e?.education||'')}" placeholder="e.g. BE Mech, ITI, 10th"></div>
       <div class="fg"><label class="lbl">Experience</label>
@@ -279,22 +315,33 @@ async function hrOpenEmpForm(id=null){
   hrUpdateDesigOptions(e?.category);
 }
 
+function hrToggleCustomDesig(){
+  const sel=document.getElementById('hre-desig');
+  const inp=document.getElementById('hre-custom-desig');
+  if(sel&&inp) inp.style.display=sel.value==='__other__'?'block':'none';
+}
+
 function hrUpdateDesigOptions(forceCategory){
   const cat=forceCategory||document.getElementById('hre-cat')?.value||'Staff';
   const staffDesig=['Managing Partner','Production In-charge','QA In-charge','Shift Supervisor','QC Inspector'];
   const workerDesig=['CNC Operator','VMC Operator','Conventional Operator','Final Inspector','Helper','PDC Operator'];
-  const opts=(cat==='Staff'?staffDesig:workerDesig).map(d=>`<option value="${d}">${d}</option>`).join('');
+  const list=cat==='Staff'?staffDesig:workerDesig;
+  const opts=list.map(d=>`<option value="${d}">${d}</option>`).join('');
   const el=document.getElementById('hre-desig');
-  if(el) el.innerHTML=opts;
+  if(el){ el.innerHTML=opts+`<option value="__other__">Other / Custom…</option>`; }
+  hrToggleCustomDesig();
 }
 
 async function hrSaveEmp(id){
   const name=document.getElementById('hre-name').value.trim();
   if(!name){toast('Employee name is required','d');return;}
+  const desigRaw=document.getElementById('hre-desig').value;
+  const designation=desigRaw==='__other__'?document.getElementById('hre-custom-desig').value.trim():desigRaw;
+  if(!designation){toast('Designation is required','d');return;}
   const rec={
     empCode:document.getElementById('hre-code').value.trim(),
     name, category:document.getElementById('hre-cat').value,
-    designation:document.getElementById('hre-desig').value,
+    designation,
     education:document.getElementById('hre-edu').value.trim(),
     experience:document.getElementById('hre-exp').value.trim(),
     doj:document.getElementById('hre-doj').value,
@@ -344,14 +391,38 @@ async function hrPrintEmployeeList(){
 }
 
 // ══════════════════════════════════════════════════════
-//  SKILL MATRIX  (with inline competency editing)
+//  SKILL MATRIX  (separate overlay window — progress cards)
 // ══════════════════════════════════════════════════════
 async function hrRenderSkillMatrix(){
   await hrSeedDefaults();
+  await hrDeduplicateSkills();
+  const ov=document.createElement('div');ov.id='hr-mat-ov';
+  ov.style='position:fixed;top:0;left:0;right:0;bottom:0;z-index:3000;background:#f1f5f9;overflow-y:auto;display:flex;flex-direction:column';
+  ov.innerHTML=`<div style="position:sticky;top:0;z-index:10;background:#1e3a5f;color:#fff;padding:12px 20px;display:flex;align-items:center;gap:14px;box-shadow:0 2px 8px rgba(0,0,0,.3)">
+    <span style="font-size:15px;font-weight:700">📊 Skill Matrix — Employee Progress Cards</span>
+    <span id="mat-updated" style="font-size:11px;color:#93c5fd;margin-left:4px"></span>
+    <div style="flex:1"></div>
+    <button class="btn btn-p btn-sm" onclick="hrSaveMatrix()">💾 Save &amp; Update</button>
+    <button class="btn btn-sm" style="background:#334155;color:#fff;border:1px solid #475569" onclick="hrManageSkills()">⚙️ Manage Skills</button>
+    <button class="btn btn-sm" style="background:#334155;color:#fff;border:1px solid #475569" onclick="hrPrintMatrix('White Collar — Skill Matrix','VRA-HR-002')">🖨️ Print White Collar</button>
+    <button class="btn btn-sm" style="background:#334155;color:#fff;border:1px solid #475569" onclick="hrPrintMatrix('Blue Collar — Skill Matrix','VRA-HR-005')">🖨️ Print Blue Collar</button>
+    <button class="btn btn-sm" style="background:#7f1d1d;color:#fff;border:none" onclick="document.getElementById('hr-mat-ov').remove()">✕ Close</button>
+  </div>
+  <div style="padding:20px;flex:1" id="mat-body">
+    <div style="padding:40px;text-align:center;color:#64748b">Loading…</div>
+  </div>`;
+  document.body.appendChild(ov);
+
+  const updAt=localStorage.getItem('hr_matrix_updated_at');
+  if(updAt) document.getElementById('mat-updated').textContent='Last updated: '+updAt;
+
+  await _hrRenderMatrixCards();
+}
+
+async function _hrRenderMatrixCards(){
   const emps=await db.hrEmployees.where('status').equals('Active').toArray().catch(()=>[]);
   const skills=await db.hrSkillDefs.toArray().catch(()=>[]);
   const matrix=await db.hrSkillMatrix.toArray().catch(()=>[]);
-
   const staffEmps=emps.filter(e=>e.category==='Staff');
   const workerEmps=emps.filter(e=>e.category==='Worker');
   const staffSkills=skills.filter(s=>s.category==='Staff');
@@ -362,67 +433,86 @@ async function hrRenderSkillMatrix(){
     return m!==undefined?m.level:null;
   }
 
-  function matBlock(title,empList,skillList,docNum){
-    if(!empList.length) return`<div class="card"><div class="ch"><h5>${title}</h5></div><div class="cb muted" style="padding:20px">No active employees in this category.</div></div>`;
-    // horizontal headers — fixed width columns
-    return`<div class="card" style="margin-bottom:16px">
-      <div class="ch">
-        <h5>${title}</h5>
-        <div style="display:flex;gap:8px;align-items:center">
-          <span class="muted" style="font-size:11px">${docNum}</span>
-          <button class="btn btn-p btn-sm" onclick="hrSaveMatrix()">💾 Save</button>
-          <button class="btn btn-o btn-sm" onclick="hrPrintMatrix('${title.replace(/'/g,"\\'").replace(/"/g,'&quot;')}','${docNum}')">🖨️ Print</button>
+  function levelColor(lv){
+    if(lv===2) return '#16a34a';
+    if(lv===1) return '#2563eb';
+    if(lv===0) return '#dc2626';
+    if(lv===-1) return '#9ca3af';
+    return '#f59e0b'; // null = not assessed
+  }
+  function levelLabel(lv){
+    if(lv===null) return'?';
+    if(lv===-1) return'N/R';
+    return String(lv);
+  }
+
+  function empCard(e, skillList){
+    const empSkills=skillList.filter(s=>s.category===e.category);
+    const levels=empSkills.map(s=>({s,lv:getLevel(e.id,s.id)}));
+    const gaps=levels.filter(x=>x.lv!==null&&x.lv!==-1&&x.lv<1);
+    const notAssessed=levels.filter(x=>x.lv===null);
+    const gapCount=gaps.length+notAssessed.length;
+    return`<div style="background:#fff;border-radius:10px;border:1px solid #e2e8f0;box-shadow:0 1px 4px rgba(0,0,0,.07);padding:14px;break-inside:avoid">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
+        <div>
+          <div style="font-weight:700;font-size:13px;color:#0d2f6e">${esc(e.name)}</div>
+          <div style="font-size:11px;color:#64748b;margin-top:1px">${esc(e.designation)} &nbsp;·&nbsp; <span style="font-family:monospace">${esc(e.empCode)}</span></div>
         </div>
+        ${gapCount>0?`<span style="background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;border-radius:5px;font-size:10px;font-weight:700;padding:2px 7px">⚠️ ${gapCount} gap${gapCount>1?'s':''}</span>`
+          :`<span style="background:#f0fdf4;color:#16a34a;border:1px solid #bbf7d0;border-radius:5px;font-size:10px;font-weight:700;padding:2px 7px">✅ OK</span>`}
       </div>
-      <div style="overflow-x:auto">
-        <table style="border-collapse:collapse;font-size:11.5px;min-width:100%">
-          <thead>
-            <tr style="background:var(--navy);color:#fff">
-              <th style="padding:7px 10px;text-align:left;min-width:130px;white-space:nowrap;position:sticky;left:0;background:var(--navy);z-index:2">Employee</th>
-              <th style="padding:7px 8px;min-width:120px;text-align:left;white-space:nowrap">Designation</th>
-              ${skillList.map(s=>`<th style="padding:6px 8px;min-width:90px;text-align:center;font-size:10.5px;white-space:normal;word-break:break-word;max-width:100px">${esc(s.skillName)}</th>`).join('')}
-            </tr>
-          </thead>
-          <tbody>
-            ${empList.map((e,i)=>`<tr style="${i%2===0?'background:#fff':'background:#f6f8fd'}">
-              <td style="padding:6px 10px;border:1px solid var(--border);font-weight:600;position:sticky;left:0;background:${i%2===0?'#fff':'#f6f8fd'};z-index:1">
-                ${esc(e.name)}<br><span class="muted" style="font-size:10px">${esc(e.empCode)}</span>
-              </td>
-              <td style="padding:6px 8px;border:1px solid var(--border);font-size:11px;color:var(--muted)">${esc(e.designation)}</td>
-              ${skillList.map(s=>{
-                const lv=getLevel(e.id,s.id);
-                return`<td style="text-align:center;padding:3px 4px;border:1px solid var(--border)">
-                  <select class="hr-mat-sel" data-eid="${e.id}" data-sid="${s.id}"
-                    style="border:1px solid var(--border);border-radius:4px;background:#fff;font-size:12px;font-weight:700;cursor:pointer;width:52px;text-align:center;padding:2px 0">
-                    <option value="" ${lv===null?'selected':''}>—</option>
-                    <option value="-1" ${lv===-1?'selected':''}>N/R</option>
-                    <option value="0" ${lv===0?'selected':''}>0</option>
-                    <option value="1" ${lv===1?'selected':''}>1</option>
-                    <option value="2" ${lv===2?'selected':''}>2</option>
-                  </select>
-                </td>`;
-              }).join('')}
-            </tr>`).join('')}
-          </tbody>
-        </table>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px">
+        ${empSkills.map(s=>{
+          const lv=getLevel(e.id,s.id);
+          const isGap=lv===null||(lv!==null&&lv!==-1&&lv<1);
+          return`<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 7px;border-radius:5px;background:${isGap?'#fef9ec':'#f8fafc'};border:1px solid ${isGap?'#fde68a':'#e5e7eb'}">
+            <span style="font-size:10.5px;color:#374151;flex:1;margin-right:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(s.skillName)}">${esc(s.skillName)}</span>
+            <select class="hr-mat-sel" data-eid="${e.id}" data-sid="${s.id}"
+              style="border:1px solid #d1d5db;border-radius:4px;background:#fff;font-size:11px;font-weight:700;cursor:pointer;width:46px;text-align:center;padding:1px 0;color:${levelColor(lv)}">
+              <option value="" ${lv===null?'selected':''}>?</option>
+              <option value="-1" ${lv===-1?'selected':''}>N/R</option>
+              <option value="0" ${lv===0?'selected':''}>0</option>
+              <option value="1" ${lv===1?'selected':''}>1</option>
+              <option value="2" ${lv===2?'selected':''}>2</option>
+            </select>
+          </div>`;
+        }).join('')}
+      </div>
+      ${gaps.length?`<div style="margin-top:8px;padding:6px 8px;background:#fef2f2;border-radius:5px;border:1px solid #fecaca;font-size:10.5px;color:#b91c1c">
+        <strong>Training needed:</strong> ${gaps.map(x=>esc(x.s.skillName)).join(', ')}
+      </div>`:''}
+      ${notAssessed.length?`<div style="margin-top:4px;padding:6px 8px;background:#fffbeb;border-radius:5px;border:1px solid #fde68a;font-size:10.5px;color:#92400e">
+        <strong>Not assessed:</strong> ${notAssessed.map(x=>esc(x.s.skillName)).join(', ')}
+      </div>`:''}
+    </div>`;
+  }
+
+  function section(title,empList,skillList,docNum){
+    if(!empList.length) return`<div style="margin-bottom:24px"><h3 style="color:#0d2f6e;font-size:13px;font-weight:700;border-bottom:2px solid #0d2f6e;padding-bottom:5px;margin-bottom:12px">${title}</h3><div style="color:#9ca3af;font-size:12px">No active employees in this category.</div></div>`;
+    return`<div style="margin-bottom:28px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+        <h3 style="color:#0d2f6e;font-size:13px;font-weight:700;border-bottom:2px solid #0d2f6e;padding-bottom:5px;flex:1">${title} &nbsp;<span style="font-weight:400;font-size:11px;color:#64748b">${docNum} · ${empList.length} employee(s) · ${skillList.filter(s=>s.category===empList[0]?.category).length} skills</span></h3>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px">
+        ${empList.map(e=>empCard(e,skillList)).join('')}
       </div>
     </div>`;
   }
 
-  setC(`
-  <div class="ph">
-    <h2>📊 Skill Matrix</h2>
-    <div style="display:flex;gap:8px">
-      <button class="btn btn-p" onclick="hrSaveMatrix()">💾 Save All</button>
-      <button class="btn btn-o" onclick="hrManageSkills()">⚙️ Manage Skills</button>
+  const body=document.getElementById('mat-body');
+  if(!body) return;
+  body.innerHTML=`
+    <div style="margin-bottom:12px;padding:10px 14px;background:#fff;border-radius:8px;border:1px solid #e2e8f0;font-size:12px;color:#374151">
+      <strong>Legend:</strong> &nbsp;
+      <span style="color:#f59e0b;font-weight:700">?</span> = Not Assessed &nbsp;|&nbsp;
+      <span style="color:#dc2626;font-weight:700">0</span> = Training Identified (Gap) &nbsp;|&nbsp;
+      <span style="color:#2563eb;font-weight:700">1</span> = Can Perform Job &nbsp;|&nbsp;
+      <span style="color:#16a34a;font-weight:700">2</span> = Expert / Can Train Others &nbsp;|&nbsp;
+      <span style="color:#9ca3af;font-weight:700">N/R</span> = Not Required
     </div>
-  </div>
-  <div class="alert al-w" style="margin-bottom:12px">
-    <strong>Legend:</strong> &nbsp;<strong>0</strong> = Training Identified &nbsp;|&nbsp; <strong>1</strong> = Can Perform Job &nbsp;|&nbsp; <strong>2</strong> = Expert / Can Train Others &nbsp;|&nbsp; <strong>N/R</strong> = Not Required
-  </div>
-  ${matBlock('White Collar — Skill Matrix',staffEmps,staffSkills,'VRA-HR-002')}
-  ${matBlock('Blue Collar — Skill Matrix',workerEmps,workerSkills,'VRA-HR-005')}
-  `);
+    ${section('White Collar — Skill Matrix',staffEmps,skills,'VRA-HR-002')}
+    ${section('Blue Collar — Skill Matrix',workerEmps,skills,'VRA-HR-005')}
+  `;
 }
 
 async function hrSaveMatrix(){
@@ -435,7 +525,14 @@ async function hrSaveMatrix(){
     if(existing) await db.hrSkillMatrix.update(existing.id,{level,updatedAt:new Date().toISOString()});
     else if(level!==null) await db.hrSkillMatrix.add({empId,skillId,level,updatedAt:new Date().toISOString()});
   }
-  toast(`✅ Skill matrix saved`);
+  const now=new Date();
+  const stamp=now.toLocaleDateString('en-IN')+' '+now.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});
+  localStorage.setItem('hr_matrix_updated_at',stamp);
+  const el=document.getElementById('mat-updated');
+  if(el) el.textContent='Last updated: '+stamp;
+  toast(`✅ Skill matrix saved — ${stamp}`);
+  // Refresh the cards to reflect new gap status
+  await _hrRenderMatrixCards();
 }
 
 async function hrPrintMatrix(filterTitle,docNum){
