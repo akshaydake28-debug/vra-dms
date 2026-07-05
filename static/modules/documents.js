@@ -1654,18 +1654,17 @@ async function printTranslated(docId) {
   </tr>`).join('');
 
   function sanitiseContent(html){
-    const d=document.createElement('div'); d.innerHTML=html;
-    d.querySelectorAll('p,li,ul,ol,div,td,th,tr,h1,h2,h3,h4,h5,h6').forEach(el=>{
-      el.style.color=''; el.style.fontWeight=''; el.style.fontSize='';
-    });
-    // Strip fixed widths from tables so they fit the page
-    d.querySelectorAll('table').forEach(el=>{
-      el.style.width=''; el.style.minWidth=''; el.style.maxWidth='';
+    // Regex-strip all inline color and font-weight from style attributes (catches every element type)
+    let h = html
+      .replace(/\bcolor\s*:[^;}"']+;?/gi, '')
+      .replace(/\bfont-weight\s*:[^;}"']+;?/gi, '')
+      .replace(/\bfont-size\s*:[^;}"']+;?/gi, '');
+    const d=document.createElement('div'); d.innerHTML=h;
+    // Strip fixed pixel widths from tables and cells
+    d.querySelectorAll('table,td,th,col,colgroup').forEach(el=>{
+      if(el.style.width && el.style.width.includes('px')) el.style.width='';
+      el.style.minWidth=''; el.style.maxWidth='';
       el.removeAttribute('width');
-    });
-    d.querySelectorAll('span').forEach(el=>{
-      el.style.color=''; el.style.fontWeight='';
-      if(!el.getAttribute('style')&&!el.className) el.replaceWith(...el.childNodes);
     });
     return d.innerHTML;
   }
@@ -1720,7 +1719,10 @@ hr{border:none;border-top:1px solid #ccc;margin:12px 0}
 #doc-content b,#doc-content strong{font-weight:bold}
 #doc-content i,#doc-content em{font-style:italic}
 #doc-content u{text-decoration:underline}
-@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+@media print{
+  table.hdr,table.hdr *,table.ftr,table.ftr *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  #doc-content *{color:#000!important;-webkit-print-color-adjust:economy;print-color-adjust:economy}
+}
 </style></head><body>
 <table class="wrap">
   <thead><tr><td>
@@ -1787,18 +1789,17 @@ async function printDoc(id){
   </tr>`).join('');
 
   function sanitiseContent(html){
-    const d=document.createElement('div'); d.innerHTML=html;
-    d.querySelectorAll('p,li,ul,ol,div,td,th,tr,h1,h2,h3,h4,h5,h6').forEach(el=>{
-      el.style.color=''; el.style.fontWeight=''; el.style.fontSize='';
-    });
-    // Strip fixed widths from tables so they fit the page
-    d.querySelectorAll('table').forEach(el=>{
-      el.style.width=''; el.style.minWidth=''; el.style.maxWidth='';
+    // Regex-strip all inline color and font-weight from style attributes (catches every element type)
+    let h = html
+      .replace(/\bcolor\s*:[^;}"']+;?/gi, '')
+      .replace(/\bfont-weight\s*:[^;}"']+;?/gi, '')
+      .replace(/\bfont-size\s*:[^;}"']+;?/gi, '');
+    const d=document.createElement('div'); d.innerHTML=h;
+    // Strip fixed pixel widths from tables and cells
+    d.querySelectorAll('table,td,th,col,colgroup').forEach(el=>{
+      if(el.style.width && el.style.width.includes('px')) el.style.width='';
+      el.style.minWidth=''; el.style.maxWidth='';
       el.removeAttribute('width');
-    });
-    d.querySelectorAll('span').forEach(el=>{
-      el.style.color=''; el.style.fontWeight='';
-      if(!el.getAttribute('style')&&!el.className) el.replaceWith(...el.childNodes);
     });
     return d.innerHTML;
   }
@@ -1825,8 +1826,11 @@ body{font-family:Arial,sans-serif;font-size:10pt;color:#000;background:#d1d5db;p
 #page-wrap{
   background:#fff;
   width:${landscape?'297mm':'210mm'};
+  max-width:100%;
+  overflow-x:hidden;
   margin:0 auto;
   padding:14mm 15mm 18mm;
+  box-sizing:border-box;
   box-shadow:0 4px 24px rgba(0,0,0,0.25);
   border-radius:2px;
 }
@@ -1852,8 +1856,8 @@ th{background:#ececec;font-weight:bold}
 .rev-table th{background:#1e3a5f;color:#fff}
 .page-num::after{content:" " counter(page) " of " counter(pages)}
 /* Force all content tables to fit page width */
-#doc-content table{width:100%!important;max-width:100%!important;table-layout:fixed!important}
-#doc-content td,#doc-content th{word-break:break-word!important;overflow-wrap:break-word!important}
+#doc-content table{width:100%!important;max-width:100%!important;table-layout:fixed!important;min-width:0!important}
+#doc-content td,#doc-content th{word-break:break-word!important;overflow-wrap:break-word!important;max-width:0;min-width:0!important}
 /* Strip editor inline colors — force black text in content area */
 #doc-content,#doc-content *{color:#000!important}
 #doc-content b,#doc-content strong{font-weight:bold}
