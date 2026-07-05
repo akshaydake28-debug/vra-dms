@@ -399,15 +399,22 @@ async function hrRenderSkillMatrix(){
   await hrDeduplicateSkills();
   const updAt=localStorage.getItem('hr_matrix_updated_at')||'';
   setC(`<div class="ph">
-    <h2>📊 Skill Matrix — Employee Progress Cards</h2>
+    <h2>📊 Skill Matrix</h2>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <span id="mat-updated" style="font-size:11px;color:#6b7280">${updAt?'Last updated: '+updAt:''}</span>
       <button class="btn btn-p" onclick="hrSaveMatrix()">💾 Save &amp; Update</button>
       <button class="btn btn-o" onclick="hrManageSkills()">⚙️ Manage Skills</button>
-      <button class="btn btn-o" onclick="hrPrintAllMatrix()">🖨️ Print All Employees</button>
+      <button class="btn btn-o" onclick="hrPrintAllMatrix()">🖨️ Print All</button>
     </div>
   </div>
-  <div id="mat-body"><div style="padding:40px;text-align:center;color:#9ca3af">Loading…</div></div>`);
+  <div style="display:flex;gap:0;height:calc(100vh - 130px);min-height:400px">
+    <div id="mat-list" style="width:240px;min-width:180px;border-right:1px solid #e5e7eb;overflow-y:auto;background:#f9fafb;flex-shrink:0">
+      <div style="padding:20px;text-align:center;color:#9ca3af;font-size:12px">Loading…</div>
+    </div>
+    <div id="mat-detail" style="flex:1;overflow-y:auto;padding:0">
+      <div style="padding:60px;text-align:center;color:#9ca3af;font-size:13px">← Select an employee to view their skill matrix</div>
+    </div>
+  </div>`);
   await _hrRenderMatrixCards();
   } catch(err){ console.error('hrRenderSkillMatrix error:',err); toast('Error: '+err.message,'d'); }
 }
@@ -418,28 +425,71 @@ async function _hrRenderMatrixCards(){
   const matrix=await db.hrSkillMatrix.toArray().catch(()=>[]);
   const staffEmps=emps.filter(e=>e.category==='Staff');
   const workerEmps=emps.filter(e=>e.category==='Worker');
-  const staffSkills=skills.filter(s=>s.category==='Staff');
-  const workerSkills=skills.filter(s=>s.category==='Worker');
 
-  // Store all emps for navigation
-  const allEmps=[...staffEmps,...workerEmps];
-  window._hrMatEmps=allEmps;
+  const prevIdx=window._hrMatIdx||0;
+  window._hrMatEmps=[...staffEmps,...workerEmps];
   window._hrMatSkills=skills;
   window._hrMatMatrix=matrix;
-  window._hrMatIdx=0;
 
-  const body=document.getElementById('mat-body');
-  if(!body) return;
-  _hrShowEmpMatrix(0);
+  _hrRenderEmpList();
+  if(window._hrMatEmps.length) _hrShowEmpMatrix(prevIdx);
+}
+
+function _hrRenderEmpList(){
+  const emps=window._hrMatEmps||[];
+  const skills=window._hrMatSkills||[];
+  const matrix=window._hrMatMatrix||[];
+  const list=document.getElementById('mat-list');
+  if(!list) return;
+
+  function gapCount(e){
+    const empSkills=skills.filter(s=>s.category===e.category);
+    return empSkills.filter(s=>{ const m=matrix.find(x=>x.empId===e.id&&x.skillId===s.id); const lv=m?m.level:null; return lv===null||(lv!==-1&&lv<1); }).length;
+  }
+
+  const staffEmps=emps.filter(e=>e.category==='Staff');
+  const workerEmps=emps.filter(e=>e.category==='Worker');
+
+  function empItem(e,idx){
+    const gaps=gapCount(e);
+    return`<div id="mat-li-${idx}" onclick="_hrShowEmpMatrix(${idx})" style="padding:10px 12px;cursor:pointer;border-bottom:1px solid #e5e7eb;transition:background 0.15s" onmouseover="this.style.background='#eff6ff'" onmouseout="if(window._hrMatIdx!==${idx})this.style.background=''">
+      <div style="font-weight:600;font-size:12.5px;color:#111827">${esc(e.name)}</div>
+      <div style="font-size:11px;color:#6b7280;margin-top:1px">${esc(e.empCode)} · ${esc(e.designation)}</div>
+      ${gaps?`<span style="display:inline-block;margin-top:3px;background:#fee2e2;color:#b91c1c;font-size:10px;font-weight:700;padding:1px 7px;border-radius:10px">⚠ ${gaps} gap${gaps>1?'s':''}</span>`
+             :`<span style="display:inline-block;margin-top:3px;background:#f0fdf4;color:#15803d;font-size:10px;font-weight:600;padding:1px 7px;border-radius:10px">✓ OK</span>`}
+    </div>`;
+  }
+
+  let html='';
+  if(staffEmps.length){
+    html+=`<div style="padding:8px 12px;background:#dbeafe;font-size:10.5px;font-weight:700;color:#1e40af;letter-spacing:0.5px;text-transform:uppercase;position:sticky;top:0">White Collar (${staffEmps.length})</div>`;
+    html+=emps.filter(e=>e.category==='Staff').map((e,i)=>empItem(e,emps.indexOf(e))).join('');
+  }
+  if(workerEmps.length){
+    html+=`<div style="padding:8px 12px;background:#dcfce7;font-size:10.5px;font-weight:700;color:#15803d;letter-spacing:0.5px;text-transform:uppercase;position:sticky;top:0">Blue Collar (${workerEmps.length})</div>`;
+    html+=emps.filter(e=>e.category==='Worker').map((e,i)=>empItem(e,emps.indexOf(e))).join('');
+  }
+  if(!emps.length) html='<div style="padding:20px;text-align:center;color:#9ca3af;font-size:12px">No active employees.</div>';
+  list.innerHTML=html;
 }
 
 function _hrShowEmpMatrix(idx){
   const emps=window._hrMatEmps||[];
   const skills=window._hrMatSkills||[];
   const matrix=window._hrMatMatrix||[];
-  if(!emps.length){ document.getElementById('mat-body').innerHTML='<div style="padding:40px;text-align:center;color:#9ca3af">No active employees.</div>'; return; }
+  const detail=document.getElementById('mat-detail');
+  if(!emps.length||!detail){ return; }
   idx=Math.max(0,Math.min(idx,emps.length-1));
+
+  // Update active highlight in list
+  if(window._hrMatIdx!==undefined){
+    const prev=document.getElementById('mat-li-'+window._hrMatIdx);
+    if(prev) prev.style.background='';
+  }
   window._hrMatIdx=idx;
+  const active=document.getElementById('mat-li-'+idx);
+  if(active) active.style.background='#eff6ff';
+
   const e=emps[idx];
   const empSkills=skills.filter(s=>s.category===e.category);
 
@@ -448,11 +498,11 @@ function _hrShowEmpMatrix(idx){
     return m!==undefined?m.level:null;
   }
   function lvBadge(lv){
-    if(lv===2)  return{bg:'#dcfce7',fg:'#15803d',label:'2 — Expert'};
-    if(lv===1)  return{bg:'#dbeafe',fg:'#1d4ed8',label:'1 — Can Perform'};
-    if(lv===0)  return{bg:'#fee2e2',fg:'#b91c1c',label:'0 — Training Needed'};
-    if(lv===-1) return{bg:'#f3f4f6',fg:'#9ca3af',label:'N/R — Not Required'};
-    return{bg:'#fef9c3',fg:'#92400e',label:'? — Not Assessed'};
+    if(lv===2)  return{bg:'#dcfce7',fg:'#15803d'};
+    if(lv===1)  return{bg:'#dbeafe',fg:'#1d4ed8'};
+    if(lv===0)  return{bg:'#fee2e2',fg:'#b91c1c'};
+    if(lv===-1) return{bg:'#f3f4f6',fg:'#9ca3af'};
+    return{bg:'#fef9c3',fg:'#92400e'};
   }
 
   const gaps=empSkills.filter(s=>{ const v=getLevel(s.id); return v===null||(v!==-1&&v<1); });
@@ -480,39 +530,29 @@ function _hrShowEmpMatrix(idx){
     </tr>`;
   }).join('');
 
-  document.getElementById('mat-body').innerHTML=`
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
-      <button class="btn btn-o" onclick="_hrShowEmpMatrix(${idx-1})" ${idx===0?'disabled':''}>← Prev</button>
-      <span style="font-size:12px;color:#6b7280">${idx+1} of ${emps.length} employees</span>
-      <button class="btn btn-o" onclick="_hrShowEmpMatrix(${idx+1})" ${idx===emps.length-1?'disabled':''}>Next →</button>
-      <select class="fc" style="width:220px;font-size:12px" onchange="_hrShowEmpMatrix(parseInt(this.value))">
-        ${emps.map((em,i)=>`<option value="${i}" ${i===idx?'selected':''}>${esc(em.name)} — ${esc(em.designation)}</option>`).join('')}
-      </select>
-      <span style="flex:1"></span>
-      <button class="btn btn-o btn-sm" onclick="hrPrintOneMatrix(${e.id})">🖨 Print This</button>
-    </div>
-
-    <div class="card">
-      <div class="ch" style="background:${e.category==='Staff'?'#eff6ff':'#f0fdf4'}">
-        <div>
-          <div style="font-weight:700;font-size:14px;color:#0d2f6e">${esc(e.name)}</div>
-          <div style="font-size:11.5px;color:#64748b;margin-top:2px">${esc(e.designation)} &nbsp;·&nbsp; <span style="font-family:monospace">${esc(e.empCode)}</span> &nbsp;·&nbsp; ${hrCatLabel(e.category)}</div>
-        </div>
-        <div style="display:flex;gap:8px;align-items:center">
-          ${gaps.length
-            ?`<span style="background:#fee2e2;color:#b91c1c;border:1px solid #fecaca;border-radius:6px;padding:4px 12px;font-size:12px;font-weight:700">⚠ ${gaps.length} gap${gaps.length>1?'s':''}</span>`
-            :`<span style="background:#f0fdf4;color:#15803d;border:1px solid #bbf7d0;border-radius:6px;padding:4px 12px;font-size:12px;font-weight:700">✓ All OK</span>`}
-        </div>
+  detail.innerHTML=`
+    <div style="padding:16px 20px;border-bottom:1px solid #e5e7eb;background:${e.category==='Staff'?'#eff6ff':'#f0fdf4'};display:flex;justify-content:space-between;align-items:center;gap:12px">
+      <div>
+        <div style="font-weight:700;font-size:15px;color:#0d2f6e">${esc(e.name)}</div>
+        <div style="font-size:11.5px;color:#64748b;margin-top:2px">${esc(e.designation)} &nbsp;·&nbsp; <span style="font-family:monospace">${esc(e.empCode)}</span> &nbsp;·&nbsp; ${hrCatLabel(e.category)}</div>
       </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        ${gaps.length
+          ?`<span style="background:#fee2e2;color:#b91c1c;border:1px solid #fecaca;border-radius:6px;padding:4px 12px;font-size:12px;font-weight:700">⚠ ${gaps.length} gap${gaps.length>1?'s':''}</span>`
+          :`<span style="background:#f0fdf4;color:#15803d;border:1px solid #bbf7d0;border-radius:6px;padding:4px 12px;font-size:12px;font-weight:700">✓ All OK</span>`}
+        <button class="btn btn-o btn-sm" onclick="hrPrintOneMatrix(${e.id})">🖨 Print</button>
+      </div>
+    </div>
+    <div style="padding:16px 20px">
       <table style="border-collapse:collapse;width:100%">
         <thead><tr style="background:#f8fafc">
           <th style="padding:8px 12px;text-align:left;border:1px solid #e5e7eb;font-size:11px;color:#6b7280">Skill / Competency</th>
           <th style="padding:8px 12px;text-align:center;border:1px solid #e5e7eb;font-size:11px;color:#6b7280;width:160px">Rating</th>
           <th style="padding:8px 12px;text-align:center;border:1px solid #e5e7eb;font-size:11px;color:#6b7280;width:120px">Status</th>
         </tr></thead>
-        <tbody>${rows}</tbody>
+        <tbody>${rows||`<tr><td colspan="3" style="padding:20px;text-align:center;color:#9ca3af;font-size:12px">No skills defined for this category.</td></tr>`}</tbody>
       </table>
-      ${gaps.length?`<div style="padding:10px 14px;background:#fef2f2;border-top:1px solid #fecaca;font-size:12px;color:#b91c1c">
+      ${gaps.length?`<div style="margin-top:12px;padding:10px 14px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;font-size:12px;color:#b91c1c">
         <strong>Training needed:</strong> ${gaps.map(s=>esc(s.skillName)).join(' · ')}
       </div>`:''}
     </div>`;
@@ -608,7 +648,7 @@ async function hrSaveMatrix(){
   const el=document.getElementById('mat-updated');
   if(el) el.textContent='Last updated: '+stamp;
   toast(`✅ Skill matrix saved — ${stamp}`);
-  // Refresh the cards to reflect new gap status
+  // Refresh matrix data and re-render list + current employee
   await _hrRenderMatrixCards();
 }
 
