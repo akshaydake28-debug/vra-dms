@@ -116,6 +116,7 @@ function editorHTML(initialContent=''){
       <span class="tb-sep"></span>
       <button class="tb-btn" onmousedown="event.preventDefault()" onclick="execFmt('removeFormat')" style="color:#888" title="Clear formatting">✕ Clear</button>
       <button class="tb-btn" onmousedown="event.preventDefault()" onclick="showPrintPreview()" title="Preview as print" style="color:#1d4ed8">👁 Preview</button>
+      <button class="tb-btn" id="btn-margin-guide" onmousedown="event.preventDefault()" onclick="toggleMarginGuide()" title="Show/hide print margin guide" style="color:#7c3aed">📐 Margins</button>
       <span style="flex:1"></span>
       <span id="ed-wordcount" style="font-size:10.5px;color:#9ca3af;margin-right:6px"></span>
     </div>
@@ -211,7 +212,10 @@ function editorHTML(initialContent=''){
       </div>
     </div>
 
-    <div id="doc-editor" contenteditable="true" spellcheck="true" style="min-height:400px">${initialContent||'<p><br></p>'}</div>
+    <div id="editor-page-wrap">
+      <div style="display:none;text-align:center;font-size:10px;font-weight:600;color:#2563eb;background:#eff6ff;padding:3px 0;border-bottom:1px dashed #93c5fd" id="guide-banner">📐 Print margin guide active — blue border = printable area (A4, 180mm wide)</div>
+      <div id="doc-editor" contenteditable="true" spellcheck="true" style="min-height:400px">${initialContent||'<p><br></p>'}</div>
+    </div>
     <div style="padding:4px 10px;font-size:10.5px;color:#9ca3af;border-top:1px solid #f0f0f0;display:flex;justify-content:space-between">
       <span id="ed-status"></span>
       <span id="ed-wordcount2"></span>
@@ -236,6 +240,21 @@ function _updateWordCount(){
   const wc2=document.getElementById('ed-wordcount2');
   if(wc1) wc1.textContent=label;
   if(wc2) wc2.textContent=label;
+}
+
+// ── Print margin guide toggle ─────────────────────────
+function toggleMarginGuide(){
+  const wrap = document.getElementById('editor-page-wrap');
+  const banner = document.getElementById('guide-banner');
+  const btn = document.getElementById('btn-margin-guide');
+  if(!wrap) return;
+  const on = wrap.classList.toggle('guide-on');
+  if(banner) banner.style.display = on ? 'block' : 'none';
+  if(btn){
+    btn.style.background = on ? '#eff6ff' : '';
+    btn.style.borderColor = on ? '#2563eb' : '';
+    btn.style.color = on ? '#2563eb' : '#7c3aed';
+  }
 }
 
 // ── Print preview (WYSIWYG) ──────────────────────────
