@@ -1653,6 +1653,18 @@ async function printTranslated(docId) {
     <td>${esc(v.changeSummary||'')}</td>
   </tr>`).join('');
 
+  function sanitiseContent(html){
+    const d=document.createElement('div'); d.innerHTML=html;
+    d.querySelectorAll('p,li,ul,ol,div,td,th,tr,h1,h2,h3,h4,h5,h6').forEach(el=>{
+      el.style.color=''; el.style.fontWeight=''; el.style.fontSize='';
+    });
+    d.querySelectorAll('span').forEach(el=>{
+      el.style.color=''; el.style.fontWeight='';
+      if(!el.getAttribute('style')&&!el.className) el.replaceWith(...el.childNodes);
+    });
+    return d.innerHTML;
+  }
+
   function openTransBlob(html){
     const blob=new Blob([html],{type:'text/html;charset=utf-8'});
     const url=URL.createObjectURL(blob);
@@ -1738,7 +1750,7 @@ hr{border:none;border-top:1px solid #ccc;margin:12px 0}
   </td></tr></tfoot>
   <tbody><tr><td>
     <div class="lang-notice">🌐 This is a ${cached.langName} translation of ${doc.docNumber} Rev ${doc.revision}. For official records, refer to the original English document.</div>
-    <div id="doc-content">${cached.html}</div>
+    <div id="doc-content">${sanitiseContent(cached.html)}</div>
     <div class="rev-page">
       <h4>Revision History / आवृत्ती इतिहास</h4>
       <table>
@@ -1768,6 +1780,21 @@ async function printDoc(id){
     <td>${esc(v.preparedBy||'')}</td><td>${esc(v.approvedBy||'Pending')}</td>
     <td>${esc(v.changeSummary||'')}</td>
   </tr>`).join('');
+
+  function sanitiseContent(html){
+    const d=document.createElement('div'); d.innerHTML=html;
+    // Strip inline color and font-weight from block/structural elements
+    d.querySelectorAll('p,li,ul,ol,div,td,th,tr,h1,h2,h3,h4,h5,h6').forEach(el=>{
+      el.style.color=''; el.style.fontWeight=''; el.style.fontSize='';
+    });
+    // Also strip from spans that are ONLY wrapping color/weight (no other purpose)
+    d.querySelectorAll('span').forEach(el=>{
+      el.style.color=''; el.style.fontWeight='';
+      // If span has no remaining style and no class, unwrap it
+      if(!el.getAttribute('style')&&!el.className) el.replaceWith(...el.childNodes);
+    });
+    return d.innerHTML;
+  }
 
   function openPrintBlob(html){
     const blob=new Blob([html],{type:'text/html;charset=utf-8'});
@@ -1880,7 +1907,7 @@ function doPrint(){
 </td></tr></thead>
 <tbody><tr><td>
   <div id="doc-content" style="font-size:10.5pt;line-height:1.8;padding:8px 0">
-    ${ver?.content||'<p style="color:#999">No content.</p>'}
+    ${sanitiseContent(ver?.content||'<p style="color:#999">No content.</p>')}
   </div>
 </td></tr></tbody>
 <tfoot><tr><td>
