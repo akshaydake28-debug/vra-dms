@@ -1654,13 +1654,14 @@ async function printTranslated(docId) {
   </tr>`).join('');
 
   function openTransBlob(html){
-    const blob=new Blob([html],{type:'text/html'});
+    const blob=new Blob([html],{type:'text/html;charset=utf-8'});
     const url=URL.createObjectURL(blob);
     const a=document.createElement('a'); a.href=url; a.target='_blank'; a.rel='noopener';
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     setTimeout(()=>URL.revokeObjectURL(url),60000);
   }
   openTransBlob(`<!DOCTYPE html><html><head>
+<meta charset="UTF-8">
 <title>${doc.docNumber} — ${cached.langName}</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -1764,13 +1765,14 @@ async function printDoc(id){
   </tr>`).join('');
 
   function openPrintBlob(html){
-    const blob=new Blob([html],{type:'text/html'});
+    const blob=new Blob([html],{type:'text/html;charset=utf-8'});
     const url=URL.createObjectURL(blob);
     const a=document.createElement('a'); a.href=url; a.target='_blank'; a.rel='noopener';
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     setTimeout(()=>URL.revokeObjectURL(url),60000);
   }
   openPrintBlob(`<!DOCTYPE html><html><head>
+<meta charset="UTF-8">
 <title>${doc.docNumber} — ${esc(doc.title)}</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
