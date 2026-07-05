@@ -529,62 +529,64 @@ async function hrPrintOneMatrix(empId){
 }
 
 async function hrPrintAllMatrix(){
-  const allMat=await db.hrSkillMatrix.toArray().catch(()=>[]);
-  window._hrMatMatrix=allMat;
-  const emps=window._hrMatEmps||[];
-  const skills=window._hrMatSkills||[];
-  const items=emps.map(e=>{
-    const empSkills=skills.filter(s=>s.category===e.category);
-    return{e,skills:empSkills,lv:(sid)=>{ const m=allMat.find(x=>x.empId===e.id&&x.skillId===sid); return m!==undefined?m.level:null; }};
-  });
-  _hrPrintMatrixDoc(items);
-}
-
-function _hrPrintMatrixDoc(items){
+  const emps=await db.hrEmployees.where('status').equals('Active').toArray().catch(()=>[]);
+  const skills=await db.hrSkillDefs.toArray().catch(()=>[]);
+  const matrix=await db.hrSkillMatrix.toArray().catch(()=>[]);
   const today=new Date().toLocaleDateString('en-IN');
-  const empBlocks=items.map(({e,skills,lv})=>{
-    function lvText(v){ if(v===null)return'—'; if(v===-1)return'N/R'; return String(v); }
-    function lvBg(v){ if(v===2)return'#dcfce7'; if(v===1)return'#dbeafe'; if(v===0)return'#fee2e2'; if(v===-1)return'#f3f4f6'; return'#fef9c3'; }
-    const rows=skills.map((s,i)=>{
-      const v=lv(s.id);
-      return`<tr style="background:${i%2?'#f9fafb':'#fff'}">
-        <td style="padding:5px 10px;border:1px solid #d1d5db;font-size:9pt">${i+1}. ${s.skillName}</td>
-        <td style="padding:5px 8px;border:1px solid #d1d5db;text-align:center;font-weight:700;font-size:10pt;background:${lvBg(v)};width:60px">${lvText(v)}</td>
-        <td style="padding:5px 8px;border:1px solid #d1d5db;font-size:8.5pt;color:#555;width:140px">${v===null?'Not Assessed':v===-1?'Not Required':v===0?'Training Needed':v===1?'Can Perform Job':'Expert / Can Train'}</td>
-      </tr>`;
-    }).join('');
-    return`<div style="page-break-inside:avoid;margin-bottom:20px;border:1.5px solid #1e3a5f;border-radius:6px;overflow:hidden">
-      <div style="background:#1e3a5f;color:#fff;padding:8px 14px;display:flex;justify-content:space-between;align-items:center">
-        <div>
-          <div style="font-weight:700;font-size:11pt">${e.name}</div>
-          <div style="font-size:8.5pt;opacity:.8">${e.designation} · ${e.empCode} · ${hrCatLabel(e.category)}</div>
-        </div>
-        <div style="font-size:9pt;opacity:.7">Assessed: ${today}</div>
+
+  function lv(empId,skillId){
+    const m=matrix.find(x=>x.empId===empId&&x.skillId===skillId);
+    if(!m||m.level===null) return'—';
+    if(m.level===-1) return'N/R';
+    return String(m.level);
+  }
+  function lvBg(v){ if(v==='2')return'#dcfce7'; if(v==='1')return'#dbeafe'; if(v==='0')return'#fee2e2'; if(v==='N/R')return'#f3f4f6'; return'#fff'; }
+
+  function matTable(title,docNum,empList,skillList){
+    if(!empList.length) return'';
+    const skillCols=skillList.map(s=>`<th style="padding:4px 5px;border:1px solid #000;font-size:7.5pt;text-align:center;word-break:break-word;max-width:60px;white-space:normal">${esc(s.skillName)}</th>`).join('');
+    const rows=empList.map((e,i)=>`<tr style="${i%2?'background:#f9fafb':''}">
+      <td style="padding:4px 8px;border:1px solid #ccc;white-space:nowrap;font-weight:600;font-size:8.5pt">${esc(e.name)}<br><span style="font-size:7pt;font-weight:400;color:#555">${esc(e.empCode)}</span></td>
+      <td style="padding:4px 8px;border:1px solid #ccc;font-size:8pt">${esc(e.designation)}</td>
+      ${skillList.map(s=>{ const v=lv(e.id,s.id); return`<td style="text-align:center;padding:4px 3px;border:1px solid #ccc;font-weight:700;font-size:9pt;background:${lvBg(v)}">${v}</td>`; }).join('')}
+    </tr>`).join('');
+    return`<div style="margin-bottom:24px">
+      <div style="background:#1e3a5f;color:#fff;padding:6px 12px;font-weight:700;font-size:10pt;display:flex;justify-content:space-between">
+        <span>${title}</span><span style="font-weight:400;font-size:8.5pt;opacity:.8">${docNum} · ${empList.length} employees · ${skillList.length} skills · ${today}</span>
       </div>
-      <table style="width:100%;border-collapse:collapse">
-        <thead><tr style="background:#f1f5f9">
-          <th style="padding:5px 10px;border:1px solid #d1d5db;text-align:left;font-size:9pt">Skill / Competency</th>
-          <th style="padding:5px 8px;border:1px solid #d1d5db;text-align:center;font-size:9pt;width:60px">Rating</th>
-          <th style="padding:5px 8px;border:1px solid #d1d5db;text-align:left;font-size:9pt;width:140px">Status</th>
+      <table style="width:100%;border-collapse:collapse;font-size:8.5pt">
+        <thead><tr style="background:#ececec">
+          <th style="padding:5px 8px;border:1px solid #000;text-align:left;min-width:100px">Name / Code</th>
+          <th style="padding:5px 8px;border:1px solid #000;text-align:left;min-width:90px">Designation</th>
+          ${skillCols}
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>`;
-  }).join('');
+  }
+
+  const staffEmps=emps.filter(e=>e.category==='Staff');
+  const workerEmps=emps.filter(e=>e.category==='Worker');
+  const staffSkills=skills.filter(s=>s.category==='Staff');
+  const workerSkills=skills.filter(s=>s.category==='Worker');
 
   const w=window.open('','_blank');
   w.document.write(`<!DOCTYPE html><html><head><title>Skill Matrix</title>
   <style>
   *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:Arial,sans-serif;font-size:10pt;color:#000;padding:20px;background:#fff}
-  @page{size:A4;margin:14mm 15mm 18mm 15mm}
+  body{font-family:Arial,sans-serif;font-size:9pt;color:#000;padding:16px}
+  @page{size:A4 landscape;margin:12mm 14mm 14mm 14mm}
   @media print{body{padding:0}}
-  h1{font-size:13pt;font-weight:bold;color:#1e3a5f;margin-bottom:4px}
-  .legend{font-size:8.5pt;color:#555;margin-bottom:16px;padding:6px 10px;border:1px solid #d1d5db;border-radius:4px}
   </style></head><body>
-  <h1>V R Alucast — Skill Matrix Register</h1>
-  <div class="legend"><strong>Legend:</strong> &nbsp; ? = Not Assessed &nbsp;|&nbsp; 0 = Training Needed &nbsp;|&nbsp; 1 = Can Perform Job &nbsp;|&nbsp; 2 = Expert / Can Train Others &nbsp;|&nbsp; N/R = Not Required &nbsp;&nbsp;&nbsp; <strong>Date:</strong> ${today}</div>
-  ${empBlocks}
+  <div style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:flex-end">
+    <div><div style="font-size:13pt;font-weight:bold;color:#1e3a5f">V R Alucast — Skill Matrix Register</div>
+    <div style="font-size:8pt;color:#555;margin-top:2px">VRA-HR-002 / VRA-HR-005 · Printed: ${today}</div></div>
+    <div style="font-size:8pt;color:#555;border:1px solid #ccc;padding:4px 10px;border-radius:3px">
+      <strong>Legend:</strong> &nbsp;— = Not Assessed &nbsp;|&nbsp; 0 = Training Needed &nbsp;|&nbsp; 1 = Can Perform &nbsp;|&nbsp; 2 = Expert &nbsp;|&nbsp; N/R = Not Required
+    </div>
+  </div>
+  ${matTable('White Collar — Skill Matrix','VRA-HR-002',staffEmps,staffSkills)}
+  ${matTable('Blue Collar — Skill Matrix','VRA-HR-005',workerEmps,workerSkills)}
   <script>window.onload=()=>window.print()<\/script></body></html>`);
   w.document.close();
 }
