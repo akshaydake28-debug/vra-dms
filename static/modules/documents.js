@@ -56,6 +56,19 @@ function doFilter(){
 const TEXT_COLORS = ['#000000','#333333','#666666','#999999','#cc0000','#e67c00','#f4c430','#1a73e8','#0f9d58','#9334e6','#795548','#ffffff'];
 const CELL_COLORS = ['#ffffff','#f5f5f5','#e0e0e0','#bdbdbd','#e8f0fe','#fef9c3','#d9f7be','#ffe0e0','#f3e8ff','#fff3e0','#1a3c6e','#1a73e8','#0f9d58','#cc0000','#e67c00','#000000'];
 
+// ── Undo stack for table operations ─────────────────
+const _tblUndo = [];
+function _tblSnapshot(){
+  const ed = document.getElementById('doc-editor'); if(!ed) return;
+  _tblUndo.push(ed.innerHTML);
+  if(_tblUndo.length > 50) _tblUndo.shift();
+}
+function _tblUndoLast(){
+  if(!_tblUndo.length) return;
+  const ed = document.getElementById('doc-editor'); if(!ed) return;
+  ed.innerHTML = _tblUndo.pop();
+}
+
 function colorSwatches(colors, fn) {
   return `<div class="clr-swatches">${colors.map(c=>`<div class="clr-sw" style="background:${c}" onmousedown="event.preventDefault()" onclick="${fn}('${c}')" title="${c}"></div>`).join('')}</div>
   <input type="color" style="width:100%;height:26px;cursor:pointer;border:1px solid #ccc;border-radius:4px;margin-top:2px" onmousedown="event.preventDefault()" oninput="${fn}(this.value)">`;
@@ -64,24 +77,32 @@ function colorSwatches(colors, fn) {
 function editorHTML(initialContent=''){
   return `
   <div class="editor-shell">
+    <!-- MAIN TOOLBAR -->
     <div class="toolbar">
-      <select class="tb-select" onmousedown="event.preventDefault()" onchange="execFmt('formatBlock',this.value);this.value='p'">
+      <select class="tb-select" onmousedown="event.preventDefault()" onchange="execFmt('formatBlock',this.value);this.value='p'" title="Block style">
         <option value="p">Paragraph</option>
         <option value="h1">Heading 1</option>
         <option value="h2">Heading 2</option>
         <option value="h3">Heading 3</option>
       </select>
       <span class="tb-sep"></span>
-      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="execFmt('bold')"><b>B</b></button>
-      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="execFmt('italic')"><i>I</i></button>
-      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="execFmt('underline')"><u>U</u></button>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="execFmt('bold')" title="Bold (Ctrl+B)"><b>B</b></button>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="execFmt('italic')" title="Italic (Ctrl+I)"><i>I</i></button>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="execFmt('underline')" title="Underline (Ctrl+U)"><u>U</u></button>
       <span class="tb-sep"></span>
-      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="execFmt('insertOrderedList')">1. List</button>
-      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="execFmt('insertUnorderedList')">• List</button>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="execFmt('justifyLeft')"   title="Align left">⬤⬤⬤<span style="font-size:8px">◀</span></button>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="execFmt('justifyCenter')" title="Align center">≡</button>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="execFmt('justifyRight')"  title="Align right"><span style="font-size:8px">▶</span>⬤⬤⬤</button>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="execFmt('justifyFull')"   title="Justify">⬛⬛⬛⬛</button>
+      <span class="tb-sep"></span>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="execFmt('insertOrderedList')" title="Numbered list">1.</button>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="execFmt('insertUnorderedList')" title="Bullet list">•</button>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="execFmt('indent')"   title="Indent">→</button>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="execFmt('outdent')"  title="Outdent">←</button>
       <span class="tb-sep"></span>
       <div class="clr-wrap">
         <button class="tb-btn" onmousedown="event.preventDefault()" onclick="toggleClrPicker('tc-picker')" title="Text colour">
-          <b id="tc-indicator" style="border-bottom:3px solid #000;padding-bottom:1px">A</b> ▾
+          <b id="tc-indicator" style="border-bottom:3px solid #000;padding-bottom:1px">A</b>▾
         </button>
         <div id="tc-picker" class="clr-picker" style="display:none">
           <div style="font-size:10.5px;font-weight:600;color:#6b7280;margin-bottom:5px">Text Colour</div>
@@ -89,33 +110,59 @@ function editorHTML(initialContent=''){
         </div>
       </div>
       <span class="tb-sep"></span>
-      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="insertTable()">⊞ Table</button>
-      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="insertImage()">🖼 Image</button>
-      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="execFmt('insertHorizontalRule')">─ Line</button>
-      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="execFmt('removeFormat')" style="color:#888">✕ Clear</button>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="showInsertTable()" title="Insert table">⊞ Table</button>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="insertImage()" title="Insert image">🖼 Image</button>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="execFmt('insertHorizontalRule')" title="Horizontal rule">─ Line</button>
+      <span class="tb-sep"></span>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="execFmt('removeFormat')" style="color:#888" title="Clear formatting">✕ Clear</button>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="showPrintPreview()" title="Preview as print" style="color:#1d4ed8">👁 Preview</button>
+      <span style="flex:1"></span>
+      <span id="ed-wordcount" style="font-size:10.5px;color:#9ca3af;margin-right:6px"></span>
     </div>
 
-    <!-- TABLE TOOLBAR — shown automatically when cursor is inside a table -->
-    <div class="toolbar tbl-tb" id="tbl-tb">
-      <span style="font-size:11px;font-weight:700;color:#92400e;margin-right:5px">Table ›</span>
-      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblAddRow(false)" title="Add row below">↓ Add Row</button>
-      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblAddRow(true)"  title="Add row above">↑ Add Row</button>
-      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblAddCol(false)" title="Add column to right">→ Add Col</button>
-      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblAddCol(true)"  title="Add column to left">← Add Col</button>
+    <!-- TABLE TOOLBAR — shown when cursor is inside a table -->
+    <div class="toolbar tbl-tb" id="tbl-tb" style="display:none">
+      <span style="font-size:11px;font-weight:700;color:#92400e;margin-right:4px">Table ›</span>
+      <input type="number" id="tbl-n" min="1" max="20" value="1" style="width:38px;padding:3px 4px;border:1px solid #d1d5db;border-radius:4px;font-size:12px" title="Count for add operations">
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblAddRow(false)" title="Add row(s) below">↓ Row</button>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblAddRow(true)"  title="Add row(s) above">↑ Row</button>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblAddCol(false)" title="Add col(s) right">→ Col</button>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblAddCol(true)"  title="Add col(s) left">← Col</button>
       <span class="tb-sep"></span>
-      <button class="tb-btn danger" onmousedown="event.preventDefault()" onclick="tblDelRow()">✕ Row</button>
-      <button class="tb-btn danger" onmousedown="event.preventDefault()" onclick="tblDelCol()">✕ Col</button>
+      <button class="tb-btn danger" onmousedown="event.preventDefault()" onclick="tblDelRow()" title="Delete current row">✕ Row</button>
+      <button class="tb-btn danger" onmousedown="event.preventDefault()" onclick="tblDelCol()" title="Delete current column">✕ Col</button>
+      <button class="tb-btn danger" onmousedown="event.preventDefault()" onclick="tblDelete()" title="Delete entire table">🗑 Table</button>
       <span class="tb-sep"></span>
-      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblToggleHeader()" title="Toggle current row between header (th) and data (td)">⇅ Header</button>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblToggleHeader()" title="Toggle header row">⇅ Hdr</button>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblMergeCols()" title="Merge selected cells in this row">⊠ Merge</button>
+      <span class="tb-sep"></span>
+      <span style="font-size:10px;color:#92400e;font-weight:600">Cell:</span>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblCellAlign('left')"   title="Cell text left">◀</button>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblCellAlign('center')" title="Cell text center">≡</button>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblCellAlign('right')"  title="Cell text right">▶</button>
+      <select class="tb-select" onmousedown="event.preventDefault()" onchange="tblCellPad(this.value);this.blur()" title="Cell padding">
+        <option value="">Padding</option>
+        <option value="2px 4px">Compact</option>
+        <option value="5px 8px">Normal</option>
+        <option value="10px 14px">Spacious</option>
+      </select>
       <div class="clr-wrap">
-        <button class="tb-btn" onmousedown="event.preventDefault()" onclick="toggleClrPicker('cc-picker')" title="Cell background colour">🎨 Cell BG ▾</button>
+        <button class="tb-btn" onmousedown="event.preventDefault()" onclick="toggleClrPicker('cc-picker')" title="Cell background">🎨▾</button>
         <div id="cc-picker" class="clr-picker" style="display:none">
           <div style="font-size:10.5px;font-weight:600;color:#6b7280;margin-bottom:5px">Cell Background</div>
           ${colorSwatches(CELL_COLORS,'applyCellBg')}
         </div>
       </div>
       <span class="tb-sep"></span>
-      <span style="font-size:11px;color:#92400e;font-weight:600">Width:</span>
+      <select class="tb-select" onmousedown="event.preventDefault()" onchange="tblSetBorder(this.value);this.blur()" title="Table border style">
+        <option value="">Border</option>
+        <option value="none">None</option>
+        <option value="light">Light</option>
+        <option value="medium">Medium</option>
+        <option value="bold">Bold</option>
+        <option value="header">Header Only</option>
+      </select>
+      <span style="font-size:10px;color:#92400e;font-weight:600">Width:</span>
       <select class="tb-select" onmousedown="event.preventDefault()" onchange="tblSetWidth(this.value);this.blur()" title="Table width">
         <option value="">—</option>
         <option value="25%">25%</option>
@@ -124,21 +171,91 @@ function editorHTML(initialContent=''){
         <option value="100%">100%</option>
         <option value="auto">Auto</option>
       </select>
+      <input type="text" id="tbl-col-w" placeholder="Col%" style="width:46px;padding:3px 4px;border:1px solid #d1d5db;border-radius:4px;font-size:12px" title="Set current column width (e.g. 30%)" onkeydown="if(event.key==='Enter'){tblSetColWidth(this.value);this.value=''}">
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblSetColWidth(document.getElementById('tbl-col-w').value)" title="Apply column width">↵</button>
       <span class="tb-sep"></span>
-      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblSetAlign('left')"   title="Align table left">◀ Left</button>
-      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblSetAlign('center')" title="Align table center">≡ Center</button>
-      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblSetAlign('right')"  title="Align table right">▶ Right</button>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblSetAlign('left')"   title="Table align left">|◀</button>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblSetAlign('center')" title="Table align center">|≡|</button>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblSetAlign('right')"  title="Table align right">▶|</button>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblEqualCols()" title="Equal column widths">⇔</button>
       <span class="tb-sep"></span>
-      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="tblEqualCols()" title="Make all columns equal width">⇔ Equal Cols</button>
+      <button class="tb-btn" onmousedown="event.preventDefault()" onclick="_tblUndoLast()" title="Undo last table change" style="color:#6b7280">↩ Undo</button>
     </div>
 
-    <div id="doc-editor" contenteditable="true" spellcheck="true">${initialContent||'<p><br></p>'}</div>
+    <!-- TABLE INSERT PICKER (hidden by default) -->
+    <div id="tbl-insert-picker" style="display:none;position:absolute;z-index:700;background:#fff;border:1px solid #d1d5db;border-radius:10px;padding:12px;box-shadow:0 8px 30px rgba(0,0,0,.18)">
+      <div style="font-size:11px;font-weight:600;color:#6b7280;margin-bottom:8px">Drag to select rows × columns</div>
+      <div id="tbl-grid" style="display:grid;grid-template-columns:repeat(8,22px);gap:3px"></div>
+      <div id="tbl-grid-label" style="font-size:11px;color:#374151;margin-top:6px;text-align:center">—</div>
+      <div style="margin-top:8px;display:flex;gap:6px;align-items:center">
+        <input type="number" id="tbl-custom-r" placeholder="Rows" min="1" max="30" style="width:60px;padding:4px 6px;border:1px solid #d1d5db;border-radius:5px;font-size:12px">
+        <input type="number" id="tbl-custom-c" placeholder="Cols" min="1" max="15" style="width:60px;padding:4px 6px;border:1px solid #d1d5db;border-radius:5px;font-size:12px">
+        <button class="btn btn-p btn-sm" onclick="doInsertTable(parseInt(document.getElementById('tbl-custom-r').value)||4,parseInt(document.getElementById('tbl-custom-c').value)||3)">Insert</button>
+      </div>
+    </div>
+
+    <!-- IMAGE CONFIG PANEL (hidden by default) -->
+    <div id="img-config-panel" style="display:none;position:fixed;z-index:800;background:#fff;border:1px solid #d1d5db;border-radius:10px;padding:14px 16px;box-shadow:0 8px 30px rgba(0,0,0,.2);min-width:240px">
+      <div style="font-weight:600;font-size:12px;color:#374151;margin-bottom:10px">🖼 Image Size</div>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+        <label style="font-size:11px;color:#6b7280;width:50px">Width</label>
+        <input type="number" id="img-w-val" min="10" max="100" value="100" style="width:60px;padding:4px 6px;border:1px solid #d1d5db;border-radius:5px;font-size:12px">
+        <select id="img-w-unit" style="padding:4px 6px;border:1px solid #d1d5db;border-radius:5px;font-size:12px">
+          <option value="%">%</option>
+          <option value="px">px</option>
+        </select>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        <button class="btn btn-p btn-sm" onclick="applyImgSize()">Apply</button>
+        <button class="btn btn-o btn-sm" onclick="document.getElementById('img-config-panel').style.display='none'">Cancel</button>
+      </div>
+    </div>
+
+    <div id="doc-editor" contenteditable="true" spellcheck="true" style="min-height:400px">${initialContent||'<p><br></p>'}</div>
+    <div style="padding:4px 10px;font-size:10.5px;color:#9ca3af;border-top:1px solid #f0f0f0;display:flex;justify-content:space-between">
+      <span id="ed-status"></span>
+      <span id="ed-wordcount2"></span>
+    </div>
   </div>`;
 }
 
 function execFmt(cmd, val){
   document.execCommand(cmd, false, val||null);
   document.getElementById('doc-editor')?.focus();
+  _updateWordCount();
+}
+
+// ── Word count ───────────────────────────────────────
+function _updateWordCount(){
+  const ed=document.getElementById('doc-editor'); if(!ed) return;
+  const txt=ed.innerText||'';
+  const words=txt.trim()?txt.trim().split(/\s+/).length:0;
+  const chars=txt.replace(/\s/g,'').length;
+  const label=`${words} words · ${chars} chars`;
+  const wc1=document.getElementById('ed-wordcount');
+  const wc2=document.getElementById('ed-wordcount2');
+  if(wc1) wc1.textContent=label;
+  if(wc2) wc2.textContent=label;
+}
+
+// ── Print preview (WYSIWYG) ──────────────────────────
+function showPrintPreview(){
+  const ed=document.getElementById('doc-editor'); if(!ed) return;
+  const content=ed.innerHTML;
+  const ov=document.createElement('div');
+  ov.className='overlay'; ov.id='print-preview-ov';
+  ov.style.cssText='z-index:900;align-items:flex-start;padding:20px;overflow-y:auto';
+  ov.innerHTML=`<div style="background:#fff;width:210mm;max-width:100%;margin:0 auto;padding:14mm 15mm 18mm;box-shadow:0 4px 24px rgba(0,0,0,.2);border-radius:2px;position:relative">
+    <div style="position:sticky;top:-20px;background:#1e293b;color:#fff;padding:8px 14px;margin:-14mm -15mm 14px;display:flex;justify-content:space-between;align-items:center;border-radius:2px 2px 0 0;z-index:1">
+      <span style="font-size:12px;font-weight:600">Print Preview — exactly as it will print</span>
+      <button onclick="document.getElementById('print-preview-ov').remove()" style="background:none;border:none;color:#fff;cursor:pointer;font-size:16px">✕</button>
+    </div>
+    <div style="font-family:Arial,sans-serif;font-size:10pt;color:#000;line-height:1.75">
+      <style>table{width:100%;border-collapse:collapse;margin:10px 0;font-size:9.5pt}td,th{border:1px solid #ccc;padding:5px 8px;text-align:left;vertical-align:top}th{background:#ececec;font-weight:bold}h1{font-size:14pt;margin:14px 0 7px}h2{font-size:12pt;font-weight:bold;margin:12px 0 5px;border-bottom:1px solid #bbb;padding-bottom:3px}h3{font-size:11pt;font-weight:bold;margin:10px 0 4px}p{margin-bottom:8px}ul,ol{margin:5px 0 10px 22px}li{margin-bottom:3px}img{max-width:100%;height:auto}</style>
+      ${content}
+    </div>
+  </div>`;
+  document.body.appendChild(ov);
 }
 
 // ── Colour pickers ───────────────────────────────────
@@ -147,9 +264,10 @@ function toggleClrPicker(id){
   const el=document.getElementById(id);
   if(el) el.style.display=el.style.display==='none'?'block':'none';
 }
-// Close pickers when clicking outside
 document.addEventListener('mousedown', e=>{
   if(!e.target.closest('.clr-wrap')) document.querySelectorAll('.clr-picker').forEach(p=>p.style.display='none');
+  if(!e.target.closest('#tbl-insert-picker')&&!e.target.closest('.tb-btn[onclick*="showInsertTable"]'))
+    document.getElementById('tbl-insert-picker')&&(document.getElementById('tbl-insert-picker').style.display='none');
 });
 
 let _savedRange = null;
@@ -172,7 +290,7 @@ function applyTextColor(color){
 }
 
 function applyCellBg(color){
-  const cell=getCell();
+  const cell=_lastCell||getCell();
   if(cell){ cell.style.backgroundColor=color; }
   else { toast('Click inside a table cell first','w'); }
   document.getElementById('cc-picker').style.display='none';
@@ -203,128 +321,288 @@ function getTblCtx(){
   return cell?{cell,row,table}:null;
 }
 
-// Show/hide table toolbar on cursor change
+// Track last known cell so table toolbar ops work after focus leaves editor
+let _lastCell=null, _lastTblCtx=null, _tblTbLock=false;
 document.addEventListener('selectionchange',()=>{
+  if(_tblTbLock) return;
+  const ctx=getTblCtx();
   const tb=document.getElementById('tbl-tb'); if(!tb) return;
-  tb.style.display=getTblCtx()?'flex':'none';
+  if(ctx){
+    _lastCell=ctx.cell; _lastTblCtx=ctx;
+    tb.style.display='flex';
+  } else if(!_tblTbLock){
+    tb.style.display='none';
+  }
 });
 
-// Save range when editor loses focus (so colour picker can restore it)
 document.addEventListener('focusin', e=>{
   if(e.target.id==='doc-editor') return;
-  if(e.target.closest('.clr-wrap')||e.target.closest('.toolbar')) saveRange();
+  if(e.target.closest('.clr-wrap')||e.target.closest('.toolbar')||e.target.closest('#tbl-insert-picker')) saveRange();
 });
 
-// ── Prevent table structure deletion ────────────────
+// ── Keyboard shortcuts ───────────────────────────────
 document.addEventListener('keydown', e=>{
+  // Ctrl/Cmd+S → save
+  if((e.ctrlKey||e.metaKey)&&e.key==='s'){
+    e.preventDefault();
+    const saveEdit=window.saveEdit; const saveCreate=window.saveCreate;
+    const editBtn=document.querySelector('[onclick^="saveEdit"]');
+    const createBtn=document.querySelector('[onclick^="saveCreate"]');
+    if(editBtn) editBtn.click();
+    else if(createBtn) createBtn.click();
+    return;
+  }
+  // Ctrl+Z inside table toolbar → table undo
+  if((e.ctrlKey||e.metaKey)&&e.key==='z'){
+    const ed=document.getElementById('doc-editor');
+    if(ed&&(document.activeElement===ed||document.activeElement?.closest('.tbl-tb'))){
+      if(_tblUndo.length){ e.preventDefault(); _tblUndoLast(); return; }
+    }
+  }
+  // Backspace/Delete: prevent multi-cell structural deletion
   if(e.key!=='Backspace'&&e.key!=='Delete') return;
   const ed=document.getElementById('doc-editor');
-  if(!ed||!ed.contains(document.activeElement)&&document.activeElement!==ed) return;
+  if(!ed||(!ed.contains(document.activeElement)&&document.activeElement!==ed)) return;
   const sel=window.getSelection();
   if(!sel||!sel.rangeCount||sel.isCollapsed) return;
   const range=sel.getRangeAt(0);
-  // Find cells at start and end of selection
   const cellOf=node=>{ let n=node.nodeType===3?node.parentNode:node;
     while(n&&n!==ed){if(n.tagName==='TD'||n.tagName==='TH')return n;n=n.parentNode;}return null; };
   const sc=cellOf(range.startContainer), ec=cellOf(range.endContainer);
-  // Selection spans multiple cells → prevent structural deletion
   if(sc&&ec&&sc!==ec){
     e.preventDefault();
-    // Clear only the start cell's content, collapse cursor there
     const r=document.createRange();
     r.selectNodeContents(sc); sel.removeAllRanges(); sel.addRange(r);
     document.execCommand('delete',false,null);
   }
 });
 
+// ── Table insert grid picker ─────────────────────────
+function showInsertTable(){
+  const picker=document.getElementById('tbl-insert-picker'); if(!picker) return;
+  // Build 8×8 grid
+  const grid=document.getElementById('tbl-grid');
+  grid.innerHTML='';
+  for(let r=1;r<=6;r++){
+    for(let c=1;c<=8;c++){
+      const cell=document.createElement('div');
+      cell.style.cssText='width:22px;height:22px;border:1.5px solid #d1d5db;border-radius:3px;cursor:pointer;background:#fff;transition:background .1s';
+      cell.dataset.r=r; cell.dataset.c=c;
+      cell.addEventListener('mouseover',()=>_highlightGrid(r,c));
+      cell.addEventListener('click',()=>{ doInsertTable(r,c); picker.style.display='none'; });
+      grid.appendChild(cell);
+    }
+  }
+  // Position below the Table button
+  const btn=document.querySelector('.tb-btn[onclick*="showInsertTable"]');
+  if(btn){
+    const rect=btn.getBoundingClientRect();
+    picker.style.left=rect.left+'px';
+    picker.style.top=(rect.bottom+6)+'px';
+    picker.style.position='fixed';
+  }
+  picker.style.display='block';
+}
+function _highlightGrid(rows,cols){
+  const label=document.getElementById('tbl-grid-label');
+  document.querySelectorAll('#tbl-grid div').forEach(c=>{
+    const r=parseInt(c.dataset.r), cl=parseInt(c.dataset.c);
+    c.style.background=(r<=rows&&cl<=cols)?'#dbeafe':'#fff';
+    c.style.borderColor=(r<=rows&&cl<=cols)?'#3b82f6':'#d1d5db';
+  });
+  if(label) label.textContent=`${rows} × ${cols}`;
+}
+
+function doInsertTable(rows,cols){
+  rows=Math.max(1,rows||4); cols=Math.max(1,cols||3);
+  let html='<table style="width:100%;border-collapse:collapse"><tbody>';
+  for(let r=0;r<rows;r++){
+    html+='<tr>';
+    for(let c=0;c<cols;c++){
+      if(r===0) html+=`<th style="border:1px solid #ccc;padding:5px 8px;background:#ececec"> </th>`;
+      else html+=`<td style="border:1px solid #ccc;padding:5px 8px"> </td>`;
+    }
+    html+='</tr>';
+  }
+  html+='</tbody></table><p><br></p>';
+  restoreRange();
+  document.execCommand('insertHTML',false,html);
+  document.getElementById('doc-editor')?.focus();
+}
+
 // ── Table operations ─────────────────────────────────
+function _tblN(){ return Math.max(1,parseInt(document.getElementById('tbl-n')?.value)||1); }
+
 function tblAddRow(above){
-  const ctx=getTblCtx(); if(!ctx){toast('Click inside a table first','w');return}
-  const {row}=ctx; const cols=row.cells.length;
-  const nr=document.createElement('tr');
-  for(let i=0;i<cols;i++){const td=document.createElement('td');td.innerHTML='&nbsp;';nr.appendChild(td);}
-  above?row.parentNode.insertBefore(nr,row):row.insertAdjacentElement('afterend',nr);
+  const ctx=_lastTblCtx||getTblCtx(); if(!ctx){toast('Click inside a table first','w');return}
+  _tblSnapshot();
+  _tblTbLock=true;
+  const {row}=ctx; const cols=row.cells.length; const n=_tblN();
+  for(let i=0;i<n;i++){
+    const nr=document.createElement('tr');
+    for(let j=0;j<cols;j++){const td=document.createElement('td');td.style.cssText='border:1px solid #ccc;padding:5px 8px';td.innerHTML='&nbsp;';nr.appendChild(td);}
+    above?row.parentNode.insertBefore(nr,row):row.insertAdjacentElement('afterend',nr);
+  }
+  setTimeout(()=>_tblTbLock=false,200);
 }
 function tblAddCol(left){
-  const ctx=getTblCtx(); if(!ctx){toast('Click inside a table first','w');return}
-  const {cell,table}=ctx; const ci=cell.cellIndex;
-  Array.from(table.rows).forEach(r=>{
-    if(ci>=r.cells.length) return;
-    const ref=r.cells[ci];
-    const nc=document.createElement(ref.tagName==='TH'?'th':'td'); nc.innerHTML='&nbsp;';
-    left?r.insertBefore(nc,ref):ref.insertAdjacentElement('afterend',nc);
-  });
+  const ctx=_lastTblCtx||getTblCtx(); if(!ctx){toast('Click inside a table first','w');return}
+  _tblSnapshot();
+  _tblTbLock=true;
+  const {cell,table}=ctx; const ci=cell.cellIndex; const n=_tblN();
+  for(let i=0;i<n;i++){
+    Array.from(table.rows).forEach(r=>{
+      if(ci>=r.cells.length) return;
+      const ref=r.cells[ci];
+      const nc=document.createElement(ref.tagName==='TH'?'th':'td');
+      nc.style.cssText=ref.style.cssText||'border:1px solid #ccc;padding:5px 8px';
+      nc.innerHTML='&nbsp;';
+      left?r.insertBefore(nc,ref):ref.insertAdjacentElement('afterend',nc);
+    });
+  }
+  setTimeout(()=>_tblTbLock=false,200);
 }
 function tblDelRow(){
-  const ctx=getTblCtx(); if(!ctx) return;
+  const ctx=_lastTblCtx||getTblCtx(); if(!ctx) return;
+  _tblSnapshot(); _tblTbLock=true;
   const {row,table}=ctx;
-  if(table.rows.length<=1){toast('Cannot delete the only row','w');return}
+  if(table.rows.length<=1){toast('Cannot delete the only row','w');_tblTbLock=false;return}
   row.remove();
+  setTimeout(()=>_tblTbLock=false,200);
 }
 function tblDelCol(){
-  const ctx=getTblCtx(); if(!ctx) return;
+  const ctx=_lastTblCtx||getTblCtx(); if(!ctx) return;
+  _tblSnapshot(); _tblTbLock=true;
   const {cell,table}=ctx; const ci=cell.cellIndex;
-  if(table.rows[0].cells.length<=1){toast('Cannot delete the only column','w');return}
+  if(table.rows[0].cells.length<=1){toast('Cannot delete the only column','w');_tblTbLock=false;return}
   Array.from(table.rows).forEach(r=>{if(r.cells[ci])r.cells[ci].remove()});
+  setTimeout(()=>_tblTbLock=false,200);
+}
+function tblDelete(){
+  const ctx=_lastTblCtx||getTblCtx(); if(!ctx) return;
+  if(!confirm('Delete this entire table?')) return;
+  _tblSnapshot();
+  ctx.table.remove();
+  const ed=document.getElementById('doc-editor');
+  if(ed&&!ed.querySelector('p')) ed.innerHTML='<p><br></p>';
 }
 function tblToggleHeader(){
-  const ctx=getTblCtx(); if(!ctx) return;
+  const ctx=_lastTblCtx||getTblCtx(); if(!ctx) return;
+  _tblSnapshot(); _tblTbLock=true;
   const {row}=ctx; const isH=row.cells[0]?.tagName==='TH';
   Array.from(row.cells).forEach(c=>{
     const nc=document.createElement(isH?'td':'th');
     nc.innerHTML=c.innerHTML; nc.style.cssText=c.style.cssText;
+    if(!isH){ nc.style.background='#ececec'; nc.style.fontWeight='bold'; }
+    else { nc.style.background=''; nc.style.fontWeight=''; }
     c.parentNode.replaceChild(nc,c);
   });
+  setTimeout(()=>_tblTbLock=false,200);
 }
-
-function tblEqualCols(){
-  const ctx=getTblCtx(); if(!ctx){toast('Click inside a table first','w');return}
-  const t=ctx.table;
-  const numCols=t.rows[0]?.cells.length; if(!numCols) return;
-  const totalW=t.getBoundingClientRect().width;
-  const colW=Math.floor(totalW/numCols);
-  t.style.tableLayout='fixed';
-  t.style.width=totalW+'px';
-  Array.from(t.rows).forEach(r=>{
-    Array.from(r.cells).forEach(c=>{ c.style.width=colW+'px'; c.style.minWidth=colW+'px'; });
+function tblMergeCols(){
+  const ctx=_lastTblCtx||getTblCtx(); if(!ctx){toast('Click inside a table row first','w');return}
+  const sel=window.getSelection(); if(!sel||!sel.rangeCount) return;
+  const range=sel.getRangeAt(0);
+  const {row,table}=ctx;
+  // Find all selected cells in this row
+  const rowCells=Array.from(row.cells);
+  const selected=rowCells.filter(c=>{
+    try{ return sel.containsNode(c,true)||range.intersectsNode(c); }catch(e){ return false; }
   });
+  if(selected.length<2){ toast('Select text across at least 2 cells in the same row to merge','w'); return; }
+  _tblSnapshot();
+  const first=selected[0];
+  first.colSpan=selected.length;
+  first.innerHTML=selected.map(c=>c.innerHTML.replace(/&nbsp;/g,' ').trim()).filter(Boolean).join(' ');
+  for(let i=1;i<selected.length;i++) selected[i].remove();
+  toast(`Merged ${selected.length} cells`,'s');
+}
+function tblCellAlign(align){
+  const cell=_lastCell||getCell(); if(!cell){toast('Click inside a cell first','w');return}
+  _tblTbLock=true;
+  cell.style.textAlign=align;
+  setTimeout(()=>_tblTbLock=false,200);
+}
+function tblCellPad(val){
+  const cell=_lastCell||getCell(); if(!cell||!val) return;
+  _tblTbLock=true;
+  // Apply to all cells in current row for consistency
+  const row=cell.parentElement;
+  Array.from(row.cells).forEach(c=>c.style.padding=val);
+  setTimeout(()=>_tblTbLock=false,200);
+}
+function tblSetBorder(preset){
+  const ctx=_lastTblCtx||getTblCtx(); if(!ctx||!preset) return;
+  _tblSnapshot(); _tblTbLock=true;
+  const t=ctx.table;
+  const allCells=Array.from(t.querySelectorAll('td,th'));
+  const thCells=Array.from(t.querySelectorAll('th'));
+  const tdCells=Array.from(t.querySelectorAll('td'));
+  if(preset==='none'){
+    allCells.forEach(c=>c.style.border='none');
+    t.style.border='none';
+  } else if(preset==='light'){
+    allCells.forEach(c=>c.style.border='1px solid #e5e7eb');
+    t.style.border='1px solid #e5e7eb';
+  } else if(preset==='medium'){
+    allCells.forEach(c=>c.style.border='1px solid #9ca3af');
+    t.style.border='1px solid #9ca3af';
+  } else if(preset==='bold'){
+    allCells.forEach(c=>c.style.border='2px solid #111');
+    t.style.border='2px solid #111';
+  } else if(preset==='header'){
+    tdCells.forEach(c=>c.style.border='none');
+    thCells.forEach(c=>c.style.borderBottom='2px solid #111');
+    t.style.border='none';
+  }
+  setTimeout(()=>_tblTbLock=false,200);
+}
+function tblEqualCols(){
+  const ctx=_lastTblCtx||getTblCtx(); if(!ctx){toast('Click inside a table first','w');return}
+  _tblSnapshot(); _tblTbLock=true;
+  const t=ctx.table;
+  const numCols=t.rows[0]?.cells.length; if(!numCols){_tblTbLock=false;return}
+  const pct=Math.floor(100/numCols);
+  t.style.tableLayout='fixed'; t.style.width='100%';
+  Array.from(t.rows).forEach(r=>{
+    Array.from(r.cells).forEach(c=>{ c.style.width=pct+'%'; c.style.minWidth=''; });
+  });
+  setTimeout(()=>_tblTbLock=false,200);
+}
+function tblSetColWidth(val){
+  const ctx=_lastTblCtx||getTblCtx(); if(!ctx||!val) return;
+  val=String(val).trim();
+  if(!val.includes('%')&&!val.includes('px')) val=val+'%';
+  _tblTbLock=true;
+  const {cell,table}=ctx; const ci=cell.cellIndex;
+  table.style.tableLayout='fixed';
+  Array.from(table.rows).forEach(r=>{ if(r.cells[ci]) r.cells[ci].style.width=val; });
+  const inp=document.getElementById('tbl-col-w'); if(inp) inp.value='';
+  setTimeout(()=>_tblTbLock=false,200);
 }
 function tblSetWidth(w){
-  const ctx=getTblCtx(); if(!ctx){toast('Click inside a table first','w');return}
+  const ctx=_lastTblCtx||getTblCtx(); if(!ctx){toast('Click inside a table first','w');return}
   if(!w) return;
+  _tblTbLock=true;
   ctx.table.style.width=w;
-  if(w!=='100%'&&w!=='auto') ctx.table.style.minWidth='';
+  if(w==='100%') ctx.table.style.tableLayout='fixed';
+  setTimeout(()=>_tblTbLock=false,200);
 }
 function tblSetAlign(align){
-  const ctx=getTblCtx(); if(!ctx){toast('Click inside a table first','w');return}
+  const ctx=_lastTblCtx||getTblCtx(); if(!ctx){toast('Click inside a table first','w');return}
+  _tblTbLock=true;
   const t=ctx.table;
   if(align==='center'){t.style.marginLeft='auto';t.style.marginRight='auto';}
   else if(align==='right'){t.style.marginLeft='auto';t.style.marginRight='0';}
   else{t.style.marginLeft='0';t.style.marginRight='auto';}
   t.style.display='table';
+  setTimeout(()=>_tblTbLock=false,200);
 }
 
-function insertTable(){
-  const rows=parseInt(prompt('Rows (including header):', '4'))||4;
-  const cols=parseInt(prompt('Columns:', '3'))||3;
-  if(rows<1||cols<1) return;
-  let html='<table><tbody>';
-  for(let r=0;r<rows;r++){
-    html+='<tr>';
-    for(let c=0;c<cols;c++) html+=r===0?`<th> </th>`:`<td> </td>`;
-    html+='</tr>';
-  }
-  html+='</tbody></table><p><br></p>';
-  document.execCommand('insertHTML',false,html);
-  document.getElementById('doc-editor')?.focus();
-}
-
-// ── Column resize by dragging ────────────────────────
+// ── Column resize by dragging (with visible grip) ────
 (function initColResize(){
   let dragging=false, startX=0, startW=0, nextW=0, colIdx=null, nextIdx=null, activeTable=null;
-
   function colCells(tbl,ci){ return Array.from(tbl.rows).map(r=>r.cells[ci]).filter(Boolean); }
-
   function lockTable(tbl){
     const firstRow=tbl.rows[0]; if(!firstRow) return;
     const widths=Array.from(firstRow.cells).map(c=>c.getBoundingClientRect().width);
@@ -332,7 +610,6 @@ function insertTable(){
     tbl.style.tableLayout='fixed';
     widths.forEach((w,i)=>colCells(tbl,i).forEach(c=>{ c.style.width=w+'px'; c.style.minWidth=w+'px'; }));
   }
-
   document.addEventListener('mousemove', e=>{
     if(dragging){
       const diff=e.clientX-startX;
@@ -342,57 +619,108 @@ function insertTable(){
         const newNext=Math.max(30,nextW-diff);
         colCells(activeTable,nextIdx).forEach(c=>{ c.style.width=newNext+'px'; c.style.minWidth=newNext+'px'; });
       }
-      e.preventDefault();
-      return;
+      e.preventDefault(); return;
     }
     const cell=e.target.closest&&e.target.closest('#doc-editor td,#doc-editor th'); if(!cell) return;
     const rect=cell.getBoundingClientRect();
-    cell.style.cursor=(e.clientX>=rect.right-7)?'col-resize':'';
+    const nearEdge=e.clientX>=rect.right-8;
+    cell.style.cursor=nearEdge?'col-resize':'';
+    // Show grip indicator
+    let grip=cell.querySelector('.col-resize-grip');
+    if(nearEdge){
+      if(!grip){
+        grip=document.createElement('span');
+        grip.className='col-resize-grip';
+        grip.style.cssText='position:absolute;top:0;right:0;width:4px;height:100%;background:#3b82f6;opacity:.5;cursor:col-resize;pointer-events:none';
+        cell.style.position='relative';
+        cell.appendChild(grip);
+      }
+    } else {
+      if(grip) grip.remove();
+    }
   });
-
   document.addEventListener('mousedown', e=>{
     const cell=e.target.closest&&e.target.closest('#doc-editor td,#doc-editor th'); if(!cell) return;
     const rect=cell.getBoundingClientRect();
-    if(e.clientX>=rect.right-7){
+    if(e.clientX>=rect.right-8){
       activeTable=cell.closest('table');
       lockTable(activeTable);
-      colIdx=cell.cellIndex;
-      startX=e.clientX;
+      colIdx=cell.cellIndex; startX=e.clientX;
       startW=cell.getBoundingClientRect().width;
       const nextCell=activeTable.rows[0]?.cells[colIdx+1];
       nextIdx=nextCell?colIdx+1:null;
       nextW=nextCell?nextCell.getBoundingClientRect().width:0;
-      dragging=true;
-      document.body.style.userSelect='none';
+      dragging=true; document.body.style.userSelect='none';
       e.preventDefault();
     }
   });
-
   document.addEventListener('mouseup', ()=>{
     if(dragging){ dragging=false; activeTable=null; colIdx=null; nextIdx=null; document.body.style.userSelect=''; }
   });
 })();
 
+// ── Image insert + resize ────────────────────────────
+let _activeImg=null;
 function insertImage(){
   const inp=document.createElement('input'); inp.type='file'; inp.accept='image/*';
   inp.onchange=e=>{
     const f=e.target.files[0]; if(!f) return;
     const r=new FileReader();
-    r.onload=ev=>document.execCommand('insertHTML',false,`<img src="${ev.target.result}" alt="${f.name}"><p><br></p>`);
+    r.onload=ev=>{
+      const imgHtml=`<img src="${ev.target.result}" alt="${f.name}" style="max-width:100%;height:auto;cursor:pointer" onclick="showImgConfig(this)"><p><br></p>`;
+      restoreRange();
+      document.execCommand('insertHTML',false,imgHtml);
+      document.getElementById('doc-editor')?.focus();
+    };
     r.readAsDataURL(f);
   };
   inp.click();
 }
-
+function showImgConfig(img){
+  _activeImg=img;
+  const panel=document.getElementById('img-config-panel'); if(!panel) return;
+  const rect=img.getBoundingClientRect();
+  panel.style.left=rect.left+'px';
+  panel.style.top=(rect.bottom+8)+'px';
+  // Pre-fill current width
+  const wVal=document.getElementById('img-w-val');
+  const wUnit=document.getElementById('img-w-unit');
+  const cw=img.style.width||'';
+  if(cw.includes('%')){ if(wVal) wVal.value=parseInt(cw); if(wUnit) wUnit.value='%'; }
+  else if(cw.includes('px')){ if(wVal) wVal.value=parseInt(cw); if(wUnit) wUnit.value='px'; }
+  else { if(wVal) wVal.value=100; if(wUnit) wUnit.value='%'; }
+  panel.style.display='block';
+}
+function applyImgSize(){
+  if(!_activeImg) return;
+  const v=document.getElementById('img-w-val')?.value||100;
+  const u=document.getElementById('img-w-unit')?.value||'%';
+  _activeImg.style.width=v+u;
+  _activeImg.style.height='auto';
+  document.getElementById('img-config-panel').style.display='none';
+}
+// Hide image panel on outside click
+document.addEventListener('click',e=>{
+  const panel=document.getElementById('img-config-panel');
+  if(panel&&!panel.contains(e.target)&&e.target!==_activeImg) panel.style.display='none';
+});
 
 function getEditorHTML(){
   const el=document.getElementById('doc-editor');
-  return el ? el.innerHTML : '';
+  if(!el) return '';
+  // Clean up any resize grips before saving
+  el.querySelectorAll('.col-resize-grip').forEach(g=>g.remove());
+  return el.innerHTML;
 }
 function setEditorHTML(html){
   const el=document.getElementById('doc-editor');
-  if(el) el.innerHTML=html||'<p><br></p>';
+  if(el){ el.innerHTML=html||'<p><br></p>'; _updateWordCount(); }
 }
+
+// Live word count on editor input
+document.addEventListener('input', e=>{
+  if(e.target.id==='doc-editor') _updateWordCount();
+});
 
 // ══════════════════════════════════════════════════════
 //  CREATE
