@@ -71,7 +71,7 @@ async function mktRefreshEnqNum(editId){
 }
 
 // ── SEED DEFAULT FEASIBILITY QUESTIONS ────────────────
-const MKT_FEAS_QNS_VERSION = 2; // bump to force re-seed when questions change
+const MKT_FEAS_QNS_VERSION = 3; // bump to force re-seed when questions change
 
 const MKT_FEAS_SEED = [
   {section:'FEASIBILITY',question:'Is Material feasible for Manufacturing?',order:1},
@@ -288,6 +288,7 @@ async function mktPrintEnquiryRegister(){
 //  FEASIBILITY REVIEWS LIST
 // ══════════════════════════════════════════════════════
 async function mktRenderFeasibility(){
+  await mktSeedDefaults(); // ensure questions are up to date
   const feases=await db.mktFeasibility.toArray().catch(()=>[]);
   const enqs=await db.mktEnquiries.toArray().catch(()=>[]);
   feases.sort((a,b)=>b.id-a.id);
