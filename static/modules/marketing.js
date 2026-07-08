@@ -71,8 +71,6 @@ async function mktRefreshEnqNum(editId){
 }
 
 // ── SEED DEFAULT FEASIBILITY QUESTIONS ────────────────
-const MKT_FEAS_QNS_VERSION = 4; // bump to force re-seed when questions change
-
 const MKT_FEAS_SEED = [
   {section:'FEASIBILITY',question:'Is Material feasible for Manufacturing?',order:1},
   {section:'FEASIBILITY',question:'Is machinery suitable for this Grade?',order:2},
@@ -86,17 +84,23 @@ const MKT_FEAS_SEED = [
   {section:'FEASIBILITY',question:'Is Customer Reliable?',order:10},
 ];
 
+let _mktSeedRunning = false;
 async function mktSeedDefaults(){
+  if(_mktSeedRunning) return;
+  _mktSeedRunning = true;
   try {
-    const savedVer = parseInt(localStorage.getItem('mktFeasQnsVer')||'0');
-    if(savedVer >= MKT_FEAS_QNS_VERSION) return;
-    // Delete all existing questions one by one (server proxy has no clear())
     const existing = await db.mktFeasQns.toArray().catch(()=>[]);
+    // Check if already correct: exactly 10 questions matching our seed text
+    const seedTexts = MKT_FEAS_SEED.map(q=>q.question);
+    const existingTexts = existing.map(q=>q.question);
+    const alreadyCorrect = existing.length === MKT_FEAS_SEED.length &&
+      seedTexts.every(t => existingTexts.includes(t));
+    if(alreadyCorrect){ _mktSeedRunning=false; return; }
+    // Delete all existing and re-add
     for(const q of existing) await db.mktFeasQns.delete(q.id).catch(()=>{});
-    // Add the new 10 questions
     for(const q of MKT_FEAS_SEED) await db.mktFeasQns.add(q);
-    localStorage.setItem('mktFeasQnsVer', MKT_FEAS_QNS_VERSION);
   } catch(e){ console.log('mktSeed skipped:', e.message); }
+  _mktSeedRunning = false;
 }
 
 async function mktRenderEnquiries(){
