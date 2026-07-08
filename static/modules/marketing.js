@@ -368,7 +368,9 @@ async function mktViewFeasibilityById(id){
   const f=await db.mktFeasibility.get(id).catch(()=>null);
   if(!f){toast('Not found','d');return;}
   const qns=await db.mktFeasQns.toArray().catch(()=>[]);
-  const sections=['TECHNICAL','COMMERCIAL','CAPACITY','RISK ASSESSMENT'];
+  qns.sort((a,b)=>a.order-b.order);
+  // Derive sections dynamically from current questions
+  const sections=[...new Set(qns.map(q=>q.section))];
   const answers=f.answers||{};
 
   function qSection(sec){
@@ -510,7 +512,7 @@ async function mktDeleteFeasibility(id){
 // ══════════════════════════════════════════════════════
 async function mktManageQuestions(){
   const qns=await db.mktFeasQns.toArray().catch(()=>[]);
-  const sections=['TECHNICAL','COMMERCIAL','CAPACITY','RISK ASSESSMENT'];
+  const sections=[...new Set(qns.map(q=>q.section))];
 
   function qList(sec){
     const qs=qns.filter(q=>q.section===sec).sort((a,b)=>a.order-b.order);
@@ -554,7 +556,7 @@ async function mktAddQuestion(section){
   document.getElementById(inputId).value='';
   // Refresh modal body
   const qns=await db.mktFeasQns.toArray().catch(()=>[]);
-  const sections=['TECHNICAL','COMMERCIAL','CAPACITY','RISK ASSESSMENT'];
+  const sections=[...new Set(qns.map(q=>q.section))];
   function qList(sec){
     const qs=qns.filter(q=>q.section===sec).sort((a,b)=>a.order-b.order);
     return`<div style="margin-bottom:14px">
@@ -583,7 +585,7 @@ async function mktDeleteQuestion(id){
   toast('Question removed','d');
   // Refresh modal
   const qns=await db.mktFeasQns.toArray().catch(()=>[]);
-  const sections=['TECHNICAL','COMMERCIAL','CAPACITY','RISK ASSESSMENT'];
+  const sections=[...new Set(qns.map(q=>q.section))];
   function qList(sec){
     const qs=qns.filter(q=>q.section===sec).sort((a,b)=>a.order-b.order);
     return`<div style="margin-bottom:14px">
@@ -613,7 +615,7 @@ async function mktPrintFeasibility(id){
   if(!f){toast('Not found','d');return;}
   const qns=await db.mktFeasQns.toArray().catch(()=>[]);
   const answers=f.answers||{};
-  const sections=['TECHNICAL','COMMERCIAL','CAPACITY','RISK ASSESSMENT'];
+  const sections=[...new Set(qns.map(q=>q.section))];
   const today=new Date().toLocaleDateString('en-IN');
 
   function secBlock(sec){
