@@ -592,32 +592,16 @@ def seed_defaults():
     # Marketing Feasibility Questions
     if GenericRecord.query.filter_by(module='mktFeasQns').count() == 0:
         feas_qns = [
-            # DRAWING & DESIGN
-            {'section':'DRAWING & DESIGN','question':'Is the 2D drawing available with complete dimensions and tolerances?','order':1},
-            {'section':'DRAWING & DESIGN','question':'Is the 3D model available?','order':2},
-            {'section':'DRAWING & DESIGN','question':'Are the specified tolerances and surface finish achievable through HPDC?','order':3},
-            {'section':'DRAWING & DESIGN','question':'Is this a new part development or an existing part?','order':4},
-            # MATERIAL & PROCESS
-            {'section':'MATERIAL & PROCESS','question':'Is the required material / alloy grade feasible for HPDC?','order':1},
-            {'section':'MATERIAL & PROCESS','question':'Is the estimated casting weight defined?','order':2},
-            {'section':'MATERIAL & PROCESS','question':'Are any specific customer requirements or special characteristics identified?','order':3},
-            # MACHINE & CAPACITY
-            {'section':'MACHINE & CAPACITY','question':'Is the part feasible on our available machines (280T / 400T)?','order':1},
-            {'section':'MACHINE & CAPACITY','question':'Is any new machine or additional setup required?','order':2},
-            {'section':'MACHINE & CAPACITY','question':'Is current capacity available for the required monthly volumes?','order':3},
-            {'section':'MACHINE & CAPACITY','question':'Are monthly volumes clearly defined by the customer?','order':4},
-            # TOOLING
-            {'section':'TOOLING','question':'Is tooling supplied by the customer or to be procured?','order':1},
-            # SECONDARY OPERATIONS
-            {'section':'SECONDARY OPERATIONS','question':'Is machining required after casting?','order':1},
-            {'section':'SECONDARY OPERATIONS','question':'Is any process required to be outsourced?','order':2},
-            {'section':'SECONDARY OPERATIONS','question':'If yes — is the vendor identified?','order':3},
-            {'section':'SECONDARY OPERATIONS','question':'Is the identified vendor feasible (location, capacity, quality)?','order':4},
-            # INSPECTION & PACKAGING
-            {'section':'INSPECTION & PACKAGING','question':'Are inspection and testing facilities available for this part?','order':1},
-            {'section':'INSPECTION & PACKAGING','question':'Is a packaging plan defined?','order':2},
-            # COMMERCIAL & RISK
-            {'section':'COMMERCIAL & RISK','question':'Is the customer reliable in terms of reputation and payment history?','order':1},
+            {'section':'FEASIBILITY','question':'Is Material feasible for Manufacturing?','order':1},
+            {'section':'FEASIBILITY','question':'Is machinery suitable for this Grade?','order':2},
+            {'section':'FEASIBILITY','question':'Is specification / Tolerance achievable?','order':3},
+            {'section':'FEASIBILITY','question':'Is there any other process or treatment required which is needed to be outsourced?','order':4},
+            {'section':'FEASIBILITY','question':'Are inspection and testing facilities adequate?','order':5},
+            {'section':'FEASIBILITY','question':'Is development cost paid by Customer or tooling given by the customer?','order':6},
+            {'section':'FEASIBILITY','question':'Monthly Requirement Clear?','order':7},
+            {'section':'FEASIBILITY','question':'Weight of Casting?','order':8},
+            {'section':'FEASIBILITY','question':'Is Current Spare Capacity Available for this requirement?','order':9},
+            {'section':'FEASIBILITY','question':'Is Customer Reliable?','order':10},
         ]
         for q in feas_qns:
             db.session.add(GenericRecord(module='mktFeasQns', data=json.dumps(q)))
