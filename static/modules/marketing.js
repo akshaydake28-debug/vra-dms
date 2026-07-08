@@ -477,16 +477,16 @@ async function mktViewFeasibilityById(id){
 }
 
 async function mktSaveFeasibility(id){
-  // Collect all Y/N and comments
   const answers={};
-  document.querySelectorAll('.feas-yn').forEach(sel=>{
-    const qid=parseInt(sel.dataset.qid);
-    if(!answers[qid]) answers[qid]={};
-    answers[qid].yn=sel.value;
+  // Only read checked checkboxes — data-val has the Y/N/NA value
+  document.querySelectorAll('.feas-yn:checked').forEach(chk=>{
+    const qid=parseInt(chk.dataset.qid);
+    if(!answers[qid]) answers[qid]={yn:'',comment:''};
+    answers[qid].yn=chk.dataset.val;
   });
   document.querySelectorAll('.feas-comment').forEach(inp=>{
     const qid=parseInt(inp.dataset.qid);
-    if(!answers[qid]) answers[qid]={};
+    if(!answers[qid]) answers[qid]={yn:'',comment:''};
     answers[qid].comment=inp.value.trim();
   });
   await db.mktFeasibility.update(id,{
