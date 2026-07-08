@@ -71,7 +71,7 @@ async function mktRefreshEnqNum(editId){
 }
 
 // ── SEED DEFAULT FEASIBILITY QUESTIONS ────────────────
-const MKT_FEAS_QNS_VERSION = 3; // bump to force re-seed when questions change
+const MKT_FEAS_QNS_VERSION = 4; // bump to force re-seed when questions change
 
 const MKT_FEAS_SEED = [
   {section:'FEASIBILITY',question:'Is Material feasible for Manufacturing?',order:1},
@@ -89,9 +89,11 @@ const MKT_FEAS_SEED = [
 async function mktSeedDefaults(){
   try {
     const savedVer = parseInt(localStorage.getItem('mktFeasQnsVer')||'0');
-    if(savedVer >= MKT_FEAS_QNS_VERSION) return; // already up to date
-    // Clear old questions and re-seed (does NOT touch enquiries or feasibility reviews)
-    await db.mktFeasQns.clear().catch(()=>{});
+    if(savedVer >= MKT_FEAS_QNS_VERSION) return;
+    // Delete all existing questions one by one (server proxy has no clear())
+    const existing = await db.mktFeasQns.toArray().catch(()=>[]);
+    for(const q of existing) await db.mktFeasQns.delete(q.id).catch(()=>{});
+    // Add the new 10 questions
     for(const q of MKT_FEAS_SEED) await db.mktFeasQns.add(q);
     localStorage.setItem('mktFeasQnsVer', MKT_FEAS_QNS_VERSION);
   } catch(e){ console.log('mktSeed skipped:', e.message); }
