@@ -241,10 +241,11 @@ async function mktSaveEnq(id){
 
 async function mktDeleteEnq(id){
   const e=await db.mktEnquiries.get(id);
-  if(!confirm(`Delete enquiry ${e?.enqNumber} (${e?.customerName})? Linked feasibility review will also be deleted.`)) return;
-  // Delete linked feasibility
-  const f=await db.mktFeasibility.where('enqId').equals(id).first().catch(()=>null);
-  if(f) await db.mktFeasibility.delete(f.id);
+  if(!confirm(`Delete enquiry ${e?.enqNumber} (${e?.customerName})? Linked feasibility review(s) will also be deleted.`)) return;
+  // Delete ALL linked feasibility records — an enquiry can have more than
+  // one if a duplicate was ever created, and leaving any behind orphans it.
+  const linked=await db.mktFeasibility.where('enqId').equals(id).toArray().catch(()=>[]);
+  for(const f of linked) await db.mktFeasibility.delete(f.id);
   await db.mktEnquiries.delete(id);
   toast('Deleted','d');
   mktRenderEnquiries();
@@ -545,8 +546,13 @@ async function mktFindDuplicates(){
     db.mktFeasibility.toArray().catch(()=>[]),
     db.mktEnquiries.toArray().catch(()=>[])
   ]);
+  const enqIds=new Set(enqs.map(e=>e.id));
   const byEnq={};
-  feases.forEach(f=>{ (byEnq[f.enqId]=byEnq[f.enqId]||[]).push(f); });
+  const orphans=[];
+  feases.forEach(f=>{
+    if(!enqIds.has(f.enqId)){ orphans.push(f); return; }
+    (byEnq[f.enqId]=byEnq[f.enqId]||[]).push(f);
+  });
   const dupGroups=Object.entries(byEnq).filter(([,list])=>list.length>1);
 
   function answeredCount(f){
@@ -555,44 +561,71 @@ async function mktFindDuplicates(){
   }
 
   function renderGroups(){
-    if(dupGroups.length===0){
-      return`<div class="alert al-s">✅ No duplicate feasibility reviews found. Every enquiry has exactly one FR record.</div>`;
+    if(dupGroups.length===0 && orphans.length===0){
+      return`<div class="alert al-s">✅ No duplicate or orphaned feasibility reviews found. Every FR record maps to exactly one existing enquiry.</div>`;
     }
-    return dupGroups.map(([enqId,list])=>{
-      const e=enqs.find(x=>String(x.id)===String(enqId));
-      list.sort((a,b)=>a.id-b.id);
-      return`<div class="card" style="margin-bottom:12px;padding:0">
-        <div class="ch" style="background:#fff4e5">
-          <h5>${esc(e?.enqNumber||'—')} · ${esc(e?.customerName||'—')} · ${esc(e?.partDetails||'—')}</h5>
-          <span class="muted" style="font-size:11px">${list.length} duplicate FR records</span>
+    let html='';
+    if(orphans.length>0){
+      html+=`<div class="card" style="margin-bottom:12px;padding:0">
+        <div class="ch" style="background:#fde8e8">
+          <h5>⚠️ Orphaned FR records — linked enquiry no longer exists</h5>
+          <span class="muted" style="font-size:11px">${orphans.length} record(s)</span>
         </div>
         <div class="tw"><table>
-          <thead><tr><th>Record ID</th><th>FR Number</th><th>Date</th><th>Reviewed By</th><th>Result</th><th>Answers Filled</th><th></th></tr></thead>
-          <tbody>${list.map(f=>`<tr>
+          <thead><tr><th>Record ID</th><th>FR Number</th><th>Customer</th><th>Part</th><th>Date</th><th>Result</th><th></th></tr></thead>
+          <tbody>${orphans.map(f=>`<tr>
             <td class="mono">${f.id}</td>
             <td class="mono">${esc(f.feasNumber||'—')}</td>
+            <td>${esc(f.customerName||'—')}</td>
+            <td>${esc(f.partName||'—')}</td>
             <td>${f.date||'—'}</td>
-            <td>${esc(f.reviewedBy||'—')}</td>
             <td>${mktResultBadge(f.result)}</td>
-            <td>${answeredCount(f)}</td>
             <td style="white-space:nowrap">
-              <button class="btn btn-o btn-xs" onclick="mktViewFeasibilityById(${f.id})">View</button>
-              <button class="btn btn-r btn-xs" onclick="mktDeleteDuplicate(${f.id},'${enqId}')">🗑️ Delete this one</button>
+              <button class="btn btn-r btn-xs" onclick="mktDeleteOrphan(${f.id})">🗑️ Delete orphan</button>
             </td>
           </tr>`).join('')}
           </tbody>
         </table></div>
       </div>`;
-    }).join('');
+    }
+    if(dupGroups.length>0){
+      html+=dupGroups.map(([enqId,list])=>{
+        const e=enqs.find(x=>String(x.id)===String(enqId));
+        list.sort((a,b)=>a.id-b.id);
+        return`<div class="card" style="margin-bottom:12px;padding:0">
+          <div class="ch" style="background:#fff4e5">
+            <h5>${esc(e?.enqNumber||'—')} · ${esc(e?.customerName||'—')} · ${esc(e?.partDetails||'—')}</h5>
+            <span class="muted" style="font-size:11px">${list.length} duplicate FR records</span>
+          </div>
+          <div class="tw"><table>
+            <thead><tr><th>Record ID</th><th>FR Number</th><th>Date</th><th>Reviewed By</th><th>Result</th><th>Answers Filled</th><th></th></tr></thead>
+            <tbody>${list.map(f=>`<tr>
+              <td class="mono">${f.id}</td>
+              <td class="mono">${esc(f.feasNumber||'—')}</td>
+              <td>${f.date||'—'}</td>
+              <td>${esc(f.reviewedBy||'—')}</td>
+              <td>${mktResultBadge(f.result)}</td>
+              <td>${answeredCount(f)}</td>
+              <td style="white-space:nowrap">
+                <button class="btn btn-o btn-xs" onclick="mktViewFeasibilityById(${f.id})">View</button>
+                <button class="btn btn-r btn-xs" onclick="mktDeleteDuplicate(${f.id},'${enqId}')">🗑️ Delete this one</button>
+              </td>
+            </tr>`).join('')}
+            </tbody>
+          </table></div>
+        </div>`;
+      }).join('');
+    }
+    return html;
   }
 
   const ov=document.createElement('div');ov.className='overlay';ov.id='mkt-dup-ov';
   ov.innerHTML=`<div class="modal" style="width:820px;max-height:92vh;overflow-y:auto">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <h3>🔍 Duplicate Feasibility Reviews</h3>
+      <h3>🔍 Duplicate &amp; Orphaned Feasibility Reviews</h3>
       <button class="btn btn-o btn-sm" onclick="document.getElementById('mkt-dup-ov').remove()">✕ Close</button>
     </div>
-    <div class="alert al-w" style="margin-bottom:12px">These enquiries have more than one Feasibility Review record — usually from an accidental double "+ Create FR" click. Compare each copy's answers/date and delete the wrong one. Once only one remains for an enquiry, it's automatically pinned so "View FR" and "Edit" always agree.</div>
+    <div class="alert al-w" style="margin-bottom:12px">Orphaned records (red) point at an enquiry that's already been deleted — safe to remove. Duplicate groups (orange) are enquiries with more than one FR — compare each copy and delete the wrong one; the last one remaining is automatically pinned so "View FR" and "Edit" always agree.</div>
     <div id="mkt-dup-body">${renderGroups()}</div>
   </div>`;
   document.body.appendChild(ov);
@@ -604,6 +637,15 @@ async function mktDeleteDuplicate(id, enqId){
   await db.mktFeasibility.delete(id);
   await mktReconcileFeasibilityLink(Number(enqId));
   toast('Duplicate deleted','d');
+  document.getElementById('mkt-dup-ov')?.remove();
+  mktFindDuplicates();
+}
+
+async function mktDeleteOrphan(id){
+  const f=await db.mktFeasibility.get(id);
+  if(!confirm(`Delete orphaned feasibility review ${f?.feasNumber} (record #${id})?\nIts linked enquiry no longer exists, so this record is unreachable from anywhere in the app.`)) return;
+  await db.mktFeasibility.delete(id);
+  toast('Orphan deleted','d');
   document.getElementById('mkt-dup-ov')?.remove();
   mktFindDuplicates();
 }
