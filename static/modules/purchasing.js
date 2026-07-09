@@ -164,6 +164,7 @@ async function purRenderSuppliers(){
     <h2>🏭 Supplier Register</h2>
     <div style="display:flex;gap:8px">
       <button class="btn btn-p" onclick="purRenderSupplierForm()">+ Add Supplier</button>
+      <button class="btn btn-o" onclick="purPrintSupplierRegister()">🖨️ Print Register</button>
     </div>
   </div>
   <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:16px">
@@ -443,7 +444,7 @@ async function purViewVendor(id){
   <div class="ph">
     <h2>📊 ${esc(v.name)} <span class="muted" style="font-size:13px">${esc(v.supNumber)}</span></h2>
     <div style="display:flex;gap:8px">
-      <button class="btn btn-p" onclick="purOpenLotForm(${id})">+ Add Invoice / Delivery</button>
+      <button class="btn btn-p" onclick="purOpenLotForm(${id},null,'vendor')">+ Add Invoice / Delivery</button>
       <button class="btn btn-o" onclick="purPrintVendorScorecard(${id})">🖨️ Print Scorecard</button>
       <button class="btn btn-o" onclick="purRenderSupplierForm(${id})">✏️ Edit Supplier</button>
       <button class="btn btn-o" onclick="nav('pur-approved')">← Back</button>
@@ -488,12 +489,15 @@ async function purViewVendor(id){
           <td style="text-align:center;color:#14532d">${r.qtyAccepted}</td>
           <td>${PUR_TIMING_LABELS[r.timing]||r.timing}</td>
           <td style="white-space:nowrap">${r.source==='Invoice'?`
-            <button class="btn btn-o btn-xs" onclick="purOpenLotForm(${id},${r.id})">✏️</button>
-            <button class="btn btn-r btn-xs" onclick="purDeleteLot(${r.id},${id})">🗑️</button>
+            <button class="btn btn-o btn-xs" onclick="purOpenLotForm(${id},${r.id},'vendor')">✏️</button>
+            <button class="btn btn-r btn-xs" onclick="purDeleteLot(${r.id},'vendor')">🗑️</button>
           `:'<span class="muted" style="font-size:11px">Edit via Supplier form</span>'}</td>
         </tr>`).join('')}
       </tbody>
     </table></div>
+  </div>
+  <div style="margin-top:10px">
+    <button class="btn btn-o btn-sm" onclick="nav('pur-invoices')">🧾 Go to Invoice / Delivery Register</button>
   </div>`);
 }
 
@@ -506,15 +510,96 @@ function purVendorPeriodChange(){
   purViewVendor(id);
 }
 
+// ══════════════════════════════════════════════════════
+//  INVOICE / DELIVERY REGISTER — standalone entry point
+//  Lets an accountant add invoices for any approved supplier without
+//  going through that supplier's own scorecard page, and doubles as
+//  an audit log to check which suppliers still need this period's
+//  entries.
+// ══════════════════════════════════════════════════════
+async function purRenderInvoices(){
+  const allVendors=await db.purVendors.toArray().catch(()=>[]);
+  const approvedVendors=allVendors.filter(purIsApproved);
+  const lots=await db.purVendorLots.toArray().catch(()=>[]);
+  lots.sort((a,b)=>(b.date||'')>(a.date||'')?1:-1);
+
+  const now=new Date();
+  const monthStart=new Date(now.getFullYear(),now.getMonth(),1);
+  const enteredThisMonth=new Set(lots.filter(l=>l.date&&new Date(l.date)>=monthStart).map(l=>l.vendorId));
+  const missing=approvedVendors.filter(v=>!enteredThisMonth.has(v.id));
+  const monthLabel=now.toLocaleDateString('en-IN',{month:'long',year:'numeric'});
+
+  setC(`
+  <div class="ph">
+    <h2>🧾 Invoice / Delivery Register</h2>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-p" onclick="purOpenLotForm(null,null,'register')">+ Add Invoice</button>
+    </div>
+  </div>
+  ${approvedVendors.length===0?'':missing.length>0
+    ?`<div class="alert al-w" style="margin-bottom:12px">⚠️ ${missing.length} approved supplier(s) have no entry for ${monthLabel}: ${missing.map(v=>esc(v.name)).join(', ')}</div>`
+    :`<div class="alert al-s" style="margin-bottom:12px">✅ Every approved supplier has at least one entry for ${monthLabel}.</div>`}
+  <div class="card">
+    <div class="ch"><h5>All Invoice / Delivery Entries — ${lots.length}</h5></div>
+    <div class="tw"><table>
+      <thead><tr><th>Date</th><th>Supplier</th><th>Ref / Invoice No.</th><th>Qty Received</th><th>Qty Rejected</th><th>Qty Accepted</th><th>Lot Timing</th><th></th></tr></thead>
+      <tbody>${lots.length===0
+        ?`<tr><td colspan="8" style="text-align:center;padding:30px;color:#9ca3af">No invoices entered yet. Click + Add Invoice to start.</td></tr>`
+        :lots.map(l=>{
+          const v=allVendors.find(x=>x.id===l.vendorId);
+          return`<tr>
+            <td>${l.date||'—'}</td>
+            <td><strong>${esc(v?.name||'Unknown supplier')}</strong></td>
+            <td class="mono">${esc(l.refNo||'—')}</td>
+            <td style="text-align:center">${l.qtyReceived}</td>
+            <td style="text-align:center;color:#7f1d1d">${l.qtyRejected}</td>
+            <td style="text-align:center;color:#14532d">${l.qtyAccepted}</td>
+            <td>${PUR_TIMING_LABELS[l.timing]||l.timing}</td>
+            <td style="white-space:nowrap">
+              <button class="btn btn-o btn-xs" onclick="purOpenLotForm(null,${l.id},'register')">✏️</button>
+              <button class="btn btn-r btn-xs" onclick="purDeleteLot(${l.id},'register')">🗑️</button>
+            </td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table></div>
+  </div>`);
+}
+
 // ── INVOICE / LOT FORM ────────────────────────────────
-async function purOpenLotForm(vendorId,editId=null){
+// vendorId: pre-fixed supplier context (from a vendor's own scorecard page) or
+//   null to show a searchable supplier picker (from the Invoice Register).
+// returnTo: which page to refresh after save/delete — 'vendor' or 'register'.
+let _purVendorNameMap={};
+async function purOpenLotForm(vendorId=null,editId=null,returnTo=null){
   const l=editId?await db.purVendorLots.get(editId).catch(()=>null):null;
+  if(l&&!vendorId) vendorId=l.vendorId;
+  returnTo=returnTo||(vendorId?'vendor':'register');
+  const fixedVendor=vendorId?await db.purVendors.get(vendorId).catch(()=>null):null;
+
+  let vendorFieldHtml;
+  if(fixedVendor){
+    vendorFieldHtml=`<div class="fg" style="margin-bottom:10px"><label class="lbl">Supplier</label>
+      <input class="fc" value="${esc(fixedVendor.name)} (${esc(fixedVendor.supNumber)})" readonly style="background:#f5f7fd;font-weight:700">
+      <input type="hidden" id="lot-vendor-id" value="${fixedVendor.id}"></div>`;
+  } else {
+    const approvedVendors=(await db.purVendors.toArray().catch(()=>[])).filter(purIsApproved);
+    _purVendorNameMap={};
+    approvedVendors.forEach(v=>{ _purVendorNameMap[v.name.trim().toLowerCase()]=v; });
+    vendorFieldHtml=`<div class="fg" style="margin-bottom:10px"><label class="lbl">Supplier * <span class="muted" style="font-weight:400">(type to search approved suppliers)</span></label>
+      <input class="fc" id="lot-vendor-name" list="pur-vendor-datalist" placeholder="Start typing supplier name..." autocomplete="off" oninput="purResolveVendorFromInput()">
+      <datalist id="pur-vendor-datalist">${approvedVendors.map(v=>`<option value="${esc(v.name)}">`).join('')}</datalist>
+      <input type="hidden" id="lot-vendor-id" value="">
+      <div id="lot-vendor-match" style="font-size:11px;margin-top:4px"></div></div>`;
+  }
+
   const ov=document.createElement('div');ov.className='overlay';ov.id='pur-lot-ov';
-  ov.innerHTML=`<div class="modal" style="width:480px">
+  ov.innerHTML=`<div class="modal" style="width:500px">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
       <h3>${l?'Edit':'New'} Invoice / Delivery</h3>
       <button class="btn btn-o btn-sm" onclick="document.getElementById('pur-lot-ov').remove()">✕</button>
     </div>
+    ${vendorFieldHtml}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
       <div class="fg"><label class="lbl">Invoice / DC No.</label>
         <input class="fc" id="lot-ref" value="${esc(l?.refNo||'')}"></div>
@@ -532,10 +617,19 @@ async function purOpenLotForm(vendorId,editId=null){
     </div>
     <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
       <button class="btn btn-o" onclick="document.getElementById('pur-lot-ov').remove()">Cancel</button>
-      <button class="btn btn-p" onclick="purSaveLot(${vendorId},${editId||'null'})">💾 Save</button>
+      <button class="btn btn-p" onclick="purSaveLot(${editId||'null'},'${returnTo}')">💾 Save</button>
     </div>
   </div>`;
   document.body.appendChild(ov);
+}
+function purResolveVendorFromInput(){
+  const typed=document.getElementById('lot-vendor-name').value.trim().toLowerCase();
+  const match=_purVendorNameMap[typed];
+  const hidden=document.getElementById('lot-vendor-id');
+  const info=document.getElementById('lot-vendor-match');
+  hidden.value=match?match.id:'';
+  info.innerHTML=match?`<span style="color:#14532d">✓ Matched ${esc(match.supNumber)}</span>`
+    :typed?`<span style="color:#7f1d1d">No matching approved supplier — pick one from the list</span>`:'';
 }
 function purAutoAcceptLot(){
   const recv=parseFloat(document.getElementById('lot-recv')?.value)||0;
@@ -543,7 +637,9 @@ function purAutoAcceptLot(){
   const el=document.getElementById('lot-acc');
   if(el) el.value=Math.max(recv-rej,0);
 }
-async function purSaveLot(vendorId,editId){
+async function purSaveLot(editId,returnTo){
+  const vendorId=Number(document.getElementById('lot-vendor-id').value)||null;
+  if(!vendorId){toast('Select a valid approved supplier','d');return;}
   const date=document.getElementById('lot-date').value;
   if(!date){toast('Date required','d');return;}
   const rec={
@@ -561,13 +657,16 @@ async function purSaveLot(vendorId,editId){
   else { rec.createdAt=new Date().toISOString(); await db.purVendorLots.add(rec); }
   document.getElementById('pur-lot-ov').remove();
   toast('✅ Entry saved');
-  purViewVendor(vendorId);
+  if(returnTo==='register') purRenderInvoices();
+  else purViewVendor(vendorId);
 }
-async function purDeleteLot(id,vendorId){
+async function purDeleteLot(id,returnTo){
   if(!confirm('Delete this delivery/invoice entry? This will affect the scorecard.')) return;
+  const l=await db.purVendorLots.get(id);
   await db.purVendorLots.delete(id);
   toast('Deleted','d');
-  purViewVendor(vendorId);
+  if(returnTo==='register') purRenderInvoices();
+  else purViewVendor(l?.vendorId);
 }
 
 // ══════════════════════════════════════════════════════
@@ -630,6 +729,41 @@ function purScorecardPeriodChange(){
   _purScorecardPeriod.to=document.getElementById('pur-period-to')?.value||'';
   if(_purScorecardPeriod.period==='custom'&&(!_purScorecardPeriod.from||!_purScorecardPeriod.to)) return;
   purRenderScorecard();
+}
+
+// ══════════════════════════════════════════════════════
+//  PRINT — Supplier Register (controlled document list)
+// ══════════════════════════════════════════════════════
+async function purPrintSupplierRegister(){
+  const vendors=await db.purVendors.toArray().catch(()=>[]);
+  vendors.sort((a,b)=>a.supNumber>b.supNumber?1:-1);
+  const today=new Date().toLocaleDateString('en-IN');
+  const rows=vendors.map((v,i)=>`<tr>
+    <td>${i+1}</td>
+    <td style="font-family:monospace;font-weight:bold">${esc(v.supNumber)}</td>
+    <td class="tl"><strong>${esc(v.name)}</strong></td>
+    <td class="tl">${esc(v.scopeOfSupply||'—')}</td>
+    <td class="tl">${esc(v.contactPerson||'—')} ${esc(v.contactPhone||'')}</td>
+    <td style="font-weight:bold">${purStage(v)}</td>
+  </tr>`).join('');
+  const w=window.open('','_blank');
+  w.document.write(`<!DOCTYPE html><html><head><title>Supplier Register</title><style>${purPrintCSS()}</style></head><body>
+  <div class="pg-hdr">
+    <div><div class="co-name">V R ALUCAST</div><div class="co-sub">High Pressure Die Casting · Ichalkaranji</div></div>
+    <div><div class="rpt-title">SUPPLIER REGISTER</div><div class="rpt-sub">All Suppliers</div></div>
+    <div><div class="rpt-num">VRA-PUR-001</div><div style="font-size:7pt;text-align:right">Date: ${today}</div></div>
+  </div>
+  <table class="dt">
+    <thead><tr><th>#</th><th>Sup No.</th><th class="tl">Supplier Name</th><th class="tl">Scope of Supply</th><th class="tl">Contact Person</th><th>Stage</th></tr></thead>
+    <tbody>${rows||'<tr><td colspan="6" style="text-align:center">No suppliers</td></tr>'}</tbody>
+  </table>
+  <div style="margin-top:6px;font-size:7.5pt;color:#555">Total: ${vendors.length} · VRA-PUR-001 · V R Alucast</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;font-size:8pt">
+    <div style="border:1px solid #000;padding:7px"><strong>Prepared By:</strong> Akshay Dake<br><br>Signature: _________________________&nbsp;&nbsp; Date: ______________</div>
+    <div style="border:1px solid #000;padding:7px"><strong>Approved By:</strong> Akshay Dake<br><br>Signature: _________________________&nbsp;&nbsp; Date: ______________</div>
+  </div>
+  <script>window.onload=()=>window.print()<\/script></body></html>`);
+  w.document.close();
 }
 
 // ══════════════════════════════════════════════════════
