@@ -205,6 +205,7 @@ select.fc{cursor:pointer}
     <div class="sl-sec">Purchasing</div>
     <a class="sl-item" data-view="pur-suppliers" onclick="nav('pur-suppliers')"><span class="ic">🏭</span>Supplier Register</a>
     <a class="sl-item" data-view="pur-approved" onclick="nav('pur-approved')"><span class="ic">✅</span>Approved Suppliers</a>
+    <a class="sl-item" data-view="pur-invoices" onclick="nav('pur-invoices')"><span class="ic">🧾</span>Invoice / Delivery Register</a>
     <a class="sl-item" data-view="pur-scorecard" onclick="nav('pur-scorecard')"><span class="ic">📊</span>Supplier Scorecard</a>
     <div class="sl-sec">Raw Material</div>
     <a class="sl-item" data-view="rm-labels" onclick="nav('rm-labels')"><span class="ic">&#127991;</span>Label Generator</a>
@@ -780,6 +781,7 @@ function nav(view,params=''){
     'mkt-feasibility':'Feasibility Reviews',
     'pur-suppliers':'Supplier Register',
     'pur-approved':'Approved Supplier List',
+    'pur-invoices':'Invoice / Delivery Register',
     'pur-scorecard':'Supplier Scorecard',
     'cal-gauges':'Gauge Register',
     'cal-records':'Calibration Records',
@@ -816,6 +818,7 @@ function nav(view,params=''){
     'mkt-feasibility':'Feasibility Reviews',
     'pur-suppliers':'Supplier Register',
     'pur-approved':'Approved Supplier List',
+    'pur-invoices':'Invoice / Delivery Register',
     'pur-scorecard':'Supplier Scorecard',
     'cal-gauges':'Gauge Register',
     'cal-records':'Calibration Records',
@@ -842,6 +845,7 @@ function nav(view,params=''){
     'mkt-feasibility':mktRenderFeasibility,
     'pur-suppliers':purRenderSuppliers,
     'pur-approved':purRenderApproved,
+    'pur-invoices':purRenderInvoices,
     'pur-scorecard':purRenderScorecard,
     'cal-gauges':calRenderGauges,
 'cal-records':calRenderRecords,
@@ -955,6 +959,7 @@ window.views = {
   'hr-docsneeded':typeof hrRenderDocsNeeded !== 'undefined' ? hrRenderDocsNeeded : null,
   'pur-suppliers':typeof purRenderSuppliers !== 'undefined' ? purRenderSuppliers : null,
   'pur-approved': typeof purRenderApproved  !== 'undefined' ? purRenderApproved  : null,
+  'pur-invoices': typeof purRenderInvoices  !== 'undefined' ? purRenderInvoices  : null,
   'pur-scorecard':typeof purRenderScorecard !== 'undefined' ? purRenderScorecard : null,
   'cal-gauges':   typeof calRenderGauges    !== 'undefined' ? calRenderGauges    : null,
   'cal-records':  typeof calRenderRecords   !== 'undefined' ? calRenderRecords   : null,
