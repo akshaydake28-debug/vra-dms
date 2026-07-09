@@ -303,6 +303,7 @@ async function mktRenderFeasibility(){
   <div class="ph">
     <h2>🔍 Feasibility Reviews</h2>
     <div style="display:flex;gap:8px">
+      <button class="btn btn-o" onclick="mktFindDuplicates()">🔍 Find Duplicates</button>
       <button class="btn btn-o" onclick="mktManageQuestions()">⚙️ Manage Questions</button>
     </div>
   </div>
@@ -513,14 +514,98 @@ async function mktSaveFeasibility(id){
   toast('✅ Feasibility review saved');
 }
 
+// After a feasibility review is deleted, re-derive the enquiry's pinned
+// feasibilityId from whatever's left. If a duplicate still exists, pin it
+// (rather than wiping the link) so View FR / Edit keep agreeing.
+async function mktReconcileFeasibilityLink(enqId){
+  if(!enqId) return;
+  const remaining=await db.mktFeasibility.where('enqId').equals(enqId).toArray().catch(()=>[]);
+  if(remaining.length===0){
+    await db.mktEnquiries.update(enqId,{feasibilityDone:false, feasibilityId:null});
+  } else {
+    remaining.sort((a,b)=>a.id-b.id);
+    await db.mktEnquiries.update(enqId,{feasibilityDone:true, feasibilityId:remaining[0].id});
+  }
+}
+
 async function mktDeleteFeasibility(id){
   const f=await db.mktFeasibility.get(id);
   if(!confirm(`Delete feasibility review ${f?.feasNumber}?`)) return;
   await db.mktFeasibility.delete(id);
-  // Reset flag + pinned id on enquiry
-  if(f?.enqId) await db.mktEnquiries.update(f.enqId,{feasibilityDone:false, feasibilityId:null});
+  await mktReconcileFeasibilityLink(f?.enqId);
   toast('Deleted','d');
   mktRenderFeasibility();
+}
+
+// ══════════════════════════════════════════════════════
+//  DUPLICATE FEASIBILITY REVIEW FINDER
+// ══════════════════════════════════════════════════════
+async function mktFindDuplicates(){
+  const [feases, enqs] = await Promise.all([
+    db.mktFeasibility.toArray().catch(()=>[]),
+    db.mktEnquiries.toArray().catch(()=>[])
+  ]);
+  const byEnq={};
+  feases.forEach(f=>{ (byEnq[f.enqId]=byEnq[f.enqId]||[]).push(f); });
+  const dupGroups=Object.entries(byEnq).filter(([,list])=>list.length>1);
+
+  function answeredCount(f){
+    const a=f.answers||{};
+    return Object.values(a).filter(x=>x&&x.yn).length;
+  }
+
+  function renderGroups(){
+    if(dupGroups.length===0){
+      return`<div class="alert al-s">✅ No duplicate feasibility reviews found. Every enquiry has exactly one FR record.</div>`;
+    }
+    return dupGroups.map(([enqId,list])=>{
+      const e=enqs.find(x=>String(x.id)===String(enqId));
+      list.sort((a,b)=>a.id-b.id);
+      return`<div class="card" style="margin-bottom:12px;padding:0">
+        <div class="ch" style="background:#fff4e5">
+          <h5>${esc(e?.enqNumber||'—')} · ${esc(e?.customerName||'—')} · ${esc(e?.partDetails||'—')}</h5>
+          <span class="muted" style="font-size:11px">${list.length} duplicate FR records</span>
+        </div>
+        <div class="tw"><table>
+          <thead><tr><th>Record ID</th><th>FR Number</th><th>Date</th><th>Reviewed By</th><th>Result</th><th>Answers Filled</th><th></th></tr></thead>
+          <tbody>${list.map(f=>`<tr>
+            <td class="mono">${f.id}</td>
+            <td class="mono">${esc(f.feasNumber||'—')}</td>
+            <td>${f.date||'—'}</td>
+            <td>${esc(f.reviewedBy||'—')}</td>
+            <td>${mktResultBadge(f.result)}</td>
+            <td>${answeredCount(f)}</td>
+            <td style="white-space:nowrap">
+              <button class="btn btn-o btn-xs" onclick="mktViewFeasibilityById(${f.id})">View</button>
+              <button class="btn btn-r btn-xs" onclick="mktDeleteDuplicate(${f.id},'${enqId}')">🗑️ Delete this one</button>
+            </td>
+          </tr>`).join('')}
+          </tbody>
+        </table></div>
+      </div>`;
+    }).join('');
+  }
+
+  const ov=document.createElement('div');ov.className='overlay';ov.id='mkt-dup-ov';
+  ov.innerHTML=`<div class="modal" style="width:820px;max-height:92vh;overflow-y:auto">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <h3>🔍 Duplicate Feasibility Reviews</h3>
+      <button class="btn btn-o btn-sm" onclick="document.getElementById('mkt-dup-ov').remove()">✕ Close</button>
+    </div>
+    <div class="alert al-w" style="margin-bottom:12px">These enquiries have more than one Feasibility Review record — usually from an accidental double "+ Create FR" click. Compare each copy's answers/date and delete the wrong one. Once only one remains for an enquiry, it's automatically pinned so "View FR" and "Edit" always agree.</div>
+    <div id="mkt-dup-body">${renderGroups()}</div>
+  </div>`;
+  document.body.appendChild(ov);
+}
+
+async function mktDeleteDuplicate(id, enqId){
+  const f=await db.mktFeasibility.get(id);
+  if(!confirm(`Delete duplicate feasibility review ${f?.feasNumber} (record #${id})?\nThis cannot be undone.`)) return;
+  await db.mktFeasibility.delete(id);
+  await mktReconcileFeasibilityLink(Number(enqId));
+  toast('Duplicate deleted','d');
+  document.getElementById('mkt-dup-ov')?.remove();
+  mktFindDuplicates();
 }
 
 // ══════════════════════════════════════════════════════
