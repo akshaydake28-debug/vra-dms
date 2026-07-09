@@ -115,6 +115,7 @@ async function mktRenderEnquiries(){
     <div style="display:flex;gap:8px">
       <button class="btn btn-p" onclick="mktOpenEnqForm()">+ New Enquiry</button>
       <button class="btn btn-o" onclick="mktPrintEnquiryRegister()">🖨️ Print Register</button>
+      <button class="btn btn-o" onclick="mktRepairFeasibilityLinks()">🔧 Repair FR Links</button>
     </div>
   </div>
   <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px">
@@ -536,6 +537,37 @@ async function mktDeleteFeasibility(id){
   await mktReconcileFeasibilityLink(f?.enqId);
   toast('Deleted','d');
   mktRenderFeasibility();
+}
+
+// Bulk repair — for enquiries whose FR was deleted through some path that
+// didn't call mktReconcileFeasibilityLink (e.g. records removed directly
+// via the API), leaving feasibilityDone/feasibilityId stale. Re-derives
+// every enquiry's link from what FR records actually still exist.
+async function mktRepairFeasibilityLinks(){
+  const [enqs, feases] = await Promise.all([
+    db.mktEnquiries.toArray().catch(()=>[]),
+    db.mktFeasibility.toArray().catch(()=>[])
+  ]);
+  const feasIds=new Set(feases.map(f=>f.id));
+  const byEnq={};
+  feases.forEach(f=>{ (byEnq[f.enqId]=byEnq[f.enqId]||[]).push(f); });
+
+  let fixed=0;
+  for(const e of enqs){
+    const pinnedStillExists=e.feasibilityId!=null && feasIds.has(e.feasibilityId);
+    if(pinnedStillExists) continue;
+    const list=byEnq[e.id]||[];
+    if(list.length>0){
+      list.sort((a,b)=>a.id-b.id);
+      await db.mktEnquiries.update(e.id,{feasibilityDone:true, feasibilityId:list[0].id});
+      fixed++;
+    } else if(e.feasibilityDone || e.feasibilityId!=null){
+      await db.mktEnquiries.update(e.id,{feasibilityDone:false, feasibilityId:null});
+      fixed++;
+    }
+  }
+  toast(fixed>0?`✅ Repaired ${fixed} enquiry link(s)`:'✅ All enquiry links already correct');
+  mktRenderEnquiries();
 }
 
 // ══════════════════════════════════════════════════════
