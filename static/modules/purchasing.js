@@ -240,7 +240,7 @@ function purSampleSection(n,s){
   return`
   <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;align-items:end;padding:10px;border:1px solid var(--border);border-radius:7px;margin-bottom:10px">
     <div class="fg" style="grid-column:span 6"><label class="lbl" style="font-weight:700;color:var(--navy)">Sample ${n} Received</label></div>
-    <div class="fg"><label class="lbl">DC No.</label><input class="fc" id="s${n}-dc" value="${esc(s.dcNo||'')}"></div>
+    <div class="fg"><label class="lbl">Invoice No.</label><input class="fc" id="s${n}-dc" value="${esc(s.dcNo||'')}"></div>
     <div class="fg"><label class="lbl">Date</label><input class="fc" type="date" id="s${n}-date" value="${s.date||''}"></div>
     <div class="fg"><label class="lbl">Qty Received</label><input class="fc" type="number" id="s${n}-recv" value="${s.qtyReceived??''}" oninput="purAutoAccept(${n})"></div>
     <div class="fg"><label class="lbl">Qty Rejected</label><input class="fc" type="number" id="s${n}-rej" value="${s.qtyRejected??''}" oninput="purAutoAccept(${n})"></div>
@@ -520,12 +520,21 @@ function purVendorPeriodChange(){
 async function purRenderInvoices(){
   const allVendors=await db.purVendors.toArray().catch(()=>[]);
   const approvedVendors=allVendors.filter(purIsApproved);
-  const lots=await db.purVendorLots.toArray().catch(()=>[]);
-  lots.sort((a,b)=>(b.date||'')>(a.date||'')?1:-1);
+  const allLots=await db.purVendorLots.toArray().catch(()=>[]);
+
+  // Combine each approved vendor's 2 registration samples with their invoice
+  // entries — same rows their own scorecard shows — so this register is a
+  // complete log, not just invoices entered after approval.
+  const rows=[];
+  approvedVendors.forEach(v=>{
+    const vendorLots=allLots.filter(l=>l.vendorId===v.id);
+    purVendorRows(v,vendorLots).forEach(r=>rows.push({...r,vendorId:v.id}));
+  });
+  rows.sort((a,b)=>(b.date||'')>(a.date||'')?1:-1);
 
   const now=new Date();
   const monthStart=new Date(now.getFullYear(),now.getMonth(),1);
-  const enteredThisMonth=new Set(lots.filter(l=>l.date&&new Date(l.date)>=monthStart).map(l=>l.vendorId));
+  const enteredThisMonth=new Set(rows.filter(r=>r.date&&new Date(r.date)>=monthStart).map(r=>r.vendorId));
   const missing=approvedVendors.filter(v=>!enteredThisMonth.has(v.id));
   const monthLabel=now.toLocaleDateString('en-IN',{month:'long',year:'numeric'});
 
@@ -540,25 +549,26 @@ async function purRenderInvoices(){
     ?`<div class="alert al-w" style="margin-bottom:12px">⚠️ ${missing.length} approved supplier(s) have no entry for ${monthLabel}: ${missing.map(v=>esc(v.name)).join(', ')}</div>`
     :`<div class="alert al-s" style="margin-bottom:12px">✅ Every approved supplier has at least one entry for ${monthLabel}.</div>`}
   <div class="card">
-    <div class="ch"><h5>All Invoice / Delivery Entries — ${lots.length}</h5></div>
+    <div class="ch"><h5>All Invoice / Delivery Entries — ${rows.length}</h5></div>
     <div class="tw"><table>
-      <thead><tr><th>Date</th><th>Supplier</th><th>Ref / Invoice No.</th><th>Qty Received</th><th>Qty Rejected</th><th>Qty Accepted</th><th>Lot Timing</th><th></th></tr></thead>
-      <tbody>${lots.length===0
-        ?`<tr><td colspan="8" style="text-align:center;padding:30px;color:#9ca3af">No invoices entered yet. Click + Add Invoice to start.</td></tr>`
-        :lots.map(l=>{
-          const v=allVendors.find(x=>x.id===l.vendorId);
-          return`<tr>
-            <td>${l.date||'—'}</td>
+      <thead><tr><th>Date</th><th>Supplier</th><th>Source</th><th>Ref / Invoice No.</th><th>Qty Received</th><th>Qty Rejected</th><th>Qty Accepted</th><th>Lot Timing</th><th></th></tr></thead>
+      <tbody>${rows.length===0
+        ?`<tr><td colspan="9" style="text-align:center;padding:30px;color:#9ca3af">No entries yet. Click + Add Invoice to start.</td></tr>`
+        :rows.map(r=>{
+          const v=allVendors.find(x=>x.id===r.vendorId);
+          return`<tr style="${r.source!=='Invoice'?'background:#fffbeb':''}">
+            <td>${r.date||'—'}</td>
             <td><strong>${esc(v?.name||'Unknown supplier')}</strong></td>
-            <td class="mono">${esc(l.refNo||'—')}</td>
-            <td style="text-align:center">${l.qtyReceived}</td>
-            <td style="text-align:center;color:#7f1d1d">${l.qtyRejected}</td>
-            <td style="text-align:center;color:#14532d">${l.qtyAccepted}</td>
-            <td>${PUR_TIMING_LABELS[l.timing]||l.timing}</td>
-            <td style="white-space:nowrap">
-              <button class="btn btn-o btn-xs" onclick="purOpenLotForm(null,${l.id},'register')">✏️</button>
-              <button class="btn btn-r btn-xs" onclick="purDeleteLot(${l.id},'register')">🗑️</button>
-            </td>
+            <td>${r.source}</td>
+            <td class="mono">${esc(r.refNo||'—')}</td>
+            <td style="text-align:center">${r.qtyReceived}</td>
+            <td style="text-align:center;color:#7f1d1d">${r.qtyRejected}</td>
+            <td style="text-align:center;color:#14532d">${r.qtyAccepted}</td>
+            <td>${PUR_TIMING_LABELS[r.timing]||r.timing}</td>
+            <td style="white-space:nowrap">${r.source==='Invoice'?`
+              <button class="btn btn-o btn-xs" onclick="purOpenLotForm(null,${r.id},'register')">✏️</button>
+              <button class="btn btn-r btn-xs" onclick="purDeleteLot(${r.id},'register')">🗑️</button>
+            `:'<span class="muted" style="font-size:11px">Edit via Supplier form</span>'}</td>
           </tr>`;
         }).join('')}
       </tbody>
@@ -793,8 +803,8 @@ async function purPrintSupplierForm(id){
   <div class="frm-row"><div class="fl">Are credit terms acceptable?</div><div class="fv">${yn(v.qCredit)}</div></div>
   <div class="frm-row"><div class="fl">Is material supplied with bill?</div><div class="fv">${yn(v.qBill)}</div></div>
   <div class="sec-bar">Purchase In Charge</div>
-  <div class="frm-row" style="border-top:1px solid #000"><div class="fl">1st Sample Received</div><div class="fv">DC No &amp; Date: ${esc(v.sample1?.dcNo||'—')} ${v.sample1?.date||''} &nbsp;&nbsp; ${dec(v.sample1?.decision)}</div></div>
-  <div class="frm-row"><div class="fl">2nd Sample Received</div><div class="fv">DC No &amp; Date: ${esc(v.sample2?.dcNo||'—')} ${v.sample2?.date||''} &nbsp;&nbsp; ${dec(v.sample2?.decision)}</div></div>
+  <div class="frm-row" style="border-top:1px solid #000"><div class="fl">1st Sample Received</div><div class="fv">Invoice No &amp; Date: ${esc(v.sample1?.dcNo||'—')} ${v.sample1?.date||''} &nbsp;&nbsp; ${dec(v.sample1?.decision)}</div></div>
+  <div class="frm-row"><div class="fl">2nd Sample Received</div><div class="fv">Invoice No &amp; Date: ${esc(v.sample2?.dcNo||'—')} ${v.sample2?.date||''} &nbsp;&nbsp; ${dec(v.sample2?.decision)}</div></div>
   <div class="frm-row"><div class="fl">Supplier include in Approved Suppliers List</div><div class="fv">${yn(v.includeInApprovedList)}</div></div>
   <div class="frm-row"><div class="fl">Release P.O. to Supplier</div><div class="fv">${yn(v.releasePO)} &nbsp;&nbsp; CEO: ${esc(v.ceoName||'')}</div></div>
   <div class="frm-row"><div class="fl">P.O. Date &amp; No.</div><div class="fv">${esc(v.poDateNo||'')}</div></div>
