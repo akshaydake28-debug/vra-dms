@@ -345,9 +345,14 @@ async function mktRenderFeasibility(){
 // ══════════════════════════════════════════════════════
 async function mktCreateFeasibility(enqId){
   const e=await db.mktEnquiries.get(enqId);
-  // Check if already exists
+  // The enquiry's own feasibilityId is the source of truth — if it's already
+  // set, always reopen that exact record instead of re-deriving by enqId,
+  // so "View FR" and "Edit" (Feasibility Reviews list) never diverge.
+  if(e.feasibilityId){ mktViewFeasibilityById(e.feasibilityId); return; }
+  // Legacy fallback: enquiry predates feasibilityId tracking. Pin whatever
+  // is found so future lookups are stable.
   const existing=await db.mktFeasibility.where('enqId').equals(enqId).first().catch(()=>null);
-  if(existing){ mktViewFeasibilityById(existing.id); return; }
+  if(existing){ await db.mktEnquiries.update(enqId,{feasibilityId:existing.id}); mktViewFeasibilityById(existing.id); return; }
   const feasNum=await nextFeasNum(e.enqNumber);
   // Create blank record
   const qns=await db.mktFeasQns.toArray().catch(()=>[]);
@@ -361,13 +366,17 @@ async function mktCreateFeasibility(enqId){
     modification:'New', answers,
     createdAt:new Date().toISOString()
   });
-  await db.mktEnquiries.update(enqId,{feasibilityDone:true});
+  await db.mktEnquiries.update(enqId,{feasibilityDone:true, feasibilityId:id});
   mktViewFeasibilityById(id);
 }
 
 async function mktViewFeasibility(enqId){
+  const e=await db.mktEnquiries.get(enqId);
+  if(e?.feasibilityId){ mktViewFeasibilityById(e.feasibilityId); return; }
+  // Legacy fallback for enquiries created before feasibilityId was tracked
   const f=await db.mktFeasibility.where('enqId').equals(enqId).first().catch(()=>null);
   if(!f){mktCreateFeasibility(enqId);return;}
+  await db.mktEnquiries.update(enqId,{feasibilityId:f.id});
   mktViewFeasibilityById(f.id);
 }
 
@@ -508,8 +517,8 @@ async function mktDeleteFeasibility(id){
   const f=await db.mktFeasibility.get(id);
   if(!confirm(`Delete feasibility review ${f?.feasNumber}?`)) return;
   await db.mktFeasibility.delete(id);
-  // Reset flag on enquiry
-  if(f?.enqId) await db.mktEnquiries.update(f.enqId,{feasibilityDone:false});
+  // Reset flag + pinned id on enquiry
+  if(f?.enqId) await db.mktEnquiries.update(f.enqId,{feasibilityDone:false, feasibilityId:null});
   toast('Deleted','d');
   mktRenderFeasibility();
 }
