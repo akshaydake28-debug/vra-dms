@@ -1,97 +1,133 @@
-// VRA DMS — PURCHASING MODULE
+// VRA DMS — PURCHASING MODULE (Vendor Approval + Rating)
 
 // ══════════════════════════════════════════════════════
-//  PURCHASING — SUPPLIER MANAGEMENT MODULE
+//  NUMBERING
 // ══════════════════════════════════════════════════════
-
-// ── NUMBERING ─────────────────────────────────────────
 async function nextSupNumber(){
-  const n=(await db.purSuppliers.count().catch(()=>0))+1;
+  const n=(await db.purVendors.count().catch(()=>0))+1;
   return `VRA-SUP-${String(n).padStart(3,'0')}`;
 }
-async function nextPONumber(supId){
-  const all=await db.purDeliveries.where('supId').equals(supId).count().catch(()=>0);
-  const y=new Date().getFullYear();
-  // Global PO sequence across all suppliers
-  const allPos=await db.purDeliveries.toArray().catch(()=>[]);
-  const forYear=allPos.filter(p=>p.poNumber&&p.poNumber.includes(`VRA-PO-${y}`));
-  return `VRA-PO-${y}-${String(forYear.length+1).padStart(3,'0')}`;
+
+// ══════════════════════════════════════════════════════
+//  RATING ENGINE
+//  Quality Rating   = Qty Accepted / Qty Received * 100
+//  Delivery Rating  = (On-time + within-5-days lots) / Total Lots * 100
+//  Supplier Rating  = (Quality Rating + Delivery Rating) / 2
+// ══════════════════════════════════════════════════════
+const PUR_TIMING_LABELS={OnTime:'On Time',Within5:'Within 5 Days',After5:'After 5 Days'};
+
+function purSampleRow(vendor,key,label){
+  const s=vendor[key];
+  if(!s||(!s.dcNo&&!s.qtyReceived)) return null;
+  const received=Number(s.qtyReceived)||0;
+  const rejected=Number(s.qtyRejected)||0;
+  const accepted=(s.qtyAccepted!==''&&s.qtyAccepted!=null)?Number(s.qtyAccepted):Math.max(received-rejected,0);
+  return{source:label,date:s.date||'',refNo:s.dcNo||'',qtyReceived:received,qtyRejected:rejected,qtyAccepted:accepted,timing:s.timing||'OnTime'};
 }
 
-// ── SCORING HELPERS ───────────────────────────────────
-const PUR_PARAMS=['quality','delivery','price','service','controlType','controlExtent'];
-const PUR_PARAM_LABELS={
-  quality:'Quality',delivery:'On-Time Delivery',price:'Price / Rate',
-  service:'Service & Co-op',controlType:'Type of Control',controlExtent:'Extent of Control'
-};
-
-function purCalcScore(deliveries){
-  if(!deliveries.length) return{passRate:0,grade:'—',totalPass:0,totalChecks:0,perParam:{}};
-  let totalPass=0,totalChecks=0;
-  const perParam={};
-  PUR_PARAMS.forEach(p=>{perParam[p]={pass:0,total:0};});
-  deliveries.forEach(d=>{
-    PUR_PARAMS.forEach(p=>{
-      if(d.ratings&&d.ratings[p]!==undefined&&d.ratings[p]!==''){
-        perParam[p].total++;totalChecks++;
-        if(d.ratings[p]==='P'){perParam[p].pass++;totalPass++;}
-      }
-    });
+// Combined rating rows for a vendor = the 2 registration samples (if filled) + every invoice/lot entered afterward
+function purVendorRows(vendor,lots){
+  const rows=[];
+  const s1=purSampleRow(vendor,'sample1','Sample 1'); if(s1) rows.push(s1);
+  const s2=purSampleRow(vendor,'sample2','Sample 2'); if(s2) rows.push(s2);
+  lots.forEach(l=>{
+    const received=Number(l.qtyReceived)||0;
+    const rejected=Number(l.qtyRejected)||0;
+    const accepted=(l.qtyAccepted!==''&&l.qtyAccepted!=null)?Number(l.qtyAccepted):Math.max(received-rejected,0);
+    rows.push({id:l.id,source:'Invoice',date:l.date||'',refNo:l.refNo||'',qtyReceived:received,qtyRejected:rejected,qtyAccepted:accepted,timing:l.timing||'OnTime'});
   });
-  const passRate=totalChecks?Math.round((totalPass/totalChecks)*100):0;
-  const grade=passRate>=80?'A':passRate>=60?'B':'C';
-  return{passRate,grade,totalPass,totalChecks,perParam};
+  rows.sort((a,b)=>(a.date||'')>(b.date||'')?1:-1);
+  return rows;
 }
 
-function purAutoStatus(grade,current){
-  if(grade==='A') return'Approved';
-  if(grade==='B') return'Conditional';
-  if(grade==='C') return'Under Review';
-  return current||'Under Evaluation';
+function purCalcRating(rows){
+  const totalReceived=rows.reduce((s,r)=>s+r.qtyReceived,0);
+  const totalRejected=rows.reduce((s,r)=>s+r.qtyRejected,0);
+  const totalAccepted=rows.reduce((s,r)=>s+r.qtyAccepted,0);
+  const totalLots=rows.length;
+  const onTimeCount=rows.filter(r=>r.timing==='OnTime'||r.timing==='Within5').length;
+  const after5Count=rows.filter(r=>r.timing==='After5').length;
+  const qualityRating=totalReceived>0?Math.round((totalAccepted/totalReceived)*100):null;
+  const deliveryRating=totalLots>0?Math.round((onTimeCount/totalLots)*100):null;
+  const supplierRating=(qualityRating!=null&&deliveryRating!=null)?Math.round((qualityRating+deliveryRating)/2):null;
+  return{totalReceived,totalRejected,totalAccepted,totalLots,onTimeCount,after5Count,qualityRating,deliveryRating,supplierRating};
 }
 
-async function purUpdateLiveStatus(supId){
-  const deliveries=await db.purDeliveries.where('supId').equals(supId).toArray().catch(()=>[]);
-  const sup=await db.purSuppliers.get(supId);
-  // First 2 deliveries check for initial approval
-  const first2=deliveries.sort((a,b)=>(a.date||'')>(b.date||'')?1:-1).slice(0,2);
-  const first2AllPass=first2.length>=2&&first2.every(d=>
-    PUR_PARAMS.every(p=>d.ratings&&d.ratings[p]==='P')
-  );
-  const sc=purCalcScore(deliveries);
-  let newStatus=sup.approvalStatus;
-  if(!first2AllPass&&deliveries.length<2){
-    newStatus='Under Evaluation';
-  } else if(first2AllPass||deliveries.length>=2){
-    newStatus=purAutoStatus(sc.grade,sup.approvalStatus);
-  }
-  if(newStatus!==sup.approvalStatus){
-    await db.purSuppliers.update(supId,{approvalStatus:newStatus,lastScoreUpdate:new Date().toISOString()});
-    if(newStatus==='Approved'&&sup.approvalStatus!=='Approved'){
-      toast(`✅ ${sup.name} auto-approved — added to Approved List!`,'s');
-    } else if(newStatus==='Under Review'){
-      toast(`⚠️ ${sup.name} moved to Under Review — Grade C`,'w');
-    }
-  }
-  return sc;
+// ══════════════════════════════════════════════════════
+//  APPROVAL STATE — always computed live from the vendor's own
+//  data, never a stored flag, so it can't go stale.
+// ══════════════════════════════════════════════════════
+function purIsApproved(v){
+  return v.sample1?.decision==='ACCEPT' && v.sample2?.decision==='ACCEPT' && v.includeInApprovedList==='Y';
+}
+function purStage(v){
+  const s1=v.sample1?.decision,s2=v.sample2?.decision;
+  if(purIsApproved(v)) return'Approved';
+  if(s1==='REJECT'||s2==='REJECT') return'Rejected';
+  if(s1==='ACCEPT'&&s2==='ACCEPT') return'Samples Accepted — Pending Sign-off';
+  if(v.sample1?.dcNo||v.sample2?.dcNo) return'Sample Evaluation';
+  return'Registered';
+}
+function purStageBadge(stage){
+  const m={Registered:'bd','Sample Evaluation':'bp','Samples Accepted — Pending Sign-off':'bp',Approved:'ba',Rejected:'br'};
+  return`<span class="badge ${m[stage]||'bd'}">${stage}</span>`;
+}
+function purPctBadge(pct){
+  if(pct==null) return'<span class="muted">—</span>';
+  const cls=pct>=90?'ba':pct>=75?'bp':'br';
+  return`<span class="badge ${cls}">${pct}%</span>`;
 }
 
-// ── BADGES ────────────────────────────────────────────
-function purStatusBadge(s){
-  const m={'Approved':'ba','Conditional':'bp','Under Evaluation':'bd','Under Review':'br','Suspended':'br'};
-  return`<span class="badge ${m[s]||'bd'}">${s}</span>`;
+// ══════════════════════════════════════════════════════
+//  PERIOD FILTER (for scorecard reporting)
+// ══════════════════════════════════════════════════════
+function purPeriodRange(period,fromStr,toStr){
+  if(period==='custom') return fromStr&&toStr?{start:new Date(fromStr),end:new Date(toStr)}:null;
+  if(period==='all') return null;
+  const now=new Date();
+  let start;
+  if(period==='month') start=new Date(now.getFullYear(),now.getMonth(),1);
+  else if(period==='quarter') start=new Date(now.getFullYear(),Math.floor(now.getMonth()/3)*3,1);
+  else if(period==='half') start=new Date(now.getFullYear(),now.getMonth()<6?0:6,1);
+  else if(period==='year') start=new Date(now.getFullYear(),0,1);
+  else return null;
+  return{start,end:now};
 }
-function purGradeBadge(g,rate){
-  if(g==='A') return`<span class="badge ba">A — ${rate}%</span>`;
-  if(g==='B') return`<span class="badge bp">B — ${rate}%</span>`;
-  if(g==='C') return`<span class="badge br">C — ${rate}%</span>`;
-  return`<span class="badge bd">—</span>`;
+function purInRange(dateStr,range){
+  if(!range) return true;
+  if(!dateStr) return false;
+  const d=new Date(dateStr);
+  return d>=range.start && d<=new Date(range.end.getFullYear(),range.end.getMonth(),range.end.getDate(),23,59,59);
 }
-function purPF(v){
-  if(v==='P') return`<span style="color:#14532d;font-weight:800;font-size:13px">✓</span>`;
-  if(v==='F') return`<span style="color:#7f1d1d;font-weight:800;font-size:13px">✗</span>`;
-  return`<span style="color:#9ca3af">—</span>`;
+function purPeriodLabel(period,fromStr,toStr){
+  const m={all:'All Time',month:'This Month',quarter:'This Quarter',half:'This Half-Year',year:'This Year'};
+  if(period==='custom') return fromStr&&toStr?`${fromStr} to ${toStr}`:'Custom Range';
+  return m[period]||'All Time';
 }
+function purPeriodSelectorHtml(period,fromStr,toStr,onChangeFn){
+  return`<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <select class="fc" id="pur-period" style="width:auto" onchange="purPeriodSelectChanged('${onChangeFn}')">
+      ${[['all','All Time'],['month','This Month'],['quarter','This Quarter'],['half','This Half-Year'],['year','This Year'],['custom','Custom Range']]
+        .map(([v,l])=>`<option value="${v}" ${period===v?'selected':''}>${l}</option>`).join('')}
+    </select>
+    <input class="fc" type="date" id="pur-period-from" value="${fromStr||''}" style="width:auto;${period==='custom'?'':'display:none'}" onchange="${onChangeFn}()">
+    <input class="fc" type="date" id="pur-period-to" value="${toStr||''}" style="width:auto;${period==='custom'?'':'display:none'}" onchange="${onChangeFn}()">
+  </div>`;
+}
+// Switching the dropdown to "Custom Range" must reveal the date pickers
+// immediately — the actual re-render only happens once both dates are
+// filled (each date input's own onchange triggers that).
+function purPeriodSelectChanged(onChangeFn){
+  const period=document.getElementById('pur-period').value;
+  const show=period==='custom';
+  document.getElementById('pur-period-from').style.display=show?'':'none';
+  document.getElementById('pur-period-to').style.display=show?'':'none';
+  if(!show) window[onChangeFn]();
+}
+
+// ══════════════════════════════════════════════════════
+//  PRINT CSS
+// ══════════════════════════════════════════════════════
 function purPrintCSS(){
   return`*{box-sizing:border-box;margin:0;padding:0}
 body{font-family:Arial,sans-serif;font-size:8.5pt;color:#000}
@@ -108,732 +144,611 @@ table.dt td{border:1px solid #ccc;padding:3px 6px;vertical-align:middle;text-ali
 table.dt td.tl{text-align:left}
 table.dt tr:nth-child(even) td{background:#f7f7f7}
 .sec-bar{background:#ececec;border-left:3px solid #000;padding:3px 7px;font-size:7.5pt;font-weight:bold;text-transform:uppercase;margin:8px 0 4px}
-.meta-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:0;margin-bottom:7px}
-.mc{border:1px solid #ccc;padding:3px 6px}.mc .ml{font-size:6.5pt;color:#777;text-transform:uppercase;font-weight:bold}.mc .mv{font-size:8.5pt;font-weight:600}
+.frm-row{display:grid;grid-template-columns:180px 1fr;border:1px solid #000;border-top:none}
+.frm-row .fl{background:#f2f2f2;font-weight:bold;padding:4px 8px;border-right:1px solid #000}
+.frm-row .fv{padding:4px 8px}
 @media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}`;
 }
 
 // ══════════════════════════════════════════════════════
-//  SUPPLIER REGISTER
+//  SUPPLIER REGISTER — LIST
 // ══════════════════════════════════════════════════════
 async function purRenderSuppliers(){
-  const sups=await db.purSuppliers.toArray().catch(()=>[]);
-  sups.sort((a,b)=>a.supNumber>b.supNumber?1:-1);
-  // Get live score for each
-  const scoreMap={};
-  for(const s of sups){
-    const deliveries=await db.purDeliveries.where('supId').equals(s.id).toArray().catch(()=>[]);
-    scoreMap[s.id]=purCalcScore(deliveries);
-  }
-  const counts={Approved:0,'Under Evaluation':0,'Conditional':0,'Under Review':0};
-  sups.forEach(s=>{if(counts[s.approvalStatus]!==undefined)counts[s.approvalStatus]++;});
+  const vendors=await db.purVendors.toArray().catch(()=>[]);
+  vendors.sort((a,b)=>b.id-a.id);
+  const counts={Registered:0,'Sample Evaluation':0,'Samples Accepted — Pending Sign-off':0,Approved:0,Rejected:0};
+  vendors.forEach(v=>{const st=purStage(v); if(counts[st]!==undefined) counts[st]++;});
 
   setC(`
   <div class="ph">
     <h2>🏭 Supplier Register</h2>
     <div style="display:flex;gap:8px">
-      <button class="btn btn-p" onclick="purOpenSupForm()">+ Add Supplier</button>
-      <button class="btn btn-o" onclick="purPrintSupList()">🖨️ Print List</button>
+      <button class="btn btn-p" onclick="purRenderSupplierForm()">+ Add Supplier</button>
     </div>
   </div>
-  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px">
-    ${[['Approved',counts.Approved,'ba'],['Under Evaluation',counts['Under Evaluation'],'bd'],['Conditional',counts['Conditional'],'bp'],['Under Review',counts['Under Review'],'br']].map(([l,n,c])=>`
+  <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:16px">
+    ${[['Registered',counts.Registered,'bd'],['Sample Evaluation',counts['Sample Evaluation'],'bp'],['Pending Sign-off',counts['Samples Accepted — Pending Sign-off'],'bp'],['Approved',counts.Approved,'ba'],['Rejected',counts.Rejected,'br']].map(([l,n])=>`
     <div class="card" style="padding:12px 16px">
       <div style="font-size:22px;font-weight:800;color:var(--navy)">${n}</div>
       <div class="muted" style="font-size:12px">${l}</div>
     </div>`).join('')}
   </div>
   <div class="card">
-    <div class="ch"><h5>All Suppliers — ${sups.length} records</h5>
-      <span class="muted" style="font-size:11px">VRA-PUR-001</span>
+    <div class="ch"><h5>All Suppliers — ${vendors.length} records</h5>
+      <span class="muted" style="font-size:11px">VRA-PUR-F-01 · Supplier Approval Form</span>
     </div>
     <div class="tw"><table>
       <thead><tr>
         <th>Sup No.</th><th>Supplier Name</th><th>Scope of Supply</th>
-        <th>Deliveries</th><th>Pass Rate</th><th>Grade</th><th>Status</th><th></th>
+        <th>Contact Person</th><th>Stage</th><th></th>
       </tr></thead>
-      <tbody>${sups.length===0
-        ?`<tr><td colspan="8" style="text-align:center;padding:30px;color:#9ca3af">No suppliers yet.</td></tr>`
-        :sups.map(s=>{
-          const sc=scoreMap[s.id];
-          const dCount=sc.totalChecks?Math.round(sc.totalChecks/PUR_PARAMS.length):0;
-          return`<tr>
-            <td class="mono" style="color:var(--navy);font-weight:700">${esc(s.supNumber)}</td>
-            <td><strong>${esc(s.name)}</strong></td>
-            <td>${esc(s.scope||'—')}</td>
-            <td style="text-align:center"><span class="badge bd">${dCount}</span></td>
-            <td style="text-align:center">${sc.totalChecks?`<strong>${sc.passRate}%</strong>`:'<span class="muted">—</span>'}</td>
-            <td style="text-align:center">${sc.grade!=='—'?purGradeBadge(sc.grade,sc.passRate):'<span class="muted">—</span>'}</td>
-            <td>${purStatusBadge(s.approvalStatus||'Under Evaluation')}</td>
-            <td style="white-space:nowrap">
-              <button class="btn btn-o btn-xs" onclick="purViewSupplier(${s.id})">👁️ View</button>
-              <button class="btn btn-o btn-xs" onclick="purOpenSupForm(${s.id})">✏️</button>
-              <button class="btn btn-r btn-xs" onclick="purDeleteSupplier(${s.id})">🗑️</button>
-            </td>
-          </tr>`;}).join('')}
+      <tbody>${vendors.length===0
+        ?`<tr><td colspan="6" style="text-align:center;padding:30px;color:#9ca3af">No suppliers yet. Click + Add Supplier to register one.</td></tr>`
+        :vendors.map(v=>`<tr>
+          <td class="mono" style="color:var(--navy);font-weight:700">${esc(v.supNumber)}</td>
+          <td><strong>${esc(v.name)}</strong></td>
+          <td>${esc(v.scopeOfSupply||'—')}</td>
+          <td>${esc(v.contactPerson||'—')}${v.contactPhone?' · '+esc(v.contactPhone):''}</td>
+          <td>${purStageBadge(purStage(v))}</td>
+          <td style="white-space:nowrap">
+            <button class="btn btn-o btn-xs" onclick="purRenderSupplierForm(${v.id})">✏️ Open</button>
+            ${purIsApproved(v)?`<button class="btn btn-o btn-xs" onclick="purViewVendor(${v.id})">📊 Scorecard</button>`:''}
+            <button class="btn btn-r btn-xs" onclick="purDeleteVendor(${v.id})">🗑️</button>
+          </td>
+        </tr>`).join('')}
       </tbody>
     </table></div>
   </div>`);
 }
 
-async function purOpenSupForm(id=null){
-  const s=id?await db.purSuppliers.get(id).catch(()=>null):null;
-  const num=s?s.supNumber:await nextSupNumber();
-  const ov=document.createElement('div');ov.className='overlay';ov.id='pur-sup-ov';
-  ov.innerHTML=`<div class="modal" style="width:540px">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <h3>${s?'Edit Supplier':'New Supplier'} &nbsp;<span class="mono" style="color:var(--navy);font-size:12px">${num}</span></h3>
-      <button class="btn btn-o btn-sm" onclick="document.getElementById('pur-sup-ov').remove()">✕</button>
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-      <div class="fg"><label class="lbl">Supplier Number</label>
-        <input class="fc mono" id="ps-num" value="${esc(num)}" readonly style="background:#f5f7fd;color:var(--navy);font-weight:700"></div>
-      <div class="fg"><label class="lbl">Date</label>
-        <input class="fc" type="date" id="ps-date" value="${s?.date||new Date().toISOString().split('T')[0]}"></div>
-      <div class="fg" style="grid-column:span 2"><label class="lbl">Supplier Name *</label>
-        <input class="fc" id="ps-name" value="${esc(s?.name||'')}" placeholder="M/s Supplier Name"></div>
-      <div class="fg" style="grid-column:span 2"><label class="lbl">Scope of Supply *</label>
-        <input class="fc" id="ps-scope" value="${esc(s?.scope||'')}" placeholder="e.g. ADC12 Ingots, Die Lubricant"></div>
-      <div class="fg"><label class="lbl">Status</label>
-        <select class="fc" id="ps-status">
-          ${['Under Evaluation','Approved','Conditional','Under Review','Suspended'].map(x=>`<option value="${x}" ${(s?.approvalStatus||'Under Evaluation')===x?'selected':''}>${x}</option>`).join('')}
-        </select></div>
-      <div class="fg"><label class="lbl">Remarks</label>
-        <input class="fc" id="ps-remarks" value="${esc(s?.remarks||'')}" placeholder="Notes or conditions"></div>
-    </div>
-    <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
-      <button class="btn btn-o" onclick="document.getElementById('pur-sup-ov').remove()">Cancel</button>
-      <button class="btn btn-p" onclick="purSaveSupplier(${id||'null'})">💾 Save</button>
-    </div>
+async function purDeleteVendor(id){
+  const v=await db.purVendors.get(id);
+  if(!confirm(`Delete supplier ${v?.name}? All invoice/delivery records will also be deleted.`)) return;
+  const lots=await db.purVendorLots.where('vendorId').equals(id).toArray().catch(()=>[]);
+  for(const l of lots) await db.purVendorLots.delete(l.id);
+  await db.purVendors.delete(id);
+  toast('Deleted','d');
+  purRenderSuppliers();
+}
+
+// ══════════════════════════════════════════════════════
+//  SUPPLIER FORM — registration + assessment + samples + sign-off
+//  (Replicates the paper Supplier Approval Form, VRA-PUR-F-01)
+// ══════════════════════════════════════════════════════
+function purYN(id,val){
+  return`<select class="fc" id="${id}">
+    <option value="">—</option>
+    <option value="Y" ${val==='Y'?'selected':''}>Y</option>
+    <option value="N" ${val==='N'?'selected':''}>N</option>
+  </select>`;
+}
+function purDecisionSelect(id,val){
+  return`<select class="fc" id="${id}">
+    <option value="">— Pending —</option>
+    <option value="ACCEPT" ${val==='ACCEPT'?'selected':''}>ACCEPT</option>
+    <option value="REJECT" ${val==='REJECT'?'selected':''}>REJECT</option>
+  </select>`;
+}
+function purTimingSelect(id,val){
+  return`<select class="fc" id="${id}">
+    ${Object.entries(PUR_TIMING_LABELS).map(([k,l])=>`<option value="${k}" ${(val||'OnTime')===k?'selected':''}>${l}</option>`).join('')}
+  </select>`;
+}
+function purSampleSection(n,s){
+  s=s||{};
+  return`
+  <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;align-items:end;padding:10px;border:1px solid var(--border);border-radius:7px;margin-bottom:10px">
+    <div class="fg" style="grid-column:span 6"><label class="lbl" style="font-weight:700;color:var(--navy)">Sample ${n} Received</label></div>
+    <div class="fg"><label class="lbl">DC No.</label><input class="fc" id="s${n}-dc" value="${esc(s.dcNo||'')}"></div>
+    <div class="fg"><label class="lbl">Date</label><input class="fc" type="date" id="s${n}-date" value="${s.date||''}"></div>
+    <div class="fg"><label class="lbl">Qty Received</label><input class="fc" type="number" id="s${n}-recv" value="${s.qtyReceived??''}" oninput="purAutoAccept(${n})"></div>
+    <div class="fg"><label class="lbl">Qty Rejected</label><input class="fc" type="number" id="s${n}-rej" value="${s.qtyRejected??''}" oninput="purAutoAccept(${n})"></div>
+    <div class="fg"><label class="lbl">Qty Accepted</label><input class="fc" type="number" id="s${n}-acc" value="${s.qtyAccepted??''}"></div>
+    <div class="fg"><label class="lbl">Lot Timing</label>${purTimingSelect(`s${n}-timing`,s.timing)}</div>
+    <div class="fg" style="grid-column:span 6"><label class="lbl">Decision</label>${purDecisionSelect(`s${n}-decision`,s.decision)}</div>
   </div>`;
-  document.body.appendChild(ov);
+}
+function purAutoAccept(n){
+  const recv=parseFloat(document.getElementById(`s${n}-recv`)?.value)||0;
+  const rej=parseFloat(document.getElementById(`s${n}-rej`)?.value)||0;
+  const el=document.getElementById(`s${n}-acc`);
+  if(el) el.value=Math.max(recv-rej,0);
+}
+
+async function purRenderSupplierForm(id=null){
+  const v=id?await db.purVendors.get(id).catch(()=>null):null;
+  const num=v?v.supNumber:await nextSupNumber();
+  const stage=v?purStage(v):'Registered';
+
+  setC(`
+  <div class="ph">
+    <h2>🏭 ${v?'Edit Supplier':'New Supplier'} <span class="mono" style="font-size:13px;color:var(--navy)">${esc(num)}</span></h2>
+    <div style="display:flex;gap:8px">
+      ${v?`<button class="btn btn-o" onclick="purPrintSupplierForm(${id})">🖨️ Print Form</button>`:''}
+      ${v&&purIsApproved(v)?`<button class="btn btn-o" onclick="purViewVendor(${id})">📊 View Scorecard</button>`:''}
+      <button class="btn btn-o" onclick="nav('pur-suppliers')">← Back to Register</button>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:12px">
+    <div class="ch"><h5>Registration Details</h5>${purStageBadge(stage)}</div>
+    <div class="cb">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div class="fg"><label class="lbl">Supplier Number</label>
+          <input class="fc mono" id="ps-num" value="${esc(num)}" readonly style="background:#f5f7fd;color:var(--navy);font-weight:700"></div>
+        <div class="fg"><label class="lbl">Date</label>
+          <input class="fc" type="date" id="ps-date" value="${v?.date||new Date().toISOString().split('T')[0]}"></div>
+        <div class="fg" style="grid-column:span 2"><label class="lbl">Name &amp; Address *</label>
+          <input class="fc" id="ps-name" value="${esc(v?.name||'')}" placeholder="M/s Supplier Name"></div>
+        <div class="fg" style="grid-column:span 2"><label class="lbl">Address</label>
+          <input class="fc" id="ps-address" value="${esc(v?.address||'')}" placeholder="Full address"></div>
+        <div class="fg"><label class="lbl">Contact Person</label>
+          <input class="fc" id="ps-contact" value="${esc(v?.contactPerson||'')}"></div>
+        <div class="fg"><label class="lbl">Phone</label>
+          <input class="fc" id="ps-phone" value="${esc(v?.contactPhone||'')}"></div>
+        <div class="fg" style="grid-column:span 2"><label class="lbl">Scope of Supply *</label>
+          <input class="fc" id="ps-scope" value="${esc(v?.scopeOfSupply||'')}" placeholder="e.g. Flux Powder"></div>
+        <div class="fg"><label class="lbl">Year of Establishment</label>
+          <input class="fc" id="ps-year" value="${esc(v?.yearEstablishment||'')}"></div>
+        <div class="fg"><label class="lbl">Bankers</label>
+          <input class="fc" id="ps-bankers" value="${esc(v?.bankers||'')}"></div>
+        <div class="fg"><label class="lbl">G.S.T. No.</label>
+          <input class="fc" id="ps-gst" value="${esc(v?.gstNo||'')}"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:12px">
+    <div class="ch"><h5>For VRA Use Only</h5></div>
+    <div class="cb">
+      <div style="display:grid;grid-template-columns:1fr 100px;gap:10px;align-items:center">
+        <label class="lbl">Is capacity of Supplier to supply required material sufficient?</label>${purYN('ps-q-capacity',v?.qCapacity)}
+        <label class="lbl">Is distance of Supplier's location feasible?</label>${purYN('ps-q-distance',v?.qDistance)}
+        <label class="lbl">Are credit terms acceptable?</label>${purYN('ps-q-credit',v?.qCredit)}
+        <label class="lbl">Is material supplied with bill?</label>${purYN('ps-q-bill',v?.qBill)}
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:12px">
+    <div class="ch"><h5>Purchase In Charge — Sample Evaluation</h5>
+      <span class="muted" style="font-size:11px">Both samples must be ACCEPT + Include in Approved List = Y to become an Approved Supplier</span>
+    </div>
+    <div class="cb">
+      ${purSampleSection(1,v?.sample1)}
+      ${purSampleSection(2,v?.sample2)}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:center;padding-top:6px">
+        <label class="lbl">Supplier include in Approved Suppliers List?</label>${purYN('ps-include',v?.includeInApprovedList)}
+        <label class="lbl">Release P.O. to Supplier?</label>${purYN('ps-release',v?.releasePO)}
+        <div class="fg"><label class="lbl">CEO / Authorized By</label>
+          <input class="fc" id="ps-ceo" value="${esc(v?.ceoName||'')}"></div>
+        <div class="fg"><label class="lbl">P.O. Date &amp; No.</label>
+          <input class="fc" id="ps-po-datno" value="${esc(v?.poDateNo||'')}"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:12px">
+    <div class="cb"><div class="fg"><label class="lbl">Remarks</label>
+      <input class="fc" id="ps-remarks" value="${esc(v?.remarks||'')}"></div></div>
+  </div>
+
+  <div style="display:flex;gap:8px;justify-content:flex-end">
+    <button class="btn btn-o" onclick="nav('pur-suppliers')">Cancel</button>
+    <button class="btn btn-p" onclick="purSaveSupplier(${id||'null'})">💾 Save Supplier</button>
+  </div>`);
+}
+
+function purReadSample(n){
+  const dc=document.getElementById(`s${n}-dc`).value.trim();
+  const date=document.getElementById(`s${n}-date`).value;
+  const recv=document.getElementById(`s${n}-recv`).value;
+  const rej=document.getElementById(`s${n}-rej`).value;
+  const acc=document.getElementById(`s${n}-acc`).value;
+  const timing=document.getElementById(`s${n}-timing`).value;
+  const decision=document.getElementById(`s${n}-decision`).value;
+  if(!dc&&!date&&!recv&&!rej&&!acc&&!decision) return{};
+  return{dcNo:dc,date,qtyReceived:recv===''?'':Number(recv),qtyRejected:rej===''?'':Number(rej),qtyAccepted:acc===''?'':Number(acc),timing,decision};
 }
 
 async function purSaveSupplier(id){
   const name=document.getElementById('ps-name').value.trim();
+  const scope=document.getElementById('ps-scope').value.trim();
   if(!name){toast('Supplier name required','d');return;}
+  if(!scope){toast('Scope of supply required','d');return;}
   const rec={
     supNumber:document.getElementById('ps-num').value.trim(),
     date:document.getElementById('ps-date').value,
-    name, scope:document.getElementById('ps-scope').value.trim(),
-    approvalStatus:document.getElementById('ps-status').value,
+    name, address:document.getElementById('ps-address').value.trim(),
+    contactPerson:document.getElementById('ps-contact').value.trim(),
+    contactPhone:document.getElementById('ps-phone').value.trim(),
+    scopeOfSupply:scope,
+    yearEstablishment:document.getElementById('ps-year').value.trim(),
+    bankers:document.getElementById('ps-bankers').value.trim(),
+    gstNo:document.getElementById('ps-gst').value.trim(),
+    qCapacity:document.getElementById('ps-q-capacity').value,
+    qDistance:document.getElementById('ps-q-distance').value,
+    qCredit:document.getElementById('ps-q-credit').value,
+    qBill:document.getElementById('ps-q-bill').value,
+    sample1:purReadSample(1),
+    sample2:purReadSample(2),
+    includeInApprovedList:document.getElementById('ps-include').value,
+    releasePO:document.getElementById('ps-release').value,
+    ceoName:document.getElementById('ps-ceo').value.trim(),
+    poDateNo:document.getElementById('ps-po-datno').value.trim(),
     remarks:document.getElementById('ps-remarks').value.trim(),
     updatedAt:new Date().toISOString()
   };
-  if(id) await db.purSuppliers.update(id,rec);
-  else { rec.createdAt=new Date().toISOString(); await db.purSuppliers.add(rec); }
-  document.getElementById('pur-sup-ov').remove();
-  toast(`✅ ${rec.name} saved`); purRenderSuppliers();
-}
-
-async function purDeleteSupplier(id){
-  const s=await db.purSuppliers.get(id);
-  if(!confirm(`Delete ${s?.name}? All delivery records will also be deleted.`)) return;
-  await db.purDeliveries.where('supId').equals(id).delete().catch(()=>{});
-  await db.purSuppliers.delete(id);
-  toast('Deleted','d'); purRenderSuppliers();
+  const wasApproved=id?purIsApproved(await db.purVendors.get(id)):false;
+  let savedId=id;
+  if(id) await db.purVendors.update(id,rec);
+  else { rec.createdAt=new Date().toISOString(); savedId=await db.purVendors.add(rec); }
+  const nowApproved=purIsApproved(rec);
+  toast(`✅ ${rec.name} saved`);
+  if(nowApproved&&!wasApproved) toast(`🎉 ${rec.name} is now an Approved Supplier — scorecard is live`,'s');
+  purRenderSuppliers();
 }
 
 // ══════════════════════════════════════════════════════
-//  SUPPLIER DETAIL — UNIFIED DELIVERY + EVALUATION VIEW
-// ══════════════════════════════════════════════════════
-async function purViewSupplier(id){
-  const s=await db.purSuppliers.get(id);
-  const deliveries=await db.purDeliveries.where('supId').equals(id).toArray().catch(()=>[]);
-  deliveries.sort((a,b)=>(a.date||'')>(b.date||'')?1:-1);
-  const sc=await purUpdateLiveStatus(id);
-  const sup=await db.purSuppliers.get(id); // refresh after status update
-
-  // First 2 approval check
-  const first2=deliveries.slice(0,2);
-  const first2Done=first2.length>=2;
-  const first2Pass=first2Done&&first2.every(d=>PUR_PARAMS.every(p=>d.ratings&&d.ratings[p]==='P'));
-
-  function paramRow(p){
-    const pp=sc.perParam[p]||{pass:0,total:0};
-    const pct=pp.total?Math.round((pp.pass/pp.total)*100):null;
-    return`<tr>
-      <td class="tl">${PUR_PARAM_LABELS[p]}</td>
-      <td>${pp.total}</td>
-      <td style="color:#14532d;font-weight:700">${pp.pass}</td>
-      <td style="color:#7f1d1d;font-weight:700">${pp.total-pp.pass}</td>
-      <td>${pct!==null?`<span class="badge ${pct>=80?'ba':pct>=60?'bp':'br'}">${pct}%</span>`:'—'}</td>
-    </tr>`;
-  }
-
-  setC(`
-  <div class="ph">
-    <h2>🏭 ${esc(sup.name)} <span class="muted" style="font-size:13px">${esc(sup.supNumber)}</span></h2>
-    <div style="display:flex;gap:8px">
-      <button class="btn btn-o" onclick="purOpenSupForm(${id})">✏️ Edit</button>
-      <button class="btn btn-p" onclick="purOpenDeliveryForm(${id})">+ Add Delivery</button>
-      <button class="btn btn-o" onclick="purPrintEvalForm(${id})">🖨️ Print Eval Form</button>
-      <button class="btn btn-o" onclick="purPrintScorecard(${id})">🖨️ Print Scorecard</button>
-      <button class="btn btn-o" onclick="nav('pur-suppliers')">← Back</button>
-    </div>
-  </div>
-
-  <!-- Status + Scorecard summary -->
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
-    <div class="card">
-      <div class="ch"><h5>Live Status</h5>${purStatusBadge(sup.approvalStatus||'Under Evaluation')}</div>
-      <div class="cb">
-        <div style="display:flex;gap:20px;align-items:center;flex-wrap:wrap;font-size:13px">
-          <div><div style="font-size:26px;font-weight:800;color:var(--navy)">${deliveries.length}</div><div class="muted" style="font-size:11px">Total Deliveries</div></div>
-          <div><div style="font-size:26px;font-weight:800;color:${sc.grade==='A'?'#14532d':sc.grade==='B'?'#92400e':'#7f1d1d'}">${sc.grade}</div><div class="muted" style="font-size:11px">Grade</div></div>
-          <div><div style="font-size:26px;font-weight:800;color:var(--navy)">${sc.passRate}%</div><div class="muted" style="font-size:11px">Overall Pass Rate</div></div>
-        </div>
-        <div style="margin-top:10px;font-size:12px">
-          ${!first2Done?`<span class="badge bd">Evaluation in progress — ${deliveries.length}/2 initial deliveries done</span>`:
-            first2Pass?`<span class="badge ba">✓ Initial 2 deliveries passed — auto-approved</span>`:
-            `<span class="badge br">✗ Not all parameters passed in first 2 deliveries</span>`}
-        </div>
-        <div style="margin-top:6px;font-size:11.5px;color:var(--muted)">
-          Grade A ≥80% → Approved &nbsp;|&nbsp; B 60–79% → Conditional &nbsp;|&nbsp; C &lt;60% → Under Review
-        </div>
-        ${sup.scope?`<div style="margin-top:8px;font-size:12.5px"><span class="muted">Scope:</span> <strong>${esc(sup.scope)}</strong></div>`:''}
-        ${sup.remarks?`<div style="font-size:12px;color:var(--muted)">${esc(sup.remarks)}</div>`:''}
-      </div>
-    </div>
-    <div class="card">
-      <div class="ch"><h5>Parameter Scorecard</h5><span class="muted" style="font-size:11px">All deliveries</span></div>
-      <div class="tw"><table>
-        <thead><tr><th class="tl">Parameter</th><th>Entries</th><th style="color:#14532d">Pass</th><th style="color:#7f1d1d">Fail</th><th>Rate</th></tr></thead>
-        <tbody>${PUR_PARAMS.map(p=>paramRow(p)).join('')}</tbody>
-      </table></div>
-    </div>
-  </div>
-
-  <!-- Delivery Register -->
-  <div class="card">
-    <div class="ch">
-      <h5>Delivery Register — Evaluation Log (${deliveries.length})</h5>
-      <button class="btn btn-p btn-sm" onclick="purOpenDeliveryForm(${id})">+ Add Delivery</button>
-    </div>
-    <div class="tw" style="overflow-x:auto"><table style="min-width:900px">
-      <thead>
-        <tr style="background:var(--navy);color:#fff">
-          <th style="text-align:left;min-width:60px">Del #</th>
-          <th style="text-align:left;min-width:90px">PO No.</th>
-          <th style="text-align:left;min-width:70px">Date</th>
-          <th style="text-align:left;min-width:120px">Material</th>
-          <th style="text-align:left;min-width:60px">Qty</th>
-          ${PUR_PARAMS.map(p=>`<th style="min-width:55px;font-size:10px">${PUR_PARAM_LABELS[p]}</th>`).join('')}
-          <th style="text-align:left;min-width:120px">Remarks</th>
-          <th style="min-width:50px"></th>
-        </tr>
-      </thead>
-      <tbody>${deliveries.length===0
-        ?`<tr><td colspan="13" style="text-align:center;padding:24px;color:#9ca3af">No deliveries recorded yet. Add the first delivery to start evaluation.</td></tr>`
-        :deliveries.map((d,i)=>{
-          const isFirst2=i<2;
-          return`<tr style="${isFirst2?'background:#fffbeb':''}">
-            <td style="text-align:center;font-weight:700">
-              ${i+1}${isFirst2?` <span style="font-size:9px;color:#92400e;font-weight:600">(Init)</span>`:''}
-            </td>
-            <td class="mono" style="font-size:11px;font-weight:700;color:var(--navy)">${esc(d.poNumber||'—')}</td>
-            <td>${d.date||'—'}</td>
-            <td>${esc(d.material||'—')}<br><span class="muted" style="font-size:10px">${d.qty?d.qty+' '+(d.unit||''):'—'}</span></td>
-            <td style="text-align:right;font-weight:600">${d.value?'₹'+Number(d.value).toLocaleString('en-IN'):'—'}</td>
-            ${PUR_PARAMS.map(p=>`<td style="text-align:center">${purPF(d.ratings?.[p])}</td>`).join('')}
-            <td style="font-size:11px;color:var(--muted)">${esc(d.remarks||'')}</td>
-            <td style="white-space:nowrap">
-              <button class="btn btn-o btn-xs" onclick="purOpenDeliveryForm(${id},${d.id})">✏️</button>
-              <button class="btn btn-r btn-xs" onclick="purDeleteDelivery(${d.id},${id})">🗑️</button>
-            </td>
-          </tr>`;}).join('')}
-      </tbody>
-    </table></div>
-  </div>`);
-}
-
-// ── DELIVERY FORM ─────────────────────────────────────
-async function purOpenDeliveryForm(supId,editId=null){
-  const s=await db.purSuppliers.get(supId);
-  const d=editId?await db.purDeliveries.get(editId).catch(()=>null):null;
-  const poNum=d?d.poNumber:await nextPONumber(supId);
-  const ratings=d?.ratings||{};
-  const ov=document.createElement('div');ov.className='overlay';ov.id='pur-del-ov';
-  ov.innerHTML=`<div class="modal" style="width:580px;max-height:92vh;overflow-y:auto">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <h3>${d?'Edit Delivery':'New Delivery'} — <span style="color:var(--navy)">${esc(s.name)}</span></h3>
-      <button class="btn btn-o btn-sm" onclick="document.getElementById('pur-del-ov').remove()">✕</button>
-    </div>
-
-    <div style="font-weight:700;font-size:11.5px;color:var(--navy);margin-bottom:8px;padding-bottom:4px;border-bottom:2px solid var(--navy)">Delivery Details</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
-      <div class="fg"><label class="lbl">PO Number</label>
-        <input class="fc mono" id="del-po" value="${esc(poNum)}" style="color:var(--navy);font-weight:700"></div>
-      <div class="fg"><label class="lbl">Delivery / DC Date *</label>
-        <input class="fc" type="date" id="del-date" value="${d?.date||new Date().toISOString().split('T')[0]}"></div>
-      <div class="fg" style="grid-column:span 2"><label class="lbl">Material / Item *</label>
-        <input class="fc" id="del-mat" value="${esc(d?.material||'')}" placeholder="e.g. ADC12 Ingot"></div>
-      <div class="fg"><label class="lbl">Quantity</label>
-        <input class="fc" type="number" id="del-qty" value="${d?.qty||''}" oninput="purCalcDelValue()"></div>
-      <div class="fg"><label class="lbl">Unit</label>
-        <select class="fc" id="del-unit">
-          ${['Kg','MT','Nos','Ltrs','Set'].map(u=>`<option ${(d?.unit||'Kg')===u?'selected':''}>${u}</option>`).join('')}
-        </select></div>
-      <div class="fg"><label class="lbl">Rate (₹/unit)</label>
-        <input class="fc" type="number" id="del-rate" value="${d?.rate||''}" oninput="purCalcDelValue()"></div>
-      <div class="fg"><label class="lbl">Total Value (₹)</label>
-        <input class="fc mono" id="del-value" value="${d?.value||''}" placeholder="Auto-calculated" style="background:#f5f7fd"></div>
-    </div>
-
-    <div style="font-weight:700;font-size:11.5px;color:var(--navy);margin-bottom:8px;padding-bottom:4px;border-bottom:2px solid var(--navy)">
-      Evaluation — Pass / Fail per Parameter
-      <span style="font-size:10px;font-weight:400;color:#9ca3af;margin-left:6px">All Pass on first 2 deliveries → Auto Approved</span>
-    </div>
-    <div style="border:1px solid var(--border);border-radius:7px;overflow:hidden;margin-bottom:12px">
-      ${PUR_PARAMS.map((p,i)=>`
-      <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 14px;${i<PUR_PARAMS.length-1?'border-bottom:1px solid var(--border)':''}">
-        <span style="font-size:12.5px;font-weight:500">${PUR_PARAM_LABELS[p]}</span>
-        <div style="display:flex;gap:16px">
-          <label style="cursor:pointer;display:flex;align-items:center;gap:5px;font-size:12.5px;font-weight:600;color:#14532d">
-            <input type="radio" name="rat-${p}" value="P" ${ratings[p]==='P'?'checked':''} style="accent-color:#14532d"> Pass ✓
-          </label>
-          <label style="cursor:pointer;display:flex;align-items:center;gap:5px;font-size:12.5px;font-weight:600;color:#7f1d1d">
-            <input type="radio" name="rat-${p}" value="F" ${ratings[p]==='F'?'checked':''} style="accent-color:#7f1d1d"> Fail ✗
-          </label>
-        </div>
-      </div>`).join('')}
-    </div>
-    <div class="fg"><label class="lbl">Remarks / Observations</label>
-      <textarea class="fc" id="del-remarks" rows="2" placeholder="e.g. Minor dimensional variation noted, accepted conditionally">${esc(d?.remarks||'')}</textarea></div>
-    <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
-      <button class="btn btn-o" onclick="document.getElementById('pur-del-ov').remove()">Cancel</button>
-      <button class="btn btn-p" onclick="purSaveDelivery(${supId},${editId||'null'})">💾 Save Delivery</button>
-    </div>
-  </div>`;
-  document.body.appendChild(ov);
-}
-
-function purCalcDelValue(){
-  const qty=parseFloat(document.getElementById('del-qty')?.value)||0;
-  const rate=parseFloat(document.getElementById('del-rate')?.value)||0;
-  const el=document.getElementById('del-value');
-  if(el) el.value=qty&&rate?(qty*rate).toFixed(2):'';
-}
-
-async function purSaveDelivery(supId,editId){
-  const mat=document.getElementById('del-mat').value.trim();
-  if(!mat){toast('Material required','d');return;}
-  const ratings={};
-  PUR_PARAMS.forEach(p=>{
-    const r=document.querySelector(`input[name="rat-${p}"]:checked`);
-    if(r) ratings[p]=r.value;
-  });
-  const qty=parseFloat(document.getElementById('del-qty').value)||0;
-  const rate=parseFloat(document.getElementById('del-rate').value)||0;
-  const rec={
-    supId, poNumber:document.getElementById('del-po').value.trim(),
-    date:document.getElementById('del-date').value,
-    material:mat, qty, unit:document.getElementById('del-unit').value,
-    rate, value:qty&&rate?qty*rate:null,
-    ratings, remarks:document.getElementById('del-remarks').value.trim(),
-    updatedAt:new Date().toISOString()
-  };
-  if(editId) await db.purDeliveries.update(editId,rec);
-  else { rec.createdAt=new Date().toISOString(); await db.purDeliveries.add(rec); }
-  document.getElementById('pur-del-ov').remove();
-  await purUpdateLiveStatus(supId);
-  toast('✅ Delivery saved');
-  purViewSupplier(supId);
-}
-
-async function purDeleteDelivery(id,supId){
-  if(!confirm('Delete this delivery record? This will affect the supplier scorecard.')) return;
-  await db.purDeliveries.delete(id);
-  await purUpdateLiveStatus(supId);
-  toast('Deleted','d'); purViewSupplier(supId);
-}
-
-// ══════════════════════════════════════════════════════
-//  APPROVED SUPPLIER LIST
+//  APPROVED SUPPLIERS
 // ══════════════════════════════════════════════════════
 async function purRenderApproved(){
-  const sups=await db.purSuppliers.where('approvalStatus').equals('Approved').toArray().catch(()=>[]);
-  sups.sort((a,b)=>a.supNumber>b.supNumber?1:-1);
+  const vendors=(await db.purVendors.toArray().catch(()=>[])).filter(purIsApproved);
+  vendors.sort((a,b)=>a.supNumber>b.supNumber?1:-1);
   setC(`
-  <div class="ph">
-    <h2>✅ Approved Supplier List</h2>
-    <button class="btn btn-o" onclick="purPrintApprovedList()">🖨️ Print ASL</button>
-  </div>
+  <div class="ph"><h2>✅ Approved Supplier List</h2></div>
   <div class="card">
-    <div class="ch"><h5>Approved Suppliers — ${sups.length}</h5>
-      <span class="muted" style="font-size:11px">VRA-PUR-002</span>
+    <div class="ch"><h5>Approved Suppliers — ${vendors.length}</h5>
+      <span class="muted" style="font-size:11px">VRA-PUR-F-01</span>
     </div>
     <div class="tw"><table>
       <thead><tr>
         <th>#</th><th>Sup No.</th><th>Supplier Name</th><th>Scope of Supply</th>
-        <th>Pass Rate</th><th>Grade</th><th>Approved Since</th><th></th>
+        <th>2nd Sample Date</th><th></th>
       </tr></thead>
-      <tbody>
-        ${await Promise.all(sups.map(async(s,i)=>{
-          const deliveries=await db.purDeliveries.where('supId').equals(s.id).toArray().catch(()=>[]);
-          const sc=purCalcScore(deliveries);
-          return`<tr>
-            <td style="text-align:center">${i+1}</td>
-            <td class="mono" style="color:var(--navy);font-weight:700">${esc(s.supNumber)}</td>
-            <td><strong>${esc(s.name)}</strong></td>
-            <td>${esc(s.scope||'—')}</td>
-            <td style="text-align:center">${sc.passRate?`<strong>${sc.passRate}%</strong>`:'—'}</td>
-            <td style="text-align:center">${sc.grade!=='—'?purGradeBadge(sc.grade,sc.passRate):'—'}</td>
-            <td>${s.updatedAt?new Date(s.updatedAt).toLocaleDateString('en-IN'):'—'}</td>
-            <td><button class="btn btn-o btn-xs" onclick="purViewSupplier(${s.id})">👁️ View</button></td>
-          </tr>`;
-        })).then(r=>r.join(''))}
+      <tbody>${vendors.length===0
+        ?`<tr><td colspan="6" style="text-align:center;padding:30px;color:#9ca3af">No approved suppliers yet.</td></tr>`
+        :vendors.map((v,i)=>`<tr>
+          <td style="text-align:center">${i+1}</td>
+          <td class="mono" style="color:var(--navy);font-weight:700">${esc(v.supNumber)}</td>
+          <td><strong>${esc(v.name)}</strong></td>
+          <td>${esc(v.scopeOfSupply||'—')}</td>
+          <td>${v.sample2?.date||'—'}</td>
+          <td style="white-space:nowrap">
+            <button class="btn btn-o btn-xs" onclick="purViewVendor(${v.id})">📊 Scorecard</button>
+            <button class="btn btn-o btn-xs" onclick="purRenderSupplierForm(${v.id})">✏️</button>
+          </td>
+        </tr>`).join('')}
       </tbody>
     </table></div>
   </div>`);
 }
 
-async function purPrintApprovedList(){
-  const sups=await db.purSuppliers.where('approvalStatus').equals('Approved').toArray().catch(()=>[]);
-  sups.sort((a,b)=>a.supNumber>b.supNumber?1:-1);
-  const today=new Date().toLocaleDateString('en-IN');
-  const rows=await Promise.all(sups.map(async(s,i)=>{
-    const deliveries=await db.purDeliveries.where('supId').equals(s.id).toArray().catch(()=>[]);
-    const sc=purCalcScore(deliveries);
-    return`<tr>
-      <td>${i+1}</td>
-      <td style="font-family:monospace;font-weight:bold">${s.supNumber}</td>
-      <td class="tl"><strong>${s.name}</strong></td>
-      <td class="tl">${s.scope||'—'}</td>
-      <td>${deliveries.length}</td>
-      <td style="font-weight:bold">${sc.passRate}%</td>
-      <td style="font-weight:bold">${sc.grade}</td>
-      <td>${new Date(s.updatedAt).toLocaleDateString('en-IN')}</td>
-    </tr>`;
-  }));
-  const w=window.open('','_blank');
-  w.document.write(`<!DOCTYPE html><html><head><title>Approved Supplier List</title><style>${purPrintCSS()}</style></head><body>
-  <div class="pg-hdr">
-    <div><div class="co-name">V R ALUCAST</div><div class="co-sub">High Pressure Die Casting · Ichalkaranji</div></div>
-    <div><div class="rpt-title">APPROVED SUPPLIER LIST</div><div class="rpt-sub">Active as of ${today}</div></div>
-    <div><div class="rpt-num">VRA-PUR-002</div><div style="font-size:7pt;text-align:right">Date: ${today}</div></div>
+// ══════════════════════════════════════════════════════
+//  VENDOR DETAIL — scorecard + invoice/lot entries
+// ══════════════════════════════════════════════════════
+let _purVendorPeriod={period:'all',from:'',to:''};
+let _purCurrentVendorId=null;
+
+async function purViewVendor(id){
+  _purCurrentVendorId=id;
+  const v=await db.purVendors.get(id);
+  const lots=await db.purVendorLots.where('vendorId').equals(id).toArray().catch(()=>[]);
+  const allRows=purVendorRows(v,lots);
+  const range=purPeriodRange(_purVendorPeriod.period,_purVendorPeriod.from,_purVendorPeriod.to);
+  const rows=allRows.filter(r=>purInRange(r.date,range));
+  const sc=purCalcRating(rows);
+
+  setC(`
+  <div class="ph">
+    <h2>📊 ${esc(v.name)} <span class="muted" style="font-size:13px">${esc(v.supNumber)}</span></h2>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-p" onclick="purOpenLotForm(${id})">+ Add Invoice / Delivery</button>
+      <button class="btn btn-o" onclick="purPrintVendorScorecard(${id})">🖨️ Print Scorecard</button>
+      <button class="btn btn-o" onclick="purRenderSupplierForm(${id})">✏️ Edit Supplier</button>
+      <button class="btn btn-o" onclick="nav('pur-approved')">← Back</button>
+    </div>
   </div>
-  <table class="dt">
-    <thead><tr><th>#</th><th>Sup No.</th><th class="tl">Supplier Name</th><th class="tl">Scope</th><th>Deliveries</th><th>Pass Rate</th><th>Grade</th><th>Since</th></tr></thead>
-    <tbody>${rows.join('')||'<tr><td colspan="8" style="text-align:center">No approved suppliers</td></tr>'}</tbody>
-  </table>
-  <div style="margin-top:6px;font-size:7.5pt;color:#555">Total: ${sups.length} · VRA-PUR-002 · V R Alucast</div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;font-size:8pt">
-    <div style="border:1px solid #000;padding:7px"><strong>Prepared By:</strong> Akshay Dake<br><br>Signature: _________________________&nbsp;&nbsp; Date: ______________</div>
-    <div style="border:1px solid #000;padding:7px"><strong>Approved By:</strong> Akshay Dake<br><br>Signature: _________________________&nbsp;&nbsp; Date: ______________</div>
+
+  <div class="card" style="margin-bottom:12px">
+    <div class="ch"><h5>Vendor Rating — ${esc(purPeriodLabel(_purVendorPeriod.period,_purVendorPeriod.from,_purVendorPeriod.to))}</h5>
+      ${purPeriodSelectorHtml(_purVendorPeriod.period,_purVendorPeriod.from,_purVendorPeriod.to,'purVendorPeriodChange')}
+    </div>
+    <div class="cb">
+      <div style="display:flex;gap:24px;flex-wrap:wrap;font-size:13px">
+        <div><div style="font-size:24px;font-weight:800;color:var(--navy)">${sc.totalReceived}</div><div class="muted" style="font-size:11px">Qty Received</div></div>
+        <div><div style="font-size:24px;font-weight:800;color:#7f1d1d">${sc.totalRejected}</div><div class="muted" style="font-size:11px">Qty Rejected</div></div>
+        <div><div style="font-size:24px;font-weight:800;color:#14532d">${sc.totalAccepted}</div><div class="muted" style="font-size:11px">Qty Accepted</div></div>
+        <div><div style="font-size:24px;font-weight:800;color:var(--navy)">${sc.totalLots}</div><div class="muted" style="font-size:11px">Total Lots</div></div>
+        <div><div style="font-size:24px;font-weight:800;color:#14532d">${sc.onTimeCount}</div><div class="muted" style="font-size:11px">On Time / ≤5 Days</div></div>
+        <div><div style="font-size:24px;font-weight:800;color:#7f1d1d">${sc.after5Count}</div><div class="muted" style="font-size:11px">After 5 Days</div></div>
+      </div>
+      <div style="display:flex;gap:24px;margin-top:14px;flex-wrap:wrap">
+        <div><div class="muted" style="font-size:11px">Quality Rating</div>${purPctBadge(sc.qualityRating)}</div>
+        <div><div class="muted" style="font-size:11px">Delivery Rating</div>${purPctBadge(sc.deliveryRating)}</div>
+        <div><div class="muted" style="font-size:11px">Supplier Rating</div>${purPctBadge(sc.supplierRating)}</div>
+      </div>
+    </div>
   </div>
-  <script>window.onload=()=>window.print()<\/script></body></html>`);
-  w.document.close();
+
+  <div class="card">
+    <div class="ch"><h5>Delivery / Invoice Log (${rows.length})</h5></div>
+    <div class="tw"><table>
+      <thead><tr>
+        <th>Source</th><th>Ref / Invoice No.</th><th>Date</th><th>Qty Received</th><th>Qty Rejected</th><th>Qty Accepted</th><th>Lot Timing</th><th></th>
+      </tr></thead>
+      <tbody>${rows.length===0
+        ?`<tr><td colspan="8" style="text-align:center;padding:24px;color:#9ca3af">No entries in this period.</td></tr>`
+        :rows.map(r=>`<tr style="${r.source!=='Invoice'?'background:#fffbeb':''}">
+          <td>${r.source}</td>
+          <td class="mono">${esc(r.refNo||'—')}</td>
+          <td>${r.date||'—'}</td>
+          <td style="text-align:center">${r.qtyReceived}</td>
+          <td style="text-align:center;color:#7f1d1d">${r.qtyRejected}</td>
+          <td style="text-align:center;color:#14532d">${r.qtyAccepted}</td>
+          <td>${PUR_TIMING_LABELS[r.timing]||r.timing}</td>
+          <td style="white-space:nowrap">${r.source==='Invoice'?`
+            <button class="btn btn-o btn-xs" onclick="purOpenLotForm(${id},${r.id})">✏️</button>
+            <button class="btn btn-r btn-xs" onclick="purDeleteLot(${r.id},${id})">🗑️</button>
+          `:'<span class="muted" style="font-size:11px">Edit via Supplier form</span>'}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div>
+  </div>`);
+}
+
+function purVendorPeriodChange(){
+  _purVendorPeriod.period=document.getElementById('pur-period').value;
+  _purVendorPeriod.from=document.getElementById('pur-period-from')?.value||'';
+  _purVendorPeriod.to=document.getElementById('pur-period-to')?.value||'';
+  const id=_purCurrentVendorId;
+  if(_purVendorPeriod.period==='custom'&&(!_purVendorPeriod.from||!_purVendorPeriod.to)) return;
+  purViewVendor(id);
+}
+
+// ── INVOICE / LOT FORM ────────────────────────────────
+async function purOpenLotForm(vendorId,editId=null){
+  const l=editId?await db.purVendorLots.get(editId).catch(()=>null):null;
+  const ov=document.createElement('div');ov.className='overlay';ov.id='pur-lot-ov';
+  ov.innerHTML=`<div class="modal" style="width:480px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <h3>${l?'Edit':'New'} Invoice / Delivery</h3>
+      <button class="btn btn-o btn-sm" onclick="document.getElementById('pur-lot-ov').remove()">✕</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="fg"><label class="lbl">Invoice / DC No.</label>
+        <input class="fc" id="lot-ref" value="${esc(l?.refNo||'')}"></div>
+      <div class="fg"><label class="lbl">Date *</label>
+        <input class="fc" type="date" id="lot-date" value="${l?.date||new Date().toISOString().split('T')[0]}"></div>
+      <div class="fg"><label class="lbl">Qty Received</label>
+        <input class="fc" type="number" id="lot-recv" value="${l?.qtyReceived??''}" oninput="purAutoAcceptLot()"></div>
+      <div class="fg"><label class="lbl">Qty Rejected</label>
+        <input class="fc" type="number" id="lot-rej" value="${l?.qtyRejected??''}" oninput="purAutoAcceptLot()"></div>
+      <div class="fg"><label class="lbl">Qty Accepted</label>
+        <input class="fc" type="number" id="lot-acc" value="${l?.qtyAccepted??''}"></div>
+      <div class="fg"><label class="lbl">Lot Timing</label>${purTimingSelect('lot-timing',l?.timing)}</div>
+      <div class="fg" style="grid-column:span 2"><label class="lbl">Remarks</label>
+        <input class="fc" id="lot-remarks" value="${esc(l?.remarks||'')}"></div>
+    </div>
+    <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-o" onclick="document.getElementById('pur-lot-ov').remove()">Cancel</button>
+      <button class="btn btn-p" onclick="purSaveLot(${vendorId},${editId||'null'})">💾 Save</button>
+    </div>
+  </div>`;
+  document.body.appendChild(ov);
+}
+function purAutoAcceptLot(){
+  const recv=parseFloat(document.getElementById('lot-recv')?.value)||0;
+  const rej=parseFloat(document.getElementById('lot-rej')?.value)||0;
+  const el=document.getElementById('lot-acc');
+  if(el) el.value=Math.max(recv-rej,0);
+}
+async function purSaveLot(vendorId,editId){
+  const date=document.getElementById('lot-date').value;
+  if(!date){toast('Date required','d');return;}
+  const rec={
+    vendorId,
+    refNo:document.getElementById('lot-ref').value.trim(),
+    date,
+    qtyReceived:Number(document.getElementById('lot-recv').value)||0,
+    qtyRejected:Number(document.getElementById('lot-rej').value)||0,
+    qtyAccepted:document.getElementById('lot-acc').value===''?null:Number(document.getElementById('lot-acc').value),
+    timing:document.getElementById('lot-timing').value,
+    remarks:document.getElementById('lot-remarks').value.trim(),
+    updatedAt:new Date().toISOString()
+  };
+  if(editId) await db.purVendorLots.update(editId,rec);
+  else { rec.createdAt=new Date().toISOString(); await db.purVendorLots.add(rec); }
+  document.getElementById('pur-lot-ov').remove();
+  toast('✅ Entry saved');
+  purViewVendor(vendorId);
+}
+async function purDeleteLot(id,vendorId){
+  if(!confirm('Delete this delivery/invoice entry? This will affect the scorecard.')) return;
+  await db.purVendorLots.delete(id);
+  toast('Deleted','d');
+  purViewVendor(vendorId);
 }
 
 // ══════════════════════════════════════════════════════
-//  SCORECARD OVERVIEW (all suppliers)
+//  SCORECARD — all approved suppliers, with period selector
+//  (Replicates the paper Vendor Rating sheet, VRA-PUR-F-04)
 // ══════════════════════════════════════════════════════
+let _purScorecardPeriod={period:'all',from:'',to:''};
+
 async function purRenderScorecard(){
-  const sups=await db.purSuppliers.toArray().catch(()=>[]);
-  sups.sort((a,b)=>a.supNumber>b.supNumber?1:-1);
-  const rows=await Promise.all(sups.map(async s=>{
-    const deliveries=await db.purDeliveries.where('supId').equals(s.id).toArray().catch(()=>[]);
-    const sc=purCalcScore(deliveries);
-    return{s,sc,dCount:deliveries.length};
-  }));
-  rows.sort((a,b)=>b.sc.passRate-a.sc.passRate);
+  const vendors=(await db.purVendors.toArray().catch(()=>[])).filter(purIsApproved);
+  vendors.sort((a,b)=>a.supNumber>b.supNumber?1:-1);
+  const range=purPeriodRange(_purScorecardPeriod.period,_purScorecardPeriod.from,_purScorecardPeriod.to);
+
+  const data=[];
+  for(const v of vendors){
+    const lots=await db.purVendorLots.where('vendorId').equals(v.id).toArray().catch(()=>[]);
+    const rows=purVendorRows(v,lots).filter(r=>purInRange(r.date,range));
+    data.push({v,sc:purCalcRating(rows)});
+  }
+
   setC(`
   <div class="ph">
     <h2>📊 Supplier Scorecard</h2>
-    <button class="btn btn-o" onclick="purPrintAllScorecard()">🖨️ Print All</button>
+    <button class="btn btn-o" onclick="purPrintScorecardAll()">🖨️ Print</button>
   </div>
   <div class="card">
-    <div class="ch"><h5>Live Scorecard — All Suppliers</h5>
-      <span class="muted" style="font-size:11px">VRA-PUR-003 · Based on all delivery entries</span>
+    <div class="ch"><h5>Vendor Rating — ${esc(purPeriodLabel(_purScorecardPeriod.period,_purScorecardPeriod.from,_purScorecardPeriod.to))}</h5>
+      ${purPeriodSelectorHtml(_purScorecardPeriod.period,_purScorecardPeriod.from,_purScorecardPeriod.to,'purScorecardPeriodChange')}
     </div>
-    <div class="tw" style="overflow-x:auto"><table style="min-width:800px">
+    <div class="tw" style="overflow-x:auto"><table style="min-width:1000px">
       <thead><tr style="background:var(--navy);color:#fff">
-        <th class="tl">Sup No.</th><th class="tl">Supplier</th><th>Deliveries</th>
-        ${PUR_PARAMS.map(p=>`<th style="font-size:10px">${PUR_PARAM_LABELS[p]}</th>`).join('')}
-        <th>Overall</th><th>Grade</th><th>Status</th><th></th>
+        <th>SR</th><th style="text-align:left">Name of Supplier</th>
+        <th>Total Qty Received</th><th>Total Qty Rejected</th><th>Total Qty Accepted</th>
+        <th>Total Lot Received</th><th>Lot in Time &amp; ≤5 Days Delay</th><th>Lot Received After 5 Days</th>
+        <th>Quality Rating</th><th>Delivery Rating</th><th>Supplier Rating</th><th></th>
       </tr></thead>
-      <tbody>${rows.map(({s,sc,dCount})=>`<tr>
-        <td class="mono tl" style="font-weight:700;color:var(--navy)">${esc(s.supNumber)}</td>
-        <td class="tl"><strong>${esc(s.name)}</strong></td>
-        <td style="text-align:center"><span class="badge bd">${dCount}</span></td>
-        ${PUR_PARAMS.map(p=>{
-          const pp=sc.perParam[p]||{pass:0,total:0};
-          const pct=pp.total?Math.round((pp.pass/pp.total)*100):null;
-          return`<td>${pct!==null?`<span class="badge ${pct>=80?'ba':pct>=60?'bp':'br'}" style="font-size:10px">${pct}%</span>`:'<span class="muted">—</span>'}</td>`;
-        }).join('')}
-        <td>${sc.totalChecks?`<strong>${sc.passRate}%</strong>`:'<span class="muted">—</span>'}</td>
-        <td>${sc.grade!=='—'?purGradeBadge(sc.grade,sc.passRate):'<span class="muted">—</span>'}</td>
-        <td>${purStatusBadge(s.approvalStatus||'Under Evaluation')}</td>
-        <td><button class="btn btn-p btn-xs" onclick="purViewSupplier(${s.id})">+ Delivery</button></td>
-      </tr>`).join('')||'<tr><td colspan="12" style="text-align:center;padding:24px;color:#9ca3af">No suppliers yet.</td></tr>'}
+      <tbody>${data.length===0
+        ?`<tr><td colspan="12" style="text-align:center;padding:24px;color:#9ca3af">No approved suppliers yet.</td></tr>`
+        :data.map(({v,sc},i)=>`<tr>
+          <td style="text-align:center">${i+1}</td>
+          <td><strong>${esc(v.name)}</strong></td>
+          <td style="text-align:center">${sc.totalReceived}</td>
+          <td style="text-align:center">${sc.totalRejected}</td>
+          <td style="text-align:center">${sc.totalAccepted}</td>
+          <td style="text-align:center">${sc.totalLots}</td>
+          <td style="text-align:center">${sc.onTimeCount}</td>
+          <td style="text-align:center">${sc.after5Count}</td>
+          <td style="text-align:center">${purPctBadge(sc.qualityRating)}</td>
+          <td style="text-align:center">${purPctBadge(sc.deliveryRating)}</td>
+          <td style="text-align:center">${purPctBadge(sc.supplierRating)}</td>
+          <td><button class="btn btn-o btn-xs" onclick="purViewVendor(${v.id})">👁️</button></td>
+        </tr>`).join('')}
       </tbody>
     </table></div>
   </div>`);
 }
-
-// ══════════════════════════════════════════════════════
-//  PO REGISTER (all suppliers)
-// ══════════════════════════════════════════════════════
-async function purRenderPO(){
-  const deliveries=await db.purDeliveries.toArray().catch(()=>[]);
-  const sups=await db.purSuppliers.toArray().catch(()=>[]);
-  deliveries.sort((a,b)=>(b.date||'')>(a.date||'')?1:-1);
-  const totalValue=deliveries.filter(d=>d.value).reduce((s,d)=>s+d.value,0);
-  setC(`
-  <div class="ph">
-    <h2>📦 PO Register</h2>
-    <button class="btn btn-o" onclick="purPrintPORegister()">🖨️ Print</button>
-  </div>
-  <div class="card" style="margin-bottom:12px;padding:14px 18px">
-    <div style="display:flex;gap:30px;align-items:center">
-      <div><div style="font-size:22px;font-weight:800;color:var(--navy)">${deliveries.length}</div><div class="muted" style="font-size:12px">Total Deliveries</div></div>
-      <div><div style="font-size:22px;font-weight:800;color:var(--navy)">₹${totalValue.toLocaleString('en-IN',{maximumFractionDigits:0})}</div><div class="muted" style="font-size:12px">Total Value</div></div>
-    </div>
-  </div>
-  <div class="card">
-    <div class="ch"><h5>All Purchase Orders / Deliveries</h5></div>
-    <div class="tw"><table>
-      <thead><tr>
-        <th>PO No.</th><th>Date</th><th>Supplier</th><th>Material</th>
-        <th>Qty</th><th>Unit</th><th>Value (₹)</th><th>Overall</th><th></th>
-      </tr></thead>
-      <tbody>${deliveries.length===0
-        ?`<tr><td colspan="9" style="text-align:center;padding:30px;color:#9ca3af">No POs yet.</td></tr>`
-        :deliveries.map(d=>{
-          const sup=sups.find(s=>s.id===d.supId);
-          const allRated=PUR_PARAMS.every(p=>d.ratings?.[p]);
-          const allPass=allRated&&PUR_PARAMS.every(p=>d.ratings[p]==='P');
-          const anyFail=PUR_PARAMS.some(p=>d.ratings?.[p]==='F');
-          return`<tr>
-            <td class="mono" style="color:var(--navy);font-weight:700">${esc(d.poNumber||'—')}</td>
-            <td>${d.date||'—'}</td>
-            <td><strong>${esc(sup?.name||'—')}</strong></td>
-            <td>${esc(d.material||'—')}</td>
-            <td style="text-align:right">${d.qty||'—'}</td>
-            <td>${esc(d.unit||'—')}</td>
-            <td style="text-align:right;font-weight:600">${d.value?'₹'+Number(d.value).toLocaleString('en-IN'):'—'}</td>
-            <td style="text-align:center">${!allRated?'<span class="muted">Pending</span>':allPass?'<span class="badge ba">All Pass</span>':'<span class="badge br">Has Fail</span>'}</td>
-            <td><button class="btn btn-o btn-xs" onclick="purViewSupplier(${d.supId})">👁️</button></td>
-          </tr>`;}).join('')}
-      </tbody>
-    </table></div>
-  </div>`);
+function purScorecardPeriodChange(){
+  _purScorecardPeriod.period=document.getElementById('pur-period').value;
+  _purScorecardPeriod.from=document.getElementById('pur-period-from')?.value||'';
+  _purScorecardPeriod.to=document.getElementById('pur-period-to')?.value||'';
+  if(_purScorecardPeriod.period==='custom'&&(!_purScorecardPeriod.from||!_purScorecardPeriod.to)) return;
+  purRenderScorecard();
 }
 
 // ══════════════════════════════════════════════════════
-//  PRINT FUNCTIONS
+//  PRINT — Supplier Approval Form (VRA-PUR-F-01)
 // ══════════════════════════════════════════════════════
-async function purPrintEvalForm(supId){
-  const s=await db.purSuppliers.get(supId);
-  const deliveries=await db.purDeliveries.where('supId').equals(supId).toArray().catch(()=>[]);
-  deliveries.sort((a,b)=>(a.date||'')>(b.date||'')?1:-1);
-  const sc=purCalcScore(deliveries);
+async function purPrintSupplierForm(id){
+  const v=await db.purVendors.get(id);
   const today=new Date().toLocaleDateString('en-IN');
-  const rows=deliveries.map((d,i)=>`<tr>
-    <td>${i+1}${i<2?' *':''}</td>
-    <td style="font-family:monospace;font-weight:bold">${d.poNumber||'—'}</td>
-    <td>${d.date||'—'}</td>
-    <td class="tl">${d.material||'—'} (${d.qty||''} ${d.unit||''})</td>
-    ${PUR_PARAMS.map(p=>`<td style="font-weight:bold;color:${d.ratings?.[p]==='P'?'#14532d':d.ratings?.[p]==='F'?'#7f1d1d':'#555'}">${d.ratings?.[p]==='P'?'P':d.ratings?.[p]==='F'?'F':'—'}</td>`).join('')}
-    <td class="tl" style="font-size:7pt">${d.remarks||''}</td>
-  </tr>`).join('');
+  const yn=x=>x==='Y'?'<strong>Y</strong> / N':x==='N'?'Y / <strong>N</strong>':'Y / N';
+  const dec=x=>x==='ACCEPT'?'<strong>ACCEPT</strong> / REJECT':x==='REJECT'?'ACCEPT / <strong>REJECT</strong>':'ACCEPT / REJECT';
   const w=window.open('','_blank');
-  w.document.write(`<!DOCTYPE html><html><head><title>Supplier Evaluation — ${s.supNumber}</title><style>${purPrintCSS()}</style></head><body>
+  w.document.write(`<!DOCTYPE html><html><head><title>Supplier Approval Form — ${v.supNumber}</title><style>${purPrintCSS()}</style></head><body>
   <div class="pg-hdr">
     <div><div class="co-name">V R ALUCAST</div><div class="co-sub">High Pressure Die Casting · Ichalkaranji</div></div>
-    <div><div class="rpt-title">SUPPLIER EVALUATION FORM</div><div class="rpt-sub">${esc(s.name)} · ${esc(s.supNumber)}</div></div>
-    <div><div class="rpt-num">VRA-PUR-001</div><div style="font-size:7pt;text-align:right">${today}</div></div>
+    <div><div class="rpt-title">SUPPLIER APPROVAL FORM</div><div class="rpt-sub">${esc(v.supNumber)}</div></div>
+    <div><div class="rpt-num">VRA-PUR-F-01</div><div style="font-size:7pt;text-align:right">Date: ${v.date||today}</div></div>
   </div>
-  <div class="meta-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:8px">
-    <div class="mc"><div class="ml">Supplier</div><div class="mv">${s.name}</div></div>
-    <div class="mc"><div class="ml">Scope</div><div class="mv">${s.scope||'—'}</div></div>
-    <div class="mc"><div class="ml">Status</div><div class="mv">${s.approvalStatus||'Under Evaluation'}</div></div>
-  </div>
-  <div class="sec-bar">Delivery Evaluation Log (* = Initial approval deliveries)</div>
-  <table class="dt">
-    <thead><tr>
-      <th>#</th><th>PO No.</th><th>Date</th><th class="tl">Material / Qty</th>
-      ${PUR_PARAMS.map(p=>`<th style="font-size:7pt">${PUR_PARAM_LABELS[p]}</th>`).join('')}
-      <th class="tl">Remarks</th>
-    </tr></thead>
-    <tbody>${rows||'<tr><td colspan="11" style="text-align:center">No deliveries yet</td></tr>'}</tbody>
-  </table>
-  <div class="sec-bar">Scorecard Summary</div>
-  <table class="dt" style="width:60%">
-    <thead><tr><th class="tl">Parameter</th><th>Total</th><th>Pass</th><th>Fail</th><th>Pass %</th></tr></thead>
-    <tbody>${PUR_PARAMS.map(p=>{
-      const pp=sc.perParam[p]||{pass:0,total:0};
-      const pct=pp.total?Math.round((pp.pass/pp.total)*100):0;
-      return`<tr><td class="tl">${PUR_PARAM_LABELS[p]}</td><td>${pp.total}</td><td style="color:#14532d;font-weight:bold">${pp.pass}</td><td style="color:#7f1d1d;font-weight:bold">${pp.total-pp.pass}</td><td style="font-weight:bold">${pp.total?pct+'%':'—'}</td></tr>`;
-    }).join('')}
-    <tr style="background:#ececec"><td class="tl" style="font-weight:bold">OVERALL</td><td>${sc.totalChecks}</td><td style="font-weight:bold;color:#14532d">${sc.totalPass}</td><td style="font-weight:bold;color:#7f1d1d">${sc.totalChecks-sc.totalPass}</td><td style="font-weight:800;font-size:10pt">${sc.passRate}% — Grade ${sc.grade}</td></tr>
-    </tbody>
-  </table>
-  <div style="margin-top:6px;font-size:7.5pt;color:#555">Grade: A ≥80% = Approved · B 60–79% = Conditional · C &lt;60% = Under Review</div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;font-size:8pt">
-    <div style="border:1px solid #000;padding:7px"><strong>Evaluated By:</strong> Akshay Dake<br><br>Signature: _________________________&nbsp; Date: ______________</div>
-    <div style="border:1px solid #000;padding:7px"><strong>Approved By:</strong> Akshay Dake<br><br>Signature: _________________________&nbsp; Date: ______________</div>
-  </div>
-  <div style="margin-top:6px;font-size:7.5pt;color:#555">VRA-PUR-001 · V R Alucast — Confidential</div>
+  <div class="frm-row" style="border-top:1px solid #000"><div class="fl">Name &amp; Address</div><div class="fv">${esc(v.name)}${v.address?'<br>'+esc(v.address):''}</div></div>
+  <div class="frm-row"><div class="fl">Contact Person &amp; Phone</div><div class="fv">${esc(v.contactPerson||'')} ${esc(v.contactPhone||'')}</div></div>
+  <div class="frm-row"><div class="fl">Scope of Supply</div><div class="fv">${esc(v.scopeOfSupply||'')}</div></div>
+  <div class="frm-row"><div class="fl">Year of Establishment</div><div class="fv">${esc(v.yearEstablishment||'')}</div></div>
+  <div class="frm-row"><div class="fl">Bankers</div><div class="fv">${esc(v.bankers||'')}</div></div>
+  <div class="frm-row"><div class="fl">G.S.T. No.</div><div class="fv">${esc(v.gstNo||'')}</div></div>
+  <div class="sec-bar">For VRA Use Only</div>
+  <div class="frm-row" style="border-top:1px solid #000"><div class="fl">Is capacity of Supplier to supply required material sufficient?</div><div class="fv">${yn(v.qCapacity)}</div></div>
+  <div class="frm-row"><div class="fl">Is distance of Supplier's location feasible?</div><div class="fv">${yn(v.qDistance)}</div></div>
+  <div class="frm-row"><div class="fl">Are credit terms acceptable?</div><div class="fv">${yn(v.qCredit)}</div></div>
+  <div class="frm-row"><div class="fl">Is material supplied with bill?</div><div class="fv">${yn(v.qBill)}</div></div>
+  <div class="sec-bar">Purchase In Charge</div>
+  <div class="frm-row" style="border-top:1px solid #000"><div class="fl">1st Sample Received</div><div class="fv">DC No &amp; Date: ${esc(v.sample1?.dcNo||'—')} ${v.sample1?.date||''} &nbsp;&nbsp; ${dec(v.sample1?.decision)}</div></div>
+  <div class="frm-row"><div class="fl">2nd Sample Received</div><div class="fv">DC No &amp; Date: ${esc(v.sample2?.dcNo||'—')} ${v.sample2?.date||''} &nbsp;&nbsp; ${dec(v.sample2?.decision)}</div></div>
+  <div class="frm-row"><div class="fl">Supplier include in Approved Suppliers List</div><div class="fv">${yn(v.includeInApprovedList)}</div></div>
+  <div class="frm-row"><div class="fl">Release P.O. to Supplier</div><div class="fv">${yn(v.releasePO)} &nbsp;&nbsp; CEO: ${esc(v.ceoName||'')}</div></div>
+  <div class="frm-row"><div class="fl">P.O. Date &amp; No.</div><div class="fv">${esc(v.poDateNo||'')}</div></div>
+  <div style="margin-top:8px;font-size:7.5pt;color:#555">VRA-PUR-F-01 · V R Alucast</div>
   <script>window.onload=()=>window.print()<\/script></body></html>`);
   w.document.close();
 }
 
-async function purPrintScorecard(supId){
-  const s=await db.purSuppliers.get(supId);
-  const deliveries=await db.purDeliveries.where('supId').equals(supId).toArray().catch(()=>[]);
-  const sc=purCalcScore(deliveries);
+// ══════════════════════════════════════════════════════
+//  PRINT — Vendor Rating scorecard, all suppliers (VRA-PUR-F-04)
+// ══════════════════════════════════════════════════════
+async function purPrintScorecardAll(){
+  const vendors=(await db.purVendors.toArray().catch(()=>[])).filter(purIsApproved);
+  vendors.sort((a,b)=>a.supNumber>b.supNumber?1:-1);
+  const range=purPeriodRange(_purScorecardPeriod.period,_purScorecardPeriod.from,_purScorecardPeriod.to);
   const today=new Date().toLocaleDateString('en-IN');
+  const rows=[];
+  for(let i=0;i<vendors.length;i++){
+    const v=vendors[i];
+    const lots=await db.purVendorLots.where('vendorId').equals(v.id).toArray().catch(()=>[]);
+    const filtered=purVendorRows(v,lots).filter(r=>purInRange(r.date,range));
+    const sc=purCalcRating(filtered);
+    rows.push(`<tr>
+      <td>${i+1}</td><td class="tl"><strong>${esc(v.name)}</strong></td>
+      <td>${sc.totalReceived}</td><td>${sc.totalRejected}</td><td>${sc.totalAccepted}</td>
+      <td>${sc.totalLots}</td><td>${sc.onTimeCount}</td><td>${sc.after5Count}</td>
+      <td style="font-weight:bold">${sc.qualityRating!=null?sc.qualityRating+'%':'—'}</td>
+      <td style="font-weight:bold">${sc.deliveryRating!=null?sc.deliveryRating+'%':'—'}</td>
+      <td style="font-weight:bold">${sc.supplierRating!=null?sc.supplierRating+'%':'—'}</td>
+    </tr>`);
+  }
   const w=window.open('','_blank');
-  w.document.write(`<!DOCTYPE html><html><head><title>Scorecard — ${s.supNumber}</title><style>${purPrintCSS()}</style></head><body>
-  <div class="pg-hdr">
-    <div><div class="co-name">V R ALUCAST</div><div class="co-sub">High Pressure Die Casting · Ichalkaranji</div></div>
-    <div><div class="rpt-title">SUPPLIER PERFORMANCE SCORECARD</div><div class="rpt-sub">${esc(s.name)} · ${esc(s.supNumber)}</div></div>
-    <div><div class="rpt-num">VRA-PUR-003</div><div style="font-size:7pt;text-align:right">${today}</div></div>
-  </div>
-  <div class="meta-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:8px">
-    <div class="mc"><div class="ml">Supplier</div><div class="mv">${s.name}</div></div>
-    <div class="mc"><div class="ml">Scope</div><div class="mv">${s.scope||'—'}</div></div>
-    <div class="mc"><div class="ml">Total Deliveries</div><div class="mv">${deliveries.length}</div></div>
-    <div class="mc"><div class="ml">Status</div><div class="mv" style="font-weight:bold">${s.approvalStatus||'—'}</div></div>
-  </div>
-  <table class="dt">
-    <thead><tr><th class="tl">Parameter</th><th>Total Entries</th><th>Pass</th><th>Fail</th><th>Pass Rate</th><th>Grade</th></tr></thead>
-    <tbody>${PUR_PARAMS.map(p=>{
-      const pp=sc.perParam[p]||{pass:0,total:0};
-      const pct=pp.total?Math.round((pp.pass/pp.total)*100):null;
-      const g=pct===null?'—':pct>=80?'A':pct>=60?'B':'C';
-      return`<tr><td class="tl">${PUR_PARAM_LABELS[p]}</td><td>${pp.total}</td>
-        <td style="color:#14532d;font-weight:bold">${pp.pass}</td>
-        <td style="color:#7f1d1d;font-weight:bold">${pp.total-pp.pass}</td>
-        <td style="font-weight:bold">${pct!==null?pct+'%':'—'}</td>
-        <td style="font-weight:bold">${g}</td></tr>`;
-    }).join('')}
-    <tr style="background:#ececec">
-      <td class="tl" style="font-weight:bold">OVERALL</td>
-      <td>${sc.totalChecks}</td>
-      <td style="font-weight:bold;color:#14532d">${sc.totalPass}</td>
-      <td style="font-weight:bold;color:#7f1d1d">${sc.totalChecks-sc.totalPass}</td>
-      <td style="font-weight:800;font-size:11pt;color:${sc.grade==='A'?'#14532d':sc.grade==='B'?'#92400e':'#7f1d1d'}">${sc.passRate}%</td>
-      <td style="font-weight:800;font-size:11pt;color:${sc.grade==='A'?'#14532d':sc.grade==='B'?'#92400e':'#7f1d1d'}">${sc.grade}</td>
-    </tr></tbody>
-  </table>
-  <div style="margin:8px 0;font-size:7.5pt;color:#555">Grade: A = ≥80% Pass (Approved) · B = 60–79% (Conditional) · C = &lt;60% (Under Review)</div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;font-size:8pt">
-    <div style="border:1px solid #000;padding:7px"><strong>Evaluated By:</strong> Akshay Dake<br><br>Signature: _________________________&nbsp; Date: ______________</div>
-    <div style="border:1px solid #000;padding:7px"><strong>Supplier Acknowledgement:</strong><br><br>Signature: _________________________&nbsp; Date: ______________</div>
-  </div>
-  <script>window.onload=()=>window.print()<\/script></body></html>`);
-  w.document.close();
-}
-
-async function purPrintAllScorecard(){
-  const sups=await db.purSuppliers.toArray().catch(()=>[]);
-  sups.sort((a,b)=>a.supNumber>b.supNumber?1:-1);
-  const today=new Date().toLocaleDateString('en-IN');
-  const rows=await Promise.all(sups.map(async(s,i)=>{
-    const deliveries=await db.purDeliveries.where('supId').equals(s.id).toArray().catch(()=>[]);
-    const sc=purCalcScore(deliveries);
-    return`<tr>
-      <td>${i+1}</td>
-      <td style="font-family:monospace;font-weight:bold">${s.supNumber}</td>
-      <td class="tl"><strong>${s.name}</strong></td>
-      <td class="tl" style="font-size:7pt">${s.scope||'—'}</td>
-      <td>${deliveries.length}</td>
-      ${PUR_PARAMS.map(p=>{const pp=sc.perParam[p]||{pass:0,total:0};const pct=pp.total?Math.round((pp.pass/pp.total)*100):null;return`<td style="font-weight:bold">${pct!==null?pct+'%':'—'}</td>`;}).join('')}
-      <td style="font-weight:800;color:${sc.grade==='A'?'#14532d':sc.grade==='B'?'#92400e':'#7f1d1d'}">${sc.passRate?sc.passRate+'%':'—'}</td>
-      <td style="font-weight:800;color:${sc.grade==='A'?'#14532d':sc.grade==='B'?'#92400e':'#7f1d1d'}">${sc.grade}</td>
-      <td style="font-weight:bold">${s.approvalStatus||'—'}</td>
-    </tr>`;
-  }));
-  const w=window.open('','_blank');
-  w.document.write(`<!DOCTYPE html><html><head><title>Supplier Scorecard</title>
+  w.document.write(`<!DOCTYPE html><html><head><title>Vendor Rating</title>
   <style>${purPrintCSS()}@page{size:A4 landscape;margin:12mm 13mm 14mm 13mm}</style></head><body>
   <div class="pg-hdr">
     <div><div class="co-name">V R ALUCAST</div><div class="co-sub">High Pressure Die Casting · Ichalkaranji</div></div>
-    <div><div class="rpt-title">SUPPLIER PERFORMANCE SCORECARD — ALL SUPPLIERS</div><div class="rpt-sub">Live scorecard based on all delivery entries</div></div>
-    <div><div class="rpt-num">VRA-PUR-003</div><div style="font-size:7pt;text-align:right">${today}</div></div>
+    <div><div class="rpt-title">VENDOR RATING</div><div class="rpt-sub">PERIOD:- ${esc(purPeriodLabel(_purScorecardPeriod.period,_purScorecardPeriod.from,_purScorecardPeriod.to))}</div></div>
+    <div><div class="rpt-num">VRA-PUR-F-04</div><div style="font-size:7pt;text-align:right">${today}</div></div>
   </div>
   <table class="dt">
     <thead><tr>
-      <th>#</th><th>Sup No.</th><th class="tl">Supplier</th><th class="tl">Scope</th><th>Del.</th>
-      ${PUR_PARAMS.map(p=>`<th style="font-size:7pt">${PUR_PARAM_LABELS[p]}</th>`).join('')}
-      <th>Overall</th><th>Grade</th><th>Status</th>
+      <th>SR</th><th class="tl">Name of Supplier</th><th>Total Qty Received</th><th>Total Qty Rejected</th><th>Total Qty Acceptd</th>
+      <th>Total Lot Received</th><th>Lot in tme &amp; up to 5 days dealy</th><th>Lot received after 5 days</th>
+      <th>Quality Rating</th><th>Delivery Rating</th><th>Supplier Rating</th>
     </tr></thead>
-    <tbody>${rows.join('')||'<tr><td colspan="13" style="text-align:center">No suppliers</td></tr>'}</tbody>
+    <tbody>${rows.join('')||'<tr><td colspan="11" style="text-align:center">No approved suppliers</td></tr>'}</tbody>
   </table>
-  <div style="margin-top:6px;font-size:7.5pt;color:#555">VRA-PUR-003 · Grade: A ≥80% Approved · B 60–79% Conditional · C &lt;60% Under Review · V R Alucast</div>
+  <div style="margin-top:6px;font-size:7.5pt;color:#555">VRA-PUR-F-04 · V R Alucast</div>
   <script>window.onload=()=>window.print()<\/script></body></html>`);
   w.document.close();
 }
 
-async function purPrintPORegister(){
-  const deliveries=await db.purDeliveries.toArray().catch(()=>[]);
-  const sups=await db.purSuppliers.toArray().catch(()=>[]);
-  deliveries.sort((a,b)=>(b.date||'')>(a.date||'')?1:-1);
+async function purPrintVendorScorecard(id){
+  const v=await db.purVendors.get(id);
+  const lots=await db.purVendorLots.where('vendorId').equals(id).toArray().catch(()=>[]);
+  const range=purPeriodRange(_purVendorPeriod.period,_purVendorPeriod.from,_purVendorPeriod.to);
+  const rows=purVendorRows(v,lots).filter(r=>purInRange(r.date,range));
+  const sc=purCalcRating(rows);
   const today=new Date().toLocaleDateString('en-IN');
-  const totalVal=deliveries.filter(d=>d.value).reduce((s,d)=>s+d.value,0);
-  const rows=deliveries.map((d,i)=>{
-    const sup=sups.find(s=>s.id===d.supId);
-    return`<tr>
-      <td>${i+1}</td><td style="font-family:monospace;font-weight:bold">${d.poNumber||'—'}</td>
-      <td>${d.date||'—'}</td><td class="tl"><strong>${sup?.name||'—'}</strong></td>
-      <td class="tl">${d.material||'—'}</td>
-      <td style="text-align:right">${d.qty||'—'}</td><td>${d.unit||'—'}</td>
-      <td style="text-align:right;font-weight:600">${d.value?'₹'+Number(d.value).toLocaleString('en-IN'):'—'}</td>
-    </tr>`;
-  }).join('');
   const w=window.open('','_blank');
-  w.document.write(`<!DOCTYPE html><html><head><title>PO Register</title><style>${purPrintCSS()}</style></head><body>
+  w.document.write(`<!DOCTYPE html><html><head><title>Vendor Rating — ${v.supNumber}</title>
+  <style>${purPrintCSS()}@page{size:A4 landscape;margin:12mm 13mm 14mm 13mm}</style></head><body>
   <div class="pg-hdr">
     <div><div class="co-name">V R ALUCAST</div><div class="co-sub">High Pressure Die Casting · Ichalkaranji</div></div>
-    <div><div class="rpt-title">PURCHASE ORDER REGISTER</div><div class="rpt-sub">All Suppliers</div></div>
-    <div><div class="rpt-num">VRA-PO</div><div style="font-size:7pt;text-align:right">${today}</div></div>
+    <div><div class="rpt-title">VENDOR RATING</div><div class="rpt-sub">PERIOD:- ${esc(purPeriodLabel(_purVendorPeriod.period,_purVendorPeriod.from,_purVendorPeriod.to))}</div></div>
+    <div><div class="rpt-num">VRA-PUR-F-04</div><div style="font-size:7pt;text-align:right">${today}</div></div>
   </div>
   <table class="dt">
-    <thead><tr><th>#</th><th>PO No.</th><th>Date</th><th class="tl">Supplier</th><th class="tl">Material</th><th>Qty</th><th>Unit</th><th>Value (₹)</th></tr></thead>
-    <tbody>${rows||'<tr><td colspan="8" style="text-align:center">No records</td></tr>'}</tbody>
-    <tfoot><tr style="background:#ececec;font-weight:bold">
-      <td colspan="7" style="text-align:right;padding:4px 6px;border:1px solid #000">Total Value:</td>
-      <td style="text-align:right;padding:4px 6px;border:1px solid #000;font-size:9pt">₹${totalVal.toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
-    </tr></tfoot>
+    <thead><tr>
+      <th>SR</th><th class="tl">Name of Supplier</th><th>Total Qty Received</th><th>Total Qty Rejected</th><th>Total Qty Acceptd</th>
+      <th>Total Lot Received</th><th>Lot in tme &amp; up to 5 days dealy</th><th>Lot received after 5 days</th>
+      <th>Quality Rating</th><th>Delivery Rating</th><th>Supplier Rating</th>
+    </tr></thead>
+    <tbody><tr>
+      <td>1</td><td class="tl"><strong>${esc(v.name)}</strong></td>
+      <td>${sc.totalReceived}</td><td>${sc.totalRejected}</td><td>${sc.totalAccepted}</td>
+      <td>${sc.totalLots}</td><td>${sc.onTimeCount}</td><td>${sc.after5Count}</td>
+      <td style="font-weight:bold">${sc.qualityRating!=null?sc.qualityRating+'%':'—'}</td>
+      <td style="font-weight:bold">${sc.deliveryRating!=null?sc.deliveryRating+'%':'—'}</td>
+      <td style="font-weight:bold">${sc.supplierRating!=null?sc.supplierRating+'%':'—'}</td>
+    </tr></tbody>
   </table>
-  <div style="margin-top:6px;font-size:7.5pt;color:#555">Total: ${deliveries.length} · VRA-PO · V R Alucast</div>
+  <div class="sec-bar">Delivery / Invoice Log</div>
+  <table class="dt">
+    <thead><tr><th>Source</th><th class="tl">Ref/Invoice No.</th><th>Date</th><th>Qty Received</th><th>Qty Rejected</th><th>Qty Accepted</th><th>Timing</th></tr></thead>
+    <tbody>${rows.map(r=>`<tr><td>${r.source}</td><td class="tl">${esc(r.refNo||'—')}</td><td>${r.date||'—'}</td><td>${r.qtyReceived}</td><td>${r.qtyRejected}</td><td>${r.qtyAccepted}</td><td>${PUR_TIMING_LABELS[r.timing]||r.timing}</td></tr>`).join('')||'<tr><td colspan="7" style="text-align:center">No entries</td></tr>'}</tbody>
+  </table>
+  <div style="margin-top:6px;font-size:7.5pt;color:#555">VRA-PUR-F-04 · V R Alucast</div>
   <script>window.onload=()=>window.print()<\/script></body></html>`);
   w.document.close();
 }
-
-async function purPrintSupList(){
-  const sups=await db.purSuppliers.toArray().catch(()=>[]);
-  sups.sort((a,b)=>a.supNumber>b.supNumber?1:-1);
-  const today=new Date().toLocaleDateString('en-IN');
-  const rows=await Promise.all(sups.map(async(s,i)=>{
-    const sc=purCalcScore(await db.purDeliveries.where('supId').equals(s.id).toArray().catch(()=>[]));
-    return`<tr><td>${i+1}</td><td style="font-family:monospace;font-weight:bold">${s.supNumber}</td>
-    <td class="tl"><strong>${s.name}</strong></td><td class="tl">${s.scope||'—'}</td>
-    <td style="font-weight:bold">${sc.passRate?sc.passRate+'%':'—'}</td>
-    <td style="font-weight:bold">${sc.grade!=='—'?sc.grade:'—'}</td>
-    <td style="font-weight:bold;color:${s.approvalStatus==='Approved'?'#14532d':s.approvalStatus==='Under Review'?'#7f1d1d':'#92400e'}">${s.approvalStatus||'Under Evaluation'}</td>
-    </tr>`;
-  }));
-  const w=window.open('','_blank');
-  w.document.write(`<!DOCTYPE html><html><head><title>Supplier List</title><style>${purPrintCSS()}</style></head><body>
-  <div class="pg-hdr">
-    <div><div class="co-name">V R ALUCAST</div></div>
-    <div><div class="rpt-title">SUPPLIER REGISTER</div></div>
-    <div><div class="rpt-num">VRA-PUR-001</div><div style="font-size:7pt;text-align:right">${today}</div></div>
-  </div>
-  <table class="dt">
-    <thead><tr><th>#</th><th>Sup No.</th><th class="tl">Name</th><th class="tl">Scope</th><th>Pass Rate</th><th>Grade</th><th>Status</th></tr></thead>
-    <tbody>${rows.join('')}</tbody>
-  </table>
-  <script>window.onload=()=>window.print()<\/script></body></html>`);
-  w.document.close();
-}
-
-
-// ══════════════════════════════════════════════════════
-//  INIT
-
-// ══════════════════════════════════════════════════════

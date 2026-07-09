@@ -500,7 +500,7 @@ def delete_generic_one(module, rid):
 
 @app.route('/api/admin/dedup/all', methods=['POST'])
 def dedup_all():
-    modules_to_dedup = ['hrSkillDefs','mktFeasQns','calGauges','purSuppliers']
+    modules_to_dedup = ['hrSkillDefs','mktFeasQns','calGauges']
     results = {}
     for module in modules_to_dedup:
         records = GenericRecord.query.filter_by(module=module).order_by(GenericRecord.id.asc()).all()
