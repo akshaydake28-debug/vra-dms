@@ -104,10 +104,22 @@ async function mktSeedDefaults(){
 }
 
 async function mktRenderEnquiries(){
-  const enqs=await db.mktEnquiries.toArray().catch(()=>[]);
+  const [enqs, feases]=await Promise.all([
+    db.mktEnquiries.toArray().catch(()=>[]),
+    db.mktFeasibility.toArray().catch(()=>[])
+  ]);
   enqs.sort((a,b)=>b.id-a.id);
   const counts={Open:0,Quoted:0,'PO Received':0,Lost:0};
   enqs.forEach(e=>{ if(counts[e.status]!==undefined) counts[e.status]++; });
+
+  // The View FR / Create FR button is decided by what FR records actually
+  // exist right now, never by the enquiry's stored feasibilityDone flag —
+  // that flag can go stale (e.g. a record deleted outside the normal
+  // delete flow) and the button must never show a broken link.
+  const byEnq={};
+  feases.forEach(f=>{ (byEnq[f.enqId]=byEnq[f.enqId]||[]).push(f); });
+  Object.values(byEnq).forEach(list=>list.sort((a,b)=>a.id-b.id));
+  mktSyncFeasibilityFlags(enqs, byEnq); // silent background self-heal, not awaited
 
   setC(`
   <div class="ph">
@@ -115,7 +127,6 @@ async function mktRenderEnquiries(){
     <div style="display:flex;gap:8px">
       <button class="btn btn-p" onclick="mktOpenEnqForm()">+ New Enquiry</button>
       <button class="btn btn-o" onclick="mktPrintEnquiryRegister()">🖨️ Print Register</button>
-      <button class="btn btn-o" onclick="mktRepairFeasibilityLinks()">🔧 Repair FR Links</button>
     </div>
   </div>
   <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px">
@@ -143,7 +154,7 @@ async function mktRenderEnquiries(){
           <td><strong>${esc(e.customerName)}</strong></td>
           <td>${esc(e.partDetails)}</td>
           <td style="text-align:center">${e.specialReq?`<span class="badge br">YES</span>`:`<span class="badge bd">No</span>`}</td>
-          <td style="text-align:center">${e.feasibilityDone?`<button class="btn btn-o btn-xs" onclick="mktViewFeasibility(${e.id})">View FR</button>`:`<button class="btn btn-p btn-xs" onclick="mktCreateFeasibility(${e.id})">+ Create FR</button>`}</td>
+          <td style="text-align:center">${(byEnq[e.id]||[])[0]?`<button class="btn btn-o btn-xs" onclick="mktViewFeasibilityById(${byEnq[e.id][0].id})">View FR</button>`:`<button class="btn btn-p btn-xs" onclick="mktCreateFeasibility(${e.id})">+ Create FR</button>`}</td>
           <td class="mono" style="font-size:11px">${esc(e.poNumber||'—')}</td>
           <td style="white-space:nowrap">${e.poDate||'—'}</td>
           <td>${mktStatusBadge(e.status||'Open')}</td>
@@ -373,16 +384,6 @@ async function mktCreateFeasibility(enqId){
   mktViewFeasibilityById(id);
 }
 
-async function mktViewFeasibility(enqId){
-  const e=await db.mktEnquiries.get(enqId);
-  if(e?.feasibilityId){ mktViewFeasibilityById(e.feasibilityId); return; }
-  // Legacy fallback for enquiries created before feasibilityId was tracked
-  const f=await db.mktFeasibility.where('enqId').equals(enqId).first().catch(()=>null);
-  if(!f){mktCreateFeasibility(enqId);return;}
-  await db.mktEnquiries.update(enqId,{feasibilityId:f.id});
-  mktViewFeasibilityById(f.id);
-}
-
 async function mktViewFeasibilityById(id){
   const f=await db.mktFeasibility.get(id).catch(()=>null);
   if(!f){toast('Not found','d');return;}
@@ -539,35 +540,20 @@ async function mktDeleteFeasibility(id){
   mktRenderFeasibility();
 }
 
-// Bulk repair — for enquiries whose FR was deleted through some path that
-// didn't call mktReconcileFeasibilityLink (e.g. records removed directly
-// via the API), leaving feasibilityDone/feasibilityId stale. Re-derives
-// every enquiry's link from what FR records actually still exist.
-async function mktRepairFeasibilityLinks(){
-  const [enqs, feases] = await Promise.all([
-    db.mktEnquiries.toArray().catch(()=>[]),
-    db.mktFeasibility.toArray().catch(()=>[])
-  ]);
-  const feasIds=new Set(feases.map(f=>f.id));
-  const byEnq={};
-  feases.forEach(f=>{ (byEnq[f.enqId]=byEnq[f.enqId]||[]).push(f); });
-
-  let fixed=0;
+// Silent background self-heal: the enquiry list already knows exactly
+// which FR records exist (byEnq), so quietly correct any stale
+// feasibilityDone/feasibilityId left over from a record that was removed
+// outside the normal delete flow. No UI, no user action — the register's
+// View FR / Create FR button never depends on this running first.
+async function mktSyncFeasibilityFlags(enqs, byEnq){
   for(const e of enqs){
-    const pinnedStillExists=e.feasibilityId!=null && feasIds.has(e.feasibilityId);
-    if(pinnedStillExists) continue;
     const list=byEnq[e.id]||[];
-    if(list.length>0){
-      list.sort((a,b)=>a.id-b.id);
-      await db.mktEnquiries.update(e.id,{feasibilityDone:true, feasibilityId:list[0].id});
-      fixed++;
-    } else if(e.feasibilityDone || e.feasibilityId!=null){
-      await db.mktEnquiries.update(e.id,{feasibilityDone:false, feasibilityId:null});
-      fixed++;
+    const correctId=list.length>0?list[0].id:null;
+    const correctDone=list.length>0;
+    if(e.feasibilityDone!==correctDone || e.feasibilityId!==correctId){
+      await db.mktEnquiries.update(e.id,{feasibilityDone:correctDone, feasibilityId:correctId}).catch(()=>{});
     }
   }
-  toast(fixed>0?`✅ Repaired ${fixed} enquiry link(s)`:'✅ All enquiry links already correct');
-  mktRenderEnquiries();
 }
 
 // ══════════════════════════════════════════════════════
