@@ -311,8 +311,8 @@ const db = {
   calGauges:      makeTable('calGauges'),
   calRecords:     makeTable('calRecords'),
   // Purchasing
-  purSuppliers:   makeTable('purSuppliers'),
-  purDeliveries:  makeTable('purDeliveries'),
+  purVendors:     makeTable('purVendors'),
+  purVendorLots:  makeTable('purVendorLots'),
   // version() is a no-op — schema managed by server
   version() { return { stores() {} }; },
 };
