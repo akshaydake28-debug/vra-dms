@@ -13,19 +13,125 @@ function mktResultBadge(r){
 // sidebar/accent (--accent:#e8a020), kept as one source of truth for print.
 const MKT_BRAND = {amber:'#e8a020', amberDeep:'#a06a12', ink:'#161616', tint:'#fdf6e8', tintLine:'#ecdcb4'};
 
-// Compact "VR" lettermark badge + wordmark, used in place of the company's
-// full icon artwork — see mktPrintQuotation notes on why a redrawn mark is
-// used here instead of the source logo file.
-function mktLogoLockup(){
+// ── LETTERHEAD SETTINGS (logo + company contact details) ──
+// Stored via the generic settings API (db.settings) — same store used
+// elsewhere in the app, no backend changes needed. Uploaded logos are
+// read client-side with FileReader/canvas and kept as a data: URL, so
+// nothing needs to leave the browser to get the real logo into print.
+async function mktGetLetterhead(){
+  const s = await db.settings.get('mktLetterhead').catch(()=>null);
+  return s?.value || {logoDataUrl:'', address:'', phone:'', email:'', gst:''};
+}
+async function mktSaveLetterhead(){
+  const existing = await mktGetLetterhead();
+  const fileInput = document.getElementById('lh-logo-file');
+  const rec = {
+    logoDataUrl: fileInput?.dataset.preview || existing.logoDataUrl || '',
+    address: document.getElementById('lh-address').value.trim(),
+    phone: document.getElementById('lh-phone').value.trim(),
+    email: document.getElementById('lh-email').value.trim(),
+    gst: document.getElementById('lh-gst').value.trim(),
+  };
+  await db.settings.put({key:'mktLetterhead', value:rec});
+  toast('✅ Letterhead settings saved');
+  document.getElementById('mkt-lh-ov')?.remove();
+}
+function mktResizeImageToDataUrl(file, maxW, maxH){
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onload = e => {
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, maxW/img.width, maxH/img.height);
+        const w = Math.max(1, Math.round(img.width*scale));
+        const h = Math.max(1, Math.round(img.height*scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/png'));
+      };
+      img.onerror = () => reject(new Error('Could not read image'));
+      img.src = e.target.result;
+    };
+    reader.onerror = () => reject(new Error('Could not read file'));
+    reader.readAsDataURL(file);
+  });
+}
+async function mktPreviewLetterheadLogo(input){
+  const file = input.files?.[0];
+  if(!file) return;
+  try {
+    const dataUrl = await mktResizeImageToDataUrl(file, 240, 240);
+    input.dataset.preview = dataUrl;
+    const prev = document.getElementById('lh-logo-preview');
+    if(prev) prev.innerHTML = `<img src="${dataUrl}" style="max-width:100%;max-height:100%;object-fit:contain">`;
+  } catch(e) { toast('Could not read that image file','d'); }
+}
+function mktRemoveLetterheadLogo(){
+  const fileInput = document.getElementById('lh-logo-file');
+  if(fileInput){ fileInput.value=''; fileInput.dataset.preview=''; delete fileInput.dataset.preview; }
+  const prev = document.getElementById('lh-logo-preview');
+  if(prev) prev.innerHTML = `<span class="muted" style="font-size:10px">No logo</span>`;
+  const marker = document.getElementById('lh-logo-cleared');
+  if(marker) marker.value='1';
+}
+async function mktOpenLetterheadSettings(){
+  const lh = await mktGetLetterhead();
+  const ov=document.createElement('div');ov.className='overlay';ov.id='mkt-lh-ov';
+  ov.innerHTML=`<div class="modal" style="width:480px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <h3>🏢 Letterhead &amp; Company Details</h3>
+      <button class="btn btn-o btn-sm" onclick="document.getElementById('mkt-lh-ov').remove()">✕</button>
+    </div>
+    <div class="alert al-w" style="margin-bottom:12px">Used on all Marketing print-outs — Enquiry Register, Feasibility Review and Quotation.</div>
+    <div class="fg"><label class="lbl">Company Logo</label>
+      <div style="display:flex;align-items:center;gap:10px">
+        <div id="lh-logo-preview" style="width:60px;height:60px;border:1px solid var(--border);border-radius:6px;display:flex;align-items:center;justify-content:center;overflow:hidden;background:#fafafa;flex-shrink:0">
+          ${lh.logoDataUrl?`<img src="${lh.logoDataUrl}" style="max-width:100%;max-height:100%;object-fit:contain">`:`<span class="muted" style="font-size:10px">No logo</span>`}
+        </div>
+        <div style="flex:1">
+          <input type="file" accept="image/*" id="lh-logo-file" class="fc" onchange="mktPreviewLetterheadLogo(this)">
+          ${lh.logoDataUrl?`<a style="font-size:11px;color:#dc3545;cursor:pointer;display:inline-block;margin-top:4px" onclick="mktRemoveLetterheadLogo()">✕ Remove logo</a>`:''}
+        </div>
+      </div>
+    </div>
+    <div class="fg"><label class="lbl">Address</label>
+      <textarea class="fc" id="lh-address" rows="2" placeholder="Survey No. 18/209, Industrial Estate, Ichalkaranji, Kolhapur, Maharashtra, India 416115">${esc(lh.address||'')}</textarea></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="fg"><label class="lbl">Phone</label><input class="fc" id="lh-phone" value="${esc(lh.phone||'')}" placeholder="9623457255"></div>
+      <div class="fg"><label class="lbl">Email</label><input class="fc" id="lh-email" value="${esc(lh.email||'')}" placeholder="info@vralucast.com"></div>
+    </div>
+    <div class="fg"><label class="lbl">GST Number</label><input class="fc mono" id="lh-gst" value="${esc(lh.gst||'')}" placeholder="27XXXXX0000X1ZX"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
+      <button class="btn btn-o" onclick="document.getElementById('mkt-lh-ov').remove()">Cancel</button>
+      <button class="btn btn-p" onclick="mktSaveLetterhead()">💾 Save</button>
+    </div>
+  </div>`;
+  document.body.appendChild(ov);
+}
+
+// Logo badge + wordmark for print letterheads. Renders the uploaded logo
+// once one's been saved via Letterhead Settings; otherwise falls back to a
+// plain "VR" lettermark so print output never shows a broken image.
+function mktLogoLockup(lh){
+  lh = lh || {};
+  const badge = lh.logoDataUrl
+    ? `<img src="${lh.logoDataUrl}" style="height:34px;max-width:120px;object-fit:contain;flex-shrink:0">`
+    : `<div class="brand-badge"><span>VR</span></div><div class="brand-div"></div>`;
+  const contact = [lh.address, lh.phone?('Ph: '+lh.phone):'', lh.email, lh.gst?('GSTIN: '+lh.gst):'']
+    .filter(Boolean).map(esc).join(' &nbsp;|&nbsp; ');
   return`<div class="brand-lockup">
-    <div class="brand-badge"><span>VR</span></div>
-    <div class="brand-div"></div>
-    <div><div class="brand-word">VR ALUCAST</div><div class="co-sub">High Pressure Die Casting &nbsp;|&nbsp; Ichalkaranji</div></div>
+    ${badge}
+    <div>
+      <div class="brand-word">VR ALUCAST</div>
+      <div class="co-sub">High Pressure Die Casting &nbsp;|&nbsp; Ichalkaranji</div>
+      ${contact?`<div class="co-contact">${contact}</div>`:''}
+    </div>
   </div>`;
 }
-function mktLetterhead(title, sub, refLine, dateLine){
+function mktLetterhead(title, sub, refLine, dateLine, lh){
   return`<div class="pg-hdr">
-    ${mktLogoLockup()}
+    ${mktLogoLockup(lh)}
     <div class="rpt-block">
       <div class="rpt-title">${title}</div>
       <div class="rpt-sub">${sub}</div>
@@ -46,6 +152,7 @@ body{font-family:'Inter',Arial,sans-serif;font-size:8.6pt;color:#1a1a1a;backgrou
 .brand-div{width:2px;height:24px;background:${MKT_BRAND.amber}}
 .brand-word{font-family:'Oswald',Arial,sans-serif;font-weight:700;font-size:14.5px;letter-spacing:.6px;color:${MKT_BRAND.ink}}
 .co-name{font-size:11pt;font-weight:bold}.co-sub{font-size:6.8pt;color:#666;margin-top:2px;letter-spacing:.2px}
+.co-contact{font-size:6.2pt;color:#8a7550;margin-top:2px;letter-spacing:.1px}
 .rpt-block{text-align:right}
 .rpt-title{font-size:10.5pt;font-weight:800;color:${MKT_BRAND.ink};letter-spacing:.5px}
 .rpt-sub{font-size:7.3pt;color:#555;margin-top:1px}
@@ -175,6 +282,7 @@ async function mktRenderEnquiries(){
     <div style="display:flex;gap:8px">
       <button class="btn btn-p" onclick="mktOpenEnqForm()">+ New Enquiry</button>
       <button class="btn btn-o" onclick="mktPrintEnquiryRegister()">🖨️ Print Register</button>
+      <button class="btn btn-o" onclick="mktOpenLetterheadSettings()">🏢 Letterhead</button>
     </div>
   </div>
   <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px">
@@ -332,10 +440,11 @@ async function mktPrintEnquiryRegister(){
     <td style="font-weight:bold">${e.status||'Open'}</td>
     <td>${e.remark||''}</td>
   </tr>`).join('');
+  const lh=await mktGetLetterhead();
   const w=window.open('','_blank');
   w.document.write(`<!DOCTYPE html><html><head><title>Enquiry Register</title>
   <style>${mktPrintCSS()}</style></head><body>
-  ${mktLetterhead('NEW ENQUIRY REGISTER','Marketing Department','VRA-MKT-001','Date: '+today)}
+  ${mktLetterhead('NEW ENQUIRY REGISTER','Marketing Department','VRA-MKT-001','Date: '+today, lh)}
   <table class="dt">
     <thead><tr>
       <th style="width:24px">#</th><th style="white-space:nowrap">Enq No.</th><th>Date</th>
@@ -847,10 +956,11 @@ async function mktPrintFeasibility(id){
     </table>`;
   }
 
+  const lh=await mktGetLetterhead();
   const w=window.open('','_blank');
   w.document.write(`<!DOCTYPE html><html><head><title>${f.feasNumber}</title>
   <style>${mktPrintCSS()}</style></head><body>
-  ${mktLetterhead('NEW ENQUIRY FEASIBILITY REVIEW','Marketing Department', f.feasNumber, 'VRA-MKT-002 &nbsp;|&nbsp; '+today)}
+  ${mktLetterhead('NEW ENQUIRY FEASIBILITY REVIEW','Marketing Department', f.feasNumber, 'VRA-MKT-002 &nbsp;|&nbsp; '+today, lh)}
 
   <div class="meta-grid" style="margin-bottom:7px">
     <div class="mc"><div class="ml">FR Number</div><div class="mv">${f.feasNumber}</div></div>
@@ -1006,7 +1116,10 @@ async function mktRenderQuotations(){
   setC(`
   <div class="ph">
     <h2>💰 Quotations</h2>
-    <span class="muted" style="font-size:11px">Create a quote from an enquiry in the Enquiry Register</span>
+    <div style="display:flex;align-items:center;gap:10px">
+      <span class="muted" style="font-size:11px">Create a quote from an enquiry in the Enquiry Register</span>
+      <button class="btn btn-o" onclick="mktOpenLetterheadSettings()">🏢 Letterhead</button>
+    </div>
   </div>
   <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px">
     ${[['Draft',counts.Draft,'bd'],['Pending Approval',counts.Submitted,'bp'],['Approved',counts.Approved,'ba'],['Rejected',counts.Rejected,'br']].map(([l,n])=>`
@@ -1511,10 +1624,11 @@ async function mktPrintQuotation(id){
   const toolingRows=(q.toolingItems||[]).map(t=>`<tr><td>${esc(t.category)}</td><td>${esc(t.description||'')}</td><td style="text-align:right">₹${mktINR(t.cost)}</td></tr>`).join('');
 
   const statusColor={Draft:'#6b7280',Submitted:'#a06a12',Approved:'#15803d',Rejected:'#b91c1c',Superseded:'#6b46c1'}[q.status]||'#6b7280';
+  const lh=await mktGetLetterhead();
   const w=window.open('','_blank');
   w.document.write(`<!DOCTYPE html><html><head><title>${q.quoteFamily} Rev ${q.revision}</title>
   <style>${mktPrintCSS()}</style></head><body>
-  ${mktLetterhead('QUOTATION','Marketing Department', q.quoteFamily+' &middot; Rev '+q.revision, today)}
+  ${mktLetterhead('QUOTATION','Marketing Department', q.quoteFamily+' &middot; Rev '+q.revision, today, lh)}
 
   ${q.revision>0?`<div style="font-size:7.5pt;background:${MKT_BRAND.tint};border:1px solid ${MKT_BRAND.tintLine};border-left:3px solid ${MKT_BRAND.amber};padding:5px 8px;margin-bottom:7px"><strong>Revision ${q.revision}</strong> — supersedes Rev ${q.revision-1}. Reason: ${esc(q.revisionReason||'—')}</div>`:''}
 
