@@ -520,12 +520,20 @@ function purVendorPeriodChange(){
 async function purRenderInvoices(){
   const allVendors=await db.purVendors.toArray().catch(()=>[]);
   const approvedVendors=allVendors.filter(purIsApproved);
-  const lots=await db.purVendorLots.toArray().catch(()=>[]);
-  lots.sort((a,b)=>(b.date||'')>(a.date||'')?1:-1);
+  const allLots=await db.purVendorLots.toArray().catch(()=>[]);
+
+  // Combine each vendor's registration samples with their invoice lots so
+  // the initial entries made while adding a supplier count here too.
+  let allRows=[];
+  approvedVendors.forEach(v=>{
+    const vendorLots=allLots.filter(l=>l.vendorId===v.id);
+    purVendorRows(v,vendorLots).forEach(r=>allRows.push(Object.assign({},r,{vendorId:v.id})));
+  });
+  allRows.sort((a,b)=>(b.date||'')>(a.date||'')?1:-1);
 
   const now=new Date();
   const monthStart=new Date(now.getFullYear(),now.getMonth(),1);
-  const enteredThisMonth=new Set(lots.filter(l=>l.date&&new Date(l.date)>=monthStart).map(l=>l.vendorId));
+  const enteredThisMonth=new Set(allRows.filter(r=>r.date&&new Date(r.date)>=monthStart).map(r=>r.vendorId));
   const missing=approvedVendors.filter(v=>!enteredThisMonth.has(v.id));
   const monthLabel=now.toLocaleDateString('en-IN',{month:'long',year:'numeric'});
 
@@ -540,25 +548,26 @@ async function purRenderInvoices(){
     ?`<div class="alert al-w" style="margin-bottom:12px">⚠️ ${missing.length} approved supplier(s) have no entry for ${monthLabel}: ${missing.map(v=>esc(v.name)).join(', ')}</div>`
     :`<div class="alert al-s" style="margin-bottom:12px">✅ Every approved supplier has at least one entry for ${monthLabel}.</div>`}
   <div class="card">
-    <div class="ch"><h5>All Invoice / Delivery Entries — ${lots.length}</h5></div>
+    <div class="ch"><h5>All Invoice / Delivery Entries — ${allRows.length}</h5></div>
     <div class="tw"><table>
-      <thead><tr><th>Date</th><th>Supplier</th><th>Ref / Invoice No.</th><th>Qty Received</th><th>Qty Rejected</th><th>Qty Accepted</th><th>Lot Timing</th><th></th></tr></thead>
-      <tbody>${lots.length===0
-        ?`<tr><td colspan="8" style="text-align:center;padding:30px;color:#9ca3af">No invoices entered yet. Click + Add Invoice to start.</td></tr>`
-        :lots.map(l=>{
-          const v=allVendors.find(x=>x.id===l.vendorId);
-          return`<tr>
-            <td>${l.date||'—'}</td>
+      <thead><tr><th>Date</th><th>Supplier</th><th>Source</th><th>Ref / Invoice No.</th><th>Qty Received</th><th>Qty Rejected</th><th>Qty Accepted</th><th>Lot Timing</th><th></th></tr></thead>
+      <tbody>${allRows.length===0
+        ?`<tr><td colspan="9" style="text-align:center;padding:30px;color:#9ca3af">No invoices entered yet. Click + Add Invoice to start.</td></tr>`
+        :allRows.map(r=>{
+          const v=approvedVendors.find(x=>x.id===r.vendorId);
+          return`<tr style="${r.source!=='Invoice'?'background:#fffbeb':''}">
+            <td>${r.date||'—'}</td>
             <td><strong>${esc(v?.name||'Unknown supplier')}</strong></td>
-            <td class="mono">${esc(l.refNo||'—')}</td>
-            <td style="text-align:center">${l.qtyReceived}</td>
-            <td style="text-align:center;color:#7f1d1d">${l.qtyRejected}</td>
-            <td style="text-align:center;color:#14532d">${l.qtyAccepted}</td>
-            <td>${PUR_TIMING_LABELS[l.timing]||l.timing}</td>
-            <td style="white-space:nowrap">
-              <button class="btn btn-o btn-xs" onclick="purOpenLotForm(null,${l.id},'register')">✏️</button>
-              <button class="btn btn-r btn-xs" onclick="purDeleteLot(${l.id},'register')">🗑️</button>
-            </td>
+            <td>${r.source}</td>
+            <td class="mono">${esc(r.refNo||'—')}</td>
+            <td style="text-align:center">${r.qtyReceived}</td>
+            <td style="text-align:center;color:#7f1d1d">${r.qtyRejected}</td>
+            <td style="text-align:center;color:#14532d">${r.qtyAccepted}</td>
+            <td>${PUR_TIMING_LABELS[r.timing]||r.timing}</td>
+            <td style="white-space:nowrap">${r.source==='Invoice'?`
+              <button class="btn btn-o btn-xs" onclick="purOpenLotForm(null,${r.id},'register')">✏️</button>
+              <button class="btn btn-r btn-xs" onclick="purDeleteLot(${r.id},'register')">🗑️</button>
+            `:'<span class="muted" style="font-size:11px">Edit via Supplier form</span>'}</td>
           </tr>`;
         }).join('')}
       </tbody>
