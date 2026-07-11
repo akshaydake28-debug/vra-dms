@@ -1630,8 +1630,6 @@ async function mktPrintQuotation(id){
   <style>${mktPrintCSS()}</style></head><body>
   ${mktLetterhead('QUOTATION','Marketing Department', q.quoteFamily+' &middot; Rev '+q.revision, today, lh)}
 
-  ${q.revision>0?`<div style="font-size:7.5pt;background:${MKT_BRAND.tint};border:1px solid ${MKT_BRAND.tintLine};border-left:3px solid ${MKT_BRAND.amber};padding:5px 8px;margin-bottom:7px"><strong>Revision ${q.revision}</strong> — supersedes Rev ${q.revision-1}. Reason: ${esc(q.revisionReason||'—')}</div>`:''}
-
   <div class="meta-grid" style="margin-bottom:7px">
     <div class="mc" style="grid-column:span 2"><div class="ml">Customer</div><div class="mv">M/s ${esc(q.customerName)}</div></div>
     <div class="mc"><div class="ml">Part Name / Number</div><div class="mv">${esc(q.partName)} ${q.partNumber?'· '+esc(q.partNumber):''}</div></div>
