@@ -146,21 +146,25 @@ async function mktOpenLetterheadSettings(){
 // wordmark so print output never shows a broken/empty header.
 function mktLogoLockup(lh){
   lh = lh || {};
-  const contact = [lh.address, lh.phone?('Ph: '+lh.phone):'', lh.email, lh.gst?('GSTIN: '+lh.gst):'']
+  const detailsLine = [lh.phone?('Ph: '+lh.phone):'', lh.email, lh.gst?('GSTIN: '+lh.gst):'']
     .filter(Boolean).map(esc).join(' &nbsp;|&nbsp; ');
+  const contactLines = [lh.address?esc(lh.address):'', detailsLine].filter(Boolean);
+  const contactBlock = contactLines.length
+    ? `<div class="co-contact">${contactLines.map(l=>`<span class="cline">${l}</span>`).join('')}</div>` : '';
   if(lh.logoDataUrl){
     return`<div class="brand-lockup">
       <img src="${lh.logoDataUrl}" style="height:52px;max-width:230px;object-fit:contain;flex-shrink:0">
-      ${contact?`<div class="brand-div"></div><div class="co-contact" style="margin-top:0">${contact}</div>`:''}
+      ${contactBlock?`<div class="brand-div"></div>${contactBlock}`:''}
     </div>`;
   }
+  const legacyContact = contactLines.join(' &nbsp;|&nbsp; ');
   return`<div class="brand-lockup">
     <div class="brand-badge"><span>VR</span></div>
     <div class="brand-div"></div>
     <div>
       <div class="brand-word">VR ALUCAST</div>
       <div class="co-sub">High Pressure Die Casting &nbsp;|&nbsp; Ichalkaranji</div>
-      ${contact?`<div class="co-contact">${contact}</div>`:''}
+      ${legacyContact?`<div class="co-contact"><span class="cline">${legacyContact}</span></div>`:''}
     </div>
   </div>`;
 }
@@ -181,13 +185,14 @@ function mktPrintCSS(){
 body{font-family:'Inter',Arial,sans-serif;font-size:8.6pt;color:#1a1a1a;background:#fff}
 @page{size:A4;margin:12mm 13mm 14mm 13mm}
 .pg-hdr{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2.5px solid ${MKT_BRAND.ink};padding-bottom:8px;margin-bottom:10px}
-.brand-lockup{display:flex;align-items:center;gap:9px}
-.brand-badge{width:30px;height:30px;border-radius:6px;background:${MKT_BRAND.amber};display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.brand-lockup{display:flex;align-items:stretch;gap:11px}
+.brand-badge{width:30px;height:30px;border-radius:6px;background:${MKT_BRAND.amber};display:flex;align-items:center;justify-content:center;flex-shrink:0;align-self:center}
 .brand-badge span{font-family:'Oswald',Arial,sans-serif;font-weight:700;font-size:12.5px;color:${MKT_BRAND.ink};letter-spacing:-.5px}
-.brand-div{width:2px;height:24px;background:${MKT_BRAND.amber}}
+.brand-div{width:2px;align-self:stretch;background:${MKT_BRAND.amber}}
 .brand-word{font-family:'Oswald',Arial,sans-serif;font-weight:700;font-size:14.5px;letter-spacing:.6px;color:${MKT_BRAND.ink}}
 .co-name{font-size:11pt;font-weight:bold}.co-sub{font-size:6.8pt;color:#666;margin-top:2px;letter-spacing:.2px}
-.co-contact{font-size:6.2pt;color:#8a7550;margin-top:2px;letter-spacing:.1px}
+.co-contact{display:flex;flex-direction:column;justify-content:center;gap:4px;font-size:6.8pt;color:#8a7550;letter-spacing:.1px}
+.co-contact .cline{display:block;line-height:1.3}
 .rpt-block{text-align:right}
 .rpt-title{font-size:10.5pt;font-weight:800;color:${MKT_BRAND.ink};letter-spacing:.5px}
 .rpt-sub{font-size:7.3pt;color:#555;margin-top:1px}
