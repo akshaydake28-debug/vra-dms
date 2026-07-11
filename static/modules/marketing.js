@@ -11,7 +11,7 @@ function mktResultBadge(r){
 }
 // VR Alucast brand palette — matches the amber used across the live app's
 // sidebar/accent (--accent:#e8a020), kept as one source of truth for print.
-const MKT_BRAND = {amber:'#e8a020', amberDeep:'#a06a12', header:'#8a3d12', ink:'#161616', tint:'#fdf6e8', tintLine:'#ecdcb4'};
+const MKT_BRAND = {amber:'#e8a020', amberDeep:'#a06a12', ink:'#161616', tint:'#fdf6e8', tintLine:'#ecdcb4'};
 
 // ── LETTERHEAD SETTINGS (logo + company contact details) ──
 // Stored via the generic settings API (db.settings) — same store used
@@ -199,7 +199,7 @@ body{font-family:'Inter',Arial,sans-serif;font-size:8.6pt;color:#1a1a1a;backgrou
 .rpt-num{font-family:'IBM Plex Mono',monospace;font-size:8pt;font-weight:700;color:${MKT_BRAND.amberDeep};margin-top:3px}
 .rpt-date{font-size:7pt;color:#666;margin-top:1px}
 table.dt{width:100%;border-collapse:collapse;font-size:7.6pt}
-table.dt th{background:${MKT_BRAND.header};color:#fff;border:1px solid ${MKT_BRAND.header};padding:4.5px 7px;text-align:left;font-weight:700;letter-spacing:.2px}
+table.dt th{background:${MKT_BRAND.tint};color:${MKT_BRAND.ink};border:1px solid ${MKT_BRAND.tintLine};padding:4.5px 7px;text-align:left;font-weight:700;letter-spacing:.2px}
 table.dt td{border:1px solid #ddd;padding:3.5px 7px;vertical-align:top}
 table.dt tr:nth-child(even) td{background:${MKT_BRAND.tint}}
 .sec-bar{background:${MKT_BRAND.tint};border-left:3.5px solid ${MKT_BRAND.amber};padding:4px 8px;font-size:7.8pt;font-weight:700;color:${MKT_BRAND.amberDeep};text-transform:uppercase;letter-spacing:.5px;margin:9px 0 4px}
@@ -209,10 +209,10 @@ table.dt tr:nth-child(even) td{background:${MKT_BRAND.tint}}
 .mc .ml{font-size:6.3pt;color:#8a7550;text-transform:uppercase;font-weight:700;letter-spacing:.3px}
 .mc .mv{font-size:8.5pt;font-weight:700;color:#1a1a1a;margin-top:1px}
 .yn-cell{text-align:center;font-weight:bold;font-size:9pt}
-.final-box{background:${MKT_BRAND.header};color:#fff;border-radius:6px;padding:14px 16px;margin:9px 0;text-align:right}
-.final-box .fl{font-size:7.3pt;color:#f0d3a0;text-transform:uppercase;letter-spacing:.6px;font-weight:700}
-.final-box .fv{font-size:18pt;font-weight:800;color:${MKT_BRAND.amber};margin-top:2px}
-.final-box .fgst{font-size:7.6pt;color:#f0d3a0;margin-top:9px;padding-top:8px;border-top:1px solid rgba(255,255,255,.22)}
+.final-box{background:${MKT_BRAND.tint};color:${MKT_BRAND.ink};border:1px solid ${MKT_BRAND.tintLine};border-radius:6px;padding:14px 16px;margin:9px 0;text-align:right}
+.final-box .fl{font-size:7.3pt;color:#8a7550;text-transform:uppercase;letter-spacing:.6px;font-weight:700}
+.final-box .fv{font-size:18pt;font-weight:800;color:${MKT_BRAND.amberDeep};margin-top:2px}
+.final-box .fgst{font-size:7.6pt;color:#8a7550;margin-top:9px;padding-top:8px;border-top:1px solid ${MKT_BRAND.tintLine}}
 .pg-ftr{margin-top:10px;padding-top:5px;border-top:1px solid ${MKT_BRAND.tintLine};font-size:6.8pt;color:#888;display:flex;justify-content:space-between}
 @media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}`;
 }
