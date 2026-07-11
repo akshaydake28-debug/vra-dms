@@ -11,7 +11,7 @@ function mktResultBadge(r){
 }
 // VR Alucast brand palette — matches the amber used across the live app's
 // sidebar/accent (--accent:#e8a020), kept as one source of truth for print.
-const MKT_BRAND = {amber:'#e8a020', amberDeep:'#a06a12', header:'#7a4e12', ink:'#161616', tint:'#fdf6e8', tintLine:'#ecdcb4'};
+const MKT_BRAND = {amber:'#e8a020', amberDeep:'#a06a12', header:'#8a3d12', ink:'#161616', tint:'#fdf6e8', tintLine:'#ecdcb4'};
 
 // ── LETTERHEAD SETTINGS (logo + company contact details) ──
 // Stored via the generic settings API (db.settings) — same store used
@@ -209,7 +209,7 @@ table.dt tr:nth-child(even) td{background:${MKT_BRAND.tint}}
 .mc .ml{font-size:6.3pt;color:#8a7550;text-transform:uppercase;font-weight:700;letter-spacing:.3px}
 .mc .mv{font-size:8.5pt;font-weight:700;color:#1a1a1a;margin-top:1px}
 .yn-cell{text-align:center;font-weight:bold;font-size:9pt}
-.final-box{background:${MKT_BRAND.header};color:#fff;border-radius:6px;padding:14px 16px;margin:9px 0}
+.final-box{background:${MKT_BRAND.header};color:#fff;border-radius:6px;padding:14px 16px;margin:9px 0;text-align:right}
 .final-box .fl{font-size:7.3pt;color:#f0d3a0;text-transform:uppercase;letter-spacing:.6px;font-weight:700}
 .final-box .fv{font-size:18pt;font-weight:800;color:${MKT_BRAND.amber};margin-top:2px}
 .final-box .fgst{font-size:7.6pt;color:#f0d3a0;margin-top:9px;padding-top:8px;border-top:1px solid rgba(255,255,255,.22)}
