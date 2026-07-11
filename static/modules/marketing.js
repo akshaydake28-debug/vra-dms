@@ -36,19 +36,47 @@ async function mktSaveLetterhead(){
   toast('✅ Letterhead settings saved');
   document.getElementById('mkt-lh-ov')?.remove();
 }
+// Many logo exports carry a lot of empty margin around the mark (so it sits
+// safely at a fixed canvas size). Displayed small, that padding makes the
+// logo look nearly invisible — so this crops to the actual ink/pixels
+// before resizing, then scales the trimmed art to fill maxW/maxH.
 function mktResizeImageToDataUrl(file, maxW, maxH){
   return new Promise((resolve, reject)=>{
     const reader = new FileReader();
     reader.onload = e => {
       const img = new Image();
       img.onload = () => {
-        const scale = Math.min(1, maxW/img.width, maxH/img.height);
-        const w = Math.max(1, Math.round(img.width*scale));
-        const h = Math.max(1, Math.round(img.height*scale));
-        const canvas = document.createElement('canvas');
-        canvas.width = w; canvas.height = h;
-        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL('image/png'));
+        try {
+          const srcCanvas = document.createElement('canvas');
+          srcCanvas.width = img.width; srcCanvas.height = img.height;
+          const sctx = srcCanvas.getContext('2d');
+          sctx.drawImage(img, 0, 0);
+          const data = sctx.getImageData(0, 0, img.width, img.height).data;
+          let minX=img.width, minY=img.height, maxX=-1, maxY=-1;
+          for(let y=0; y<img.height; y++){
+            for(let x=0; x<img.width; x++){
+              const i=(y*img.width+x)*4;
+              const a=data[i+3], r=data[i], g=data[i+1], b=data[i+2];
+              const isBg = a < 12 || (r>247 && g>247 && b>247);
+              if(!isBg){
+                if(x<minX) minX=x; if(x>maxX) maxX=x;
+                if(y<minY) minY=y; if(y>maxY) maxY=y;
+              }
+            }
+          }
+          if(maxX<0){ minX=0; minY=0; maxX=img.width-1; maxY=img.height-1; }
+          const pad = Math.round(Math.max(img.width,img.height)*0.02);
+          minX=Math.max(0,minX-pad); minY=Math.max(0,minY-pad);
+          maxX=Math.min(img.width-1,maxX+pad); maxY=Math.min(img.height-1,maxY+pad);
+          const cw=maxX-minX+1, ch=maxY-minY+1;
+          const scale = Math.min(1, maxW/cw, maxH/ch);
+          const w = Math.max(1, Math.round(cw*scale));
+          const h = Math.max(1, Math.round(ch*scale));
+          const outCanvas = document.createElement('canvas');
+          outCanvas.width = w; outCanvas.height = h;
+          outCanvas.getContext('2d').drawImage(srcCanvas, minX, minY, cw, ch, 0, 0, w, h);
+          resolve(outCanvas.toDataURL('image/png'));
+        } catch(err){ reject(err); }
       };
       img.onerror = () => reject(new Error('Could not read image'));
       img.src = e.target.result;
@@ -61,7 +89,7 @@ async function mktPreviewLetterheadLogo(input){
   const file = input.files?.[0];
   if(!file) return;
   try {
-    const dataUrl = await mktResizeImageToDataUrl(file, 240, 240);
+    const dataUrl = await mktResizeImageToDataUrl(file, 320, 320);
     input.dataset.preview = dataUrl;
     const prev = document.getElementById('lh-logo-preview');
     if(prev) prev.innerHTML = `<img src="${dataUrl}" style="max-width:100%;max-height:100%;object-fit:contain">`;
@@ -110,18 +138,25 @@ async function mktOpenLetterheadSettings(){
   document.body.appendChild(ov);
 }
 
-// Logo badge + wordmark for print letterheads. Renders the uploaded logo
-// once one's been saved via Letterhead Settings; otherwise falls back to a
-// plain "VR" lettermark so print output never shows a broken image.
+// Logo + contact block for print letterheads. Once a real logo has been
+// uploaded via Letterhead Settings it IS the brand mark (name + icon
+// already baked into the artwork), so the placeholder "VR ALUCAST"
+// wordmark is dropped — only the uploaded image plus contact details show.
+// With no logo uploaded yet, falls back to the plain "VR" lettermark +
+// wordmark so print output never shows a broken/empty header.
 function mktLogoLockup(lh){
   lh = lh || {};
-  const badge = lh.logoDataUrl
-    ? `<img src="${lh.logoDataUrl}" style="height:34px;max-width:120px;object-fit:contain;flex-shrink:0">`
-    : `<div class="brand-badge"><span>VR</span></div><div class="brand-div"></div>`;
   const contact = [lh.address, lh.phone?('Ph: '+lh.phone):'', lh.email, lh.gst?('GSTIN: '+lh.gst):'']
     .filter(Boolean).map(esc).join(' &nbsp;|&nbsp; ');
+  if(lh.logoDataUrl){
+    return`<div class="brand-lockup">
+      <img src="${lh.logoDataUrl}" style="height:52px;max-width:230px;object-fit:contain;flex-shrink:0">
+      ${contact?`<div class="brand-div"></div><div class="co-contact" style="margin-top:0">${contact}</div>`:''}
+    </div>`;
+  }
   return`<div class="brand-lockup">
-    ${badge}
+    <div class="brand-badge"><span>VR</span></div>
+    <div class="brand-div"></div>
     <div>
       <div class="brand-word">VR ALUCAST</div>
       <div class="co-sub">High Pressure Die Casting &nbsp;|&nbsp; Ichalkaranji</div>
