@@ -104,9 +104,10 @@ async function mktSeedDefaults(){
 }
 
 async function mktRenderEnquiries(){
-  const [enqs, feases]=await Promise.all([
+  const [enqs, feases, quotes]=await Promise.all([
     db.mktEnquiries.toArray().catch(()=>[]),
-    db.mktFeasibility.toArray().catch(()=>[])
+    db.mktFeasibility.toArray().catch(()=>[]),
+    db.mktQuotations.toArray().catch(()=>[])
   ]);
   enqs.sort((a,b)=>b.id-a.id);
   const counts={Open:0,Quoted:0,'PO Received':0,Lost:0};
@@ -120,6 +121,13 @@ async function mktRenderEnquiries(){
   feases.forEach(f=>{ (byEnq[f.enqId]=byEnq[f.enqId]||[]).push(f); });
   Object.values(byEnq).forEach(list=>list.sort((a,b)=>a.id-b.id));
   mktSyncFeasibilityFlags(enqs, byEnq); // silent background self-heal, not awaited
+
+  // Same self-heal pattern for quotations — show the latest revision for
+  // each enquiry, keyed purely off what quote records actually exist.
+  const quotesByEnq={};
+  quotes.forEach(q=>{ (quotesByEnq[q.enqId]=quotesByEnq[q.enqId]||[]).push(q); });
+  Object.values(quotesByEnq).forEach(list=>list.sort((a,b)=>a.revision-b.revision));
+  mktSyncQuotationFlags(enqs, quotesByEnq);
 
   setC(`
   <div class="ph">
@@ -143,18 +151,22 @@ async function mktRenderEnquiries(){
     <div class="tw"><table>
       <thead><tr>
         <th>Enq No.</th><th>Date</th><th>Customer</th><th>Part Name / Details</th>
-        <th>Special Req.</th><th>Feasibility</th>
+        <th>Special Req.</th><th>Feasibility</th><th>Quotation</th>
         <th>PO No.</th><th>PO Date</th><th>Status</th><th>Remark</th><th></th>
       </tr></thead>
       <tbody>${enqs.length===0
-        ?`<tr><td colspan="12" style="text-align:center;padding:30px;color:#9ca3af">No enquiries yet. Click + New Enquiry to start.</td></tr>`
-        :enqs.map(e=>`<tr>
+        ?`<tr><td colspan="13" style="text-align:center;padding:30px;color:#9ca3af">No enquiries yet. Click + New Enquiry to start.</td></tr>`
+        :enqs.map(e=>{
+          const eQuotes=quotesByEnq[e.id]||[];
+          const latestQ=eQuotes[eQuotes.length-1];
+          return`<tr>
           <td class="mono" style="color:var(--navy);font-weight:700;white-space:nowrap">${esc(e.enqNumber)}</td>
           <td style="white-space:nowrap">${e.date||'—'}</td>
           <td><strong>${esc(e.customerName)}</strong></td>
           <td>${esc(e.partDetails)}</td>
           <td style="text-align:center">${e.specialReq?`<span class="badge br">YES</span>`:`<span class="badge bd">No</span>`}</td>
           <td style="text-align:center">${(byEnq[e.id]||[])[0]?`<button class="btn btn-o btn-xs" onclick="mktViewFeasibilityById(${byEnq[e.id][0].id})">View FR</button>`:`<button class="btn btn-p btn-xs" onclick="mktCreateFeasibility(${e.id})">+ Create FR</button>`}</td>
+          <td style="text-align:center">${latestQ?`<button class="btn btn-o btn-xs" onclick="mktViewQuotation(${latestQ.id})">${mktQuoteStatusBadge(latestQ.status)}</button>`:`<button class="btn btn-p btn-xs" onclick="mktCreateQuotation(${e.id})">+ Create Quote</button>`}</td>
           <td class="mono" style="font-size:11px">${esc(e.poNumber||'—')}</td>
           <td style="white-space:nowrap">${e.poDate||'—'}</td>
           <td>${mktStatusBadge(e.status||'Open')}</td>
@@ -163,7 +175,7 @@ async function mktRenderEnquiries(){
             <button class="btn btn-o btn-xs" onclick="mktOpenEnqForm(${e.id})">✏️</button>
             <button class="btn btn-r btn-xs" onclick="mktDeleteEnq(${e.id})">🗑️</button>
           </td>
-        </tr>`).join('')}
+        </tr>`;}).join('')}
       </tbody>
     </table></div>
   </div>`);
@@ -837,6 +849,705 @@ async function mktPrintFeasibility(id){
     <div style="border:1px solid #000;padding:7px"><strong>Approved By:</strong> Akshay Dake<br><br>Signature: _________________________&nbsp;&nbsp;&nbsp; Date: ______________</div>
   </div>
   <div style="margin-top:6px;font-size:7.5pt;color:#555">VRA-MKT-002 &nbsp;|&nbsp; V R Alucast — Confidential</div>
+  <script>window.onload=()=>window.print()<\/script></body></html>`);
+  w.document.close();
+}
+
+// ══════════════════════════════════════════════════════
+//  MARKETING — QUOTATION MODULE
+// ══════════════════════════════════════════════════════
+
+const MKT_TOOLING_CATEGORIES = ['Die Cost','Machining Fixture','Check Gauge','Leak Test Instrument','Other Tooling / CAPEX'];
+
+// In-memory working copy of tooling rows for the quote currently open in the
+// editor, plus whether that quote is editable. Kept outside the DOM so rows
+// can be added/removed without losing values already typed into other rows.
+let _mktToolingItems = [];
+let _mktQuoteEditable = true;
+
+function num(v){ const n=parseFloat(v); return isNaN(n)?0:n; }
+function mktINR(n){ return num(n).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function gv(id){ const el=document.getElementById(id); return el?el.value:''; }
+function setTxt(id,v){ const el=document.getElementById(id); if(el) el.textContent=v; }
+
+function mktQuoteStatusBadge(s){
+  const m={Draft:'bd',Submitted:'bp',Approved:'ba',Rejected:'br',Superseded:'bs'};
+  return`<span class="badge ${m[s]||'bd'}">${s||'Draft'}</span>`;
+}
+function mktQuoteEditable(status){ return status==='Draft'||status==='Rejected'; }
+
+function mktQuoteDefaultInputs(){
+  return {
+    shotWeight:0, netWeight:0, meltingLossPct:0, rawMaterialCostPerKg:0, inventoryCarryingPct:0,
+    pdcTonnage:0, cavities:1, shotRate:0,
+    fettling:0, trimming:0, shotBlasting:0,
+    cncCycleTimeMin:0, cncCostPerHour:0, vmcCycleTimeMin:0, vmcCostPerHour:0,
+    drilling:0, leakTest:0, inspection:0,
+    castingRejectionPct:0, packing:0, transportation:0,
+    profitOverheadsPct:0.10, gstPct:0.18
+  };
+}
+
+// ── COST ENGINE — mirrors the "Process Quote" Excel sheet formulas exactly ──
+function mktCalcQuote(q){
+  const inp=q.inputs||{};
+  const netWeight=num(inp.netWeight);
+  const meltingLossPct=num(inp.meltingLossPct);
+  const totalProductWeight=netWeight+(netWeight*meltingLossPct);
+  const rawMaterialCostPerKg=num(inp.rawMaterialCostPerKg);
+  const inventoryCarryingPct=num(inp.inventoryCarryingPct);
+  const inventoryCarryingCost=totalProductWeight*rawMaterialCostPerKg*inventoryCarryingPct;
+  const totalRawMaterialCost=(rawMaterialCostPerKg*totalProductWeight)+inventoryCarryingCost; // (A)
+
+  const cavities=num(inp.cavities)||1;
+  const shotRate=num(inp.shotRate);
+  const actualShotRate=shotRate/cavities; // (B)
+
+  const cncCost=(num(inp.cncCostPerHour)/60)*num(inp.cncCycleTimeMin);
+  const vmcCost=(num(inp.vmcCostPerHour)/60)*num(inp.vmcCycleTimeMin);
+  const otherProcessCost=num(inp.fettling)+num(inp.trimming)+num(inp.shotBlasting)+cncCost+vmcCost+num(inp.drilling)+num(inp.leakTest)+num(inp.inspection); // (C)
+
+  const totalProcessCost=actualShotRate+otherProcessCost; // B+C
+  const castingRejectionAmt=actualShotRate*num(inp.castingRejectionPct);
+  const packing=num(inp.packing);
+  const transportation=num(inp.transportation);
+  const profitOverheadsAmt=totalProcessCost*num(inp.profitOverheadsPct);
+
+  const finalCostPerPart=totalProcessCost+castingRejectionAmt+packing+transportation+profitOverheadsAmt+totalRawMaterialCost;
+  const gstPct=num(inp.gstPct);
+  const finalCostWithGst=finalCostPerPart*(1+gstPct);
+
+  const toolingItems=q.toolingItems||[];
+  const toolingTotal=toolingItems.reduce((s,t)=>s+num(t.cost),0);
+  let toolingPerPiece=0, finalWithTooling=0;
+  if(q.amortizeEnabled && num(q.amortizeQty)>0){
+    toolingPerPiece=toolingTotal/num(q.amortizeQty);
+    finalWithTooling=finalCostPerPart+toolingPerPiece;
+  }
+
+  return {totalProductWeight,inventoryCarryingCost,totalRawMaterialCost,actualShotRate,cncCost,vmcCost,
+    otherProcessCost,totalProcessCost,castingRejectionAmt,profitOverheadsAmt,finalCostPerPart,finalCostWithGst,
+    toolingTotal,toolingPerPiece,finalWithTooling};
+}
+
+// ── NUMBERING — quote number stays fixed across all revisions of a quote;
+//    the `revision` field (0,1,2…) tracks which edition is being viewed ──
+async function nextQuoteFamily(enqNumber){
+  return `${enqNumber}-QT`;
+}
+
+// ── ENQUIRY ↔ QUOTATION LINK SELF-HEAL (mirrors mktSyncFeasibilityFlags) ──
+async function mktSyncQuotationFlags(enqs, quotesByEnq){
+  for(const e of enqs){
+    const list=quotesByEnq[e.id]||[];
+    const correctId=list.length>0?list[list.length-1].id:null; // highest revision
+    const correctDone=list.length>0;
+    if(e.quotationDone!==correctDone || e.quotationId!==correctId){
+      await db.mktEnquiries.update(e.id,{quotationDone:correctDone, quotationId:correctId}).catch(()=>{});
+    }
+  }
+}
+
+async function updateQcount(){
+  const quotes=await db.mktQuotations.toArray().catch(()=>[]);
+  const n=quotes.filter(q=>q.status==='Submitted').length;
+  const el=document.getElementById('qcount');
+  if(!el) return;
+  el.style.display=n?'inline':'none'; if(n) el.textContent=n;
+}
+
+// ══════════════════════════════════════════════════════
+//  QUOTATIONS LIST
+// ══════════════════════════════════════════════════════
+async function mktRenderQuotations(){
+  const quotes=await db.mktQuotations.toArray().catch(()=>[]);
+  const byFamily={};
+  quotes.forEach(q=>{ (byFamily[q.quoteFamily]=byFamily[q.quoteFamily]||[]).push(q); });
+  const current=Object.values(byFamily).map(list=>{
+    list.sort((a,b)=>a.revision-b.revision);
+    return list[list.length-1];
+  }).sort((a,b)=>b.id-a.id);
+
+  const counts={Draft:0,Submitted:0,Approved:0,Rejected:0};
+  current.forEach(q=>{ if(counts[q.status]!==undefined) counts[q.status]++; });
+
+  setC(`
+  <div class="ph">
+    <h2>💰 Quotations</h2>
+    <span class="muted" style="font-size:11px">Create a quote from an enquiry in the Enquiry Register</span>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px">
+    ${[['Draft',counts.Draft,'bd'],['Pending Approval',counts.Submitted,'bp'],['Approved',counts.Approved,'ba'],['Rejected',counts.Rejected,'br']].map(([l,n])=>`
+    <div class="card" style="padding:12px 16px">
+      <div style="font-size:22px;font-weight:800;color:var(--navy)">${n}</div>
+      <div class="muted" style="font-size:12px">${l}</div>
+    </div>`).join('')}
+  </div>
+  <div class="card">
+    <div class="ch"><h5>All Quotations — ${current.length} quote(s), ${quotes.length} total revision(s)</h5>
+      <span class="muted" style="font-size:11px">Showing current revision of each quote</span>
+    </div>
+    <div class="tw"><table>
+      <thead><tr>
+        <th>Quote No.</th><th>Rev</th><th>Date</th><th>Customer</th><th>Part</th>
+        <th>Final Cost/Part</th><th>Status</th><th>Created By</th><th>Approved By</th><th></th>
+      </tr></thead>
+      <tbody>${current.length===0
+        ?`<tr><td colspan="10" style="text-align:center;padding:30px;color:#9ca3af">No quotations yet. Create one from the Enquiry Register.</td></tr>`
+        :current.map(q=>{
+          const calc=mktCalcQuote(q);
+          const revCount=(byFamily[q.quoteFamily]||[]).length;
+          return`<tr>
+            <td class="mono" style="color:var(--navy);font-weight:700">${esc(q.quoteFamily)}</td>
+            <td style="text-align:center">Rev ${q.revision}</td>
+            <td style="white-space:nowrap">${q.date||'—'}</td>
+            <td><strong>${esc(q.customerName)}</strong></td>
+            <td>${esc(q.partName)}</td>
+            <td class="mono" style="font-weight:700">₹${mktINR(calc.finalCostPerPart)}</td>
+            <td>${mktQuoteStatusBadge(q.status)}</td>
+            <td style="font-size:11.5px">${esc(q.createdBy||'—')}</td>
+            <td style="font-size:11.5px">${esc(q.approvedBy||'—')}</td>
+            <td style="white-space:nowrap">
+              <button class="btn btn-o btn-xs" onclick="mktViewQuotation(${q.id})">Open</button>
+              ${revCount>1?`<button class="btn btn-o btn-xs" onclick="mktRevisionHistory('${esc(q.quoteFamily)}')">History</button>`:''}
+            </td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table></div>
+  </div>`);
+}
+
+// ══════════════════════════════════════════════════════
+//  CREATE QUOTATION (from Enquiry Register)
+// ══════════════════════════════════════════════════════
+async function mktCreateQuotation(enqId){
+  const e=await db.mktEnquiries.get(enqId);
+  if(!e){toast('Enquiry not found','d');return;}
+  if(e.quotationId){ mktViewQuotation(e.quotationId); return; }
+  const existing=await db.mktQuotations.where('enqId').equals(enqId).toArray().catch(()=>[]);
+  if(existing.length>0){
+    existing.sort((a,b)=>a.revision-b.revision);
+    const latest=existing[existing.length-1];
+    await db.mktEnquiries.update(enqId,{quotationDone:true, quotationId:latest.id});
+    mktViewQuotation(latest.id);
+    return;
+  }
+  const quoteFamily=await nextQuoteFamily(e.enqNumber);
+  const user=Auth.user;
+  const id=await db.mktQuotations.add({
+    enqId, quoteFamily,
+    revision:0, parentId:null, revisionReason:'',
+    status:'Draft',
+    date:new Date().toISOString().split('T')[0],
+    customerName:e.customerName, partName:e.partDetails, partNumber:e.partNumber||'', materialGrade:'',
+    inputs: mktQuoteDefaultInputs(),
+    toolingItems:[], amortizeEnabled:false, amortizeQty:0,
+    createdBy:user?.name||'', createdByUsername:user?.username||'', createdAt:new Date().toISOString(),
+    submittedBy:'', submittedAt:'',
+    approvedBy:'', approvedAt:'', approvalNotes:'',
+    rejectedBy:'', rejectedAt:'', rejectionNotes:'',
+    notes:''
+  });
+  await db.mktEnquiries.update(enqId,{quotationDone:true, quotationId:id});
+  mktViewQuotation(id);
+}
+
+// ══════════════════════════════════════════════════════
+//  TOOLING & CAPEX ROW HELPERS
+// ══════════════════════════════════════════════════════
+function mktToolingRowHtml(item, idx, editable){
+  if(!editable){
+    return`<tr>
+      <td>${esc(item.category)}</td>
+      <td>${esc(item.description||'')}</td>
+      <td style="text-align:right">₹${mktINR(item.cost)}</td>
+      <td></td>
+    </tr>`;
+  }
+  return`<tr>
+    <td><select class="fc tl-cat" data-idx="${idx}" style="font-size:12px">${MKT_TOOLING_CATEGORIES.map(c=>`<option ${item.category===c?'selected':''}>${c}</option>`).join('')}</select></td>
+    <td><input class="fc tl-desc" data-idx="${idx}" value="${esc(item.description||'')}" style="font-size:12px" placeholder="Description / vendor / spec"></td>
+    <td><input class="fc tl-cost" data-idx="${idx}" type="number" step="0.01" value="${item.cost||0}" style="font-size:12px" oninput="mktRecalcQuoteForm()"></td>
+    <td><button class="btn btn-r btn-xs" onclick="mktRemoveToolingRow(${idx})">🗑️</button></td>
+  </tr>`;
+}
+function mktSyncToolingFromDom(){
+  document.querySelectorAll('.tl-cat').forEach(el=>{ const i=+el.dataset.idx; if(_mktToolingItems[i]) _mktToolingItems[i].category=el.value; });
+  document.querySelectorAll('.tl-desc').forEach(el=>{ const i=+el.dataset.idx; if(_mktToolingItems[i]) _mktToolingItems[i].description=el.value; });
+  document.querySelectorAll('.tl-cost').forEach(el=>{ const i=+el.dataset.idx; if(_mktToolingItems[i]) _mktToolingItems[i].cost=num(el.value); });
+}
+function mktAddToolingRow(){
+  mktSyncToolingFromDom();
+  _mktToolingItems.push({category:MKT_TOOLING_CATEGORIES[0],description:'',cost:0});
+  mktRerenderToolingTable();
+}
+function mktRemoveToolingRow(idx){
+  mktSyncToolingFromDom();
+  _mktToolingItems.splice(idx,1);
+  mktRerenderToolingTable();
+}
+function mktRerenderToolingTable(){
+  const body=document.getElementById('tooling-rows-body');
+  if(body) body.innerHTML=_mktToolingItems.length
+    ?_mktToolingItems.map((it,i)=>mktToolingRowHtml(it,i,_mktQuoteEditable)).join('')
+    :`<tr><td colspan="4" style="text-align:center;color:#9ca3af;padding:10px">No tooling / CAPEX items added</td></tr>`;
+  mktRecalcQuoteForm();
+}
+
+// ── Gather all numeric process-cost inputs from the open form.
+//    Percentage fields are typed as whole numbers (e.g. 6 for 6%) and
+//    converted to fractions here for the calc engine / storage. ──
+function mktGatherQuoteInputs(){
+  return {
+    shotWeight:num(gv('q-shotWeight')), netWeight:num(gv('q-netWeight')),
+    meltingLossPct:num(gv('q-meltingLossPct'))/100,
+    rawMaterialCostPerKg:num(gv('q-rawMaterialCostPerKg')),
+    inventoryCarryingPct:num(gv('q-inventoryCarryingPct'))/100,
+    pdcTonnage:num(gv('q-pdcTonnage')), cavities:num(gv('q-cavities'))||1, shotRate:num(gv('q-shotRate')),
+    fettling:num(gv('q-fettling')), trimming:num(gv('q-trimming')), shotBlasting:num(gv('q-shotBlasting')),
+    cncCycleTimeMin:num(gv('q-cncCycleTimeMin')), cncCostPerHour:num(gv('q-cncCostPerHour')),
+    vmcCycleTimeMin:num(gv('q-vmcCycleTimeMin')), vmcCostPerHour:num(gv('q-vmcCostPerHour')),
+    drilling:num(gv('q-drilling')), leakTest:num(gv('q-leakTest')), inspection:num(gv('q-inspection')),
+    castingRejectionPct:num(gv('q-castingRejectionPct'))/100,
+    packing:num(gv('q-packing')), transportation:num(gv('q-transportation')),
+    profitOverheadsPct:num(gv('q-profitOverheadsPct'))/100,
+    gstPct:num(gv('q-gstPct'))/100,
+  };
+}
+
+function mktRecalcQuoteForm(){
+  mktSyncToolingFromDom();
+  const inputs=mktGatherQuoteInputs();
+  const amortizeEnabled=document.getElementById('q-amortize')?.checked||false;
+  const amortizeQty=num(gv('q-amortizeQty'));
+  const c=mktCalcQuote({inputs, toolingItems:_mktToolingItems, amortizeEnabled, amortizeQty});
+  setTxt('qc-totalWeight', c.totalProductWeight.toFixed(3)+' KG');
+  setTxt('qc-invCarry', '₹'+mktINR(c.inventoryCarryingCost));
+  setTxt('qc-rawMatTotal', '₹'+mktINR(c.totalRawMaterialCost));
+  setTxt('qc-shotRatePc', '₹'+mktINR(c.actualShotRate));
+  setTxt('qc-cncCost', '₹'+mktINR(c.cncCost));
+  setTxt('qc-vmcCost', '₹'+mktINR(c.vmcCost));
+  setTxt('qc-otherProcess', '₹'+mktINR(c.otherProcessCost));
+  setTxt('qc-totalProcess', '₹'+mktINR(c.totalProcessCost));
+  setTxt('qc-rejectionAmt', '₹'+mktINR(c.castingRejectionAmt));
+  setTxt('qc-profitAmt', '₹'+mktINR(c.profitOverheadsAmt));
+  setTxt('qc-finalCost', '₹'+mktINR(c.finalCostPerPart));
+  setTxt('qc-finalCostGst', '₹'+mktINR(c.finalCostWithGst));
+  setTxt('qc-toolingTotal', '₹'+mktINR(c.toolingTotal));
+  setTxt('qc-toolingPerPc', amortizeEnabled&&amortizeQty>0?('₹'+mktINR(c.toolingPerPiece)):'—');
+  setTxt('qc-finalWithTooling', amortizeEnabled&&amortizeQty>0?('₹'+mktINR(c.finalWithTooling)):'—');
+  return c;
+}
+
+// ══════════════════════════════════════════════════════
+//  VIEW / EDIT QUOTATION
+// ══════════════════════════════════════════════════════
+async function mktViewQuotation(id){
+  const q=await db.mktQuotations.get(id);
+  if(!q){toast('Quotation not found','d');return;}
+  const enq=q.enqId?await db.mktEnquiries.get(q.enqId).catch(()=>null):null;
+  const siblings=await db.mktQuotations.where('quoteFamily').equals(q.quoteFamily).toArray().catch(()=>[]);
+  const inp=q.inputs||mktQuoteDefaultInputs();
+  _mktToolingItems=JSON.parse(JSON.stringify(q.toolingItems||[]));
+  _mktQuoteEditable=mktQuoteEditable(q.status);
+  const editable=_mktQuoteEditable;
+  const user=Auth.user;
+  const isApprover=user?.role==='APPROVER';
+  const dis=editable?'':'disabled';
+
+  setC(`
+  <div class="ph">
+    <h2>💰 Quotation — <span class="mono" style="color:var(--navy)">${esc(q.quoteFamily)}</span> <span class="badge bd" style="margin-left:6px">Rev ${q.revision}</span> ${mktQuoteStatusBadge(q.status)}</h2>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      ${editable?`<button class="btn btn-g" onclick="mktSaveQuotation(${id})">💾 Save</button>`:''}
+      ${editable?`<button class="btn btn-p" onclick="mktSubmitQuotation(${id})">📤 Submit for Approval</button>`:''}
+      ${q.status==='Submitted'&&isApprover?`<button class="btn btn-g" onclick="mktApproveQuotation(${id})">✅ Approve</button>`:''}
+      ${q.status==='Submitted'&&isApprover?`<button class="btn btn-r" onclick="mktRejectQuotation(${id})">✗ Reject</button>`:''}
+      ${q.status==='Approved'?`<button class="btn btn-o" onclick="mktReviseQuotation(${id})">🔁 Create Revision</button>`:''}
+      <button class="btn btn-o" onclick="mktPrintQuotation(${id})">🖨️ Print</button>
+      ${siblings.length>1?`<button class="btn btn-o" onclick="mktRevisionHistory('${esc(q.quoteFamily)}')">🕘 History (${siblings.length})</button>`:''}
+      ${q.status==='Draft'?`<button class="btn btn-r" onclick="mktDeleteQuotation(${id})">🗑️ Delete Draft</button>`:''}
+      <button class="btn btn-o" onclick="nav('mkt-quotations')">← Quotations</button>
+    </div>
+  </div>
+
+  ${q.status==='Rejected'&&q.rejectionNotes?`<div class="alert al-d">✗ Rejected by ${esc(q.rejectedBy)}: ${esc(q.rejectionNotes)} — edit and resubmit when ready.</div>`:''}
+  ${q.status==='Superseded'?`<div class="alert al-w">This revision has been superseded by a later revision. It is kept for history only and can no longer be edited.</div>`:''}
+  ${q.revision>0?`<div class="alert al-w"><strong>Revision ${q.revision}</strong> of ${esc(q.quoteFamily)} — Reason: ${esc(q.revisionReason||'—')}${q.parentId?` &nbsp;·&nbsp; <a style="cursor:pointer;color:var(--navy);font-weight:600" onclick="mktViewQuotation(${q.parentId})">View Rev ${q.revision-1} →</a>`:''}</div>`:''}
+
+  <div class="card" style="margin-bottom:12px">
+    <div class="ch"><h5>Quotation Details</h5><span class="muted" style="font-size:11px">Linked Enquiry: ${enq?`<a style="cursor:pointer;color:var(--navy);font-weight:700" onclick="nav('mkt-enquiries')">${esc(enq.enqNumber)}</a>`:'—'}</span></div>
+    <div class="cb">
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
+        <div class="fg"><label class="lbl">Quote Number</label><input class="fc mono" value="${esc(q.quoteFamily)}" readonly style="background:#f5f7fd;color:var(--navy);font-weight:700"></div>
+        <div class="fg"><label class="lbl">Revision</label><input class="fc mono" value="Rev ${q.revision}" readonly style="background:#f5f7fd"></div>
+        <div class="fg"><label class="lbl">Date *</label><input class="fc" type="date" id="q-date" value="${q.date||''}" ${dis}></div>
+        <div class="fg"><label class="lbl">Customer *</label><input class="fc" id="q-customerName" value="${esc(q.customerName||'')}" ${dis}></div>
+        <div class="fg"><label class="lbl">Part Name *</label><input class="fc" id="q-partName" value="${esc(q.partName||'')}" ${dis}></div>
+        <div class="fg"><label class="lbl">Part Number</label><input class="fc mono" id="q-partNumber" value="${esc(q.partNumber||'')}" ${dis}></div>
+        <div class="fg"><label class="lbl">Material Grade</label><input class="fc" id="q-materialGrade" value="${esc(q.materialGrade||'')}" placeholder="e.g. ADC12" ${dis}></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:12px">
+    <div class="ch"><h5>Raw Material Cost (A)</h5></div>
+    <div class="cb">
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
+        <div class="fg"><label class="lbl">Shot Weight (KG)</label><input class="fc" id="q-shotWeight" type="number" step="0.001" value="${inp.shotWeight||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">Net Weight (KG)</label><input class="fc" id="q-netWeight" type="number" step="0.001" value="${inp.netWeight||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">Melting Loss (%)</label><input class="fc" id="q-meltingLossPct" type="number" step="0.01" value="${num(inp.meltingLossPct)*100}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">Raw Material Cost (INR/KG)</label><input class="fc" id="q-rawMaterialCostPerKg" type="number" step="0.01" value="${inp.rawMaterialCostPerKg||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">Inventory Carrying Cost (%)</label><input class="fc" id="q-inventoryCarryingPct" type="number" step="0.01" value="${num(inp.inventoryCarryingPct)*100}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">Total Product Weight</label><div class="mono" id="qc-totalWeight" style="font-weight:700">0.000 KG</div></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:4px;padding-top:10px;border-top:1px dashed var(--border)">
+        <div class="fg" style="margin-bottom:0"><label class="lbl">Inventory Carrying Cost (INR/part)</label><div class="mono" id="qc-invCarry" style="font-weight:700">₹0.00</div></div>
+        <div class="fg" style="margin-bottom:0"><label class="lbl">Total Raw Material Cost — A (INR/part)</label><div class="mono" id="qc-rawMatTotal" style="font-weight:700;color:var(--navy)">₹0.00</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:12px">
+    <div class="ch"><h5>PDC Shot Cost (B)</h5></div>
+    <div class="cb">
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
+        <div class="fg"><label class="lbl">PDC Machine Tonnage (TON)</label><input class="fc" id="q-pdcTonnage" type="number" value="${inp.pdcTonnage||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">No. of Cavities</label><input class="fc" id="q-cavities" type="number" min="1" value="${inp.cavities||1}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">Shot Rate (INR/Shot)</label><input class="fc" id="q-shotRate" type="number" step="0.01" value="${inp.shotRate||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+      </div>
+      <div class="fg" style="margin-bottom:0;margin-top:6px"><label class="lbl">Actual Shot Rate/Part — B (INR/part)</label><div class="mono" id="qc-shotRatePc" style="font-weight:700;color:var(--navy)">₹0.00</div></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:12px">
+    <div class="ch"><h5>Other Process Costs (C)</h5></div>
+    <div class="cb">
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
+        <div class="fg"><label class="lbl">Fettling (INR/part)</label><input class="fc" id="q-fettling" type="number" step="0.01" value="${inp.fettling||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">Trimming (INR/part)</label><input class="fc" id="q-trimming" type="number" step="0.01" value="${inp.trimming||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">Shot Blasting (INR/part)</label><input class="fc" id="q-shotBlasting" type="number" step="0.01" value="${inp.shotBlasting||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">CNC Cycle Time (minutes)</label><input class="fc" id="q-cncCycleTimeMin" type="number" step="0.01" value="${inp.cncCycleTimeMin||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">CNC Cost (INR/hour)</label><input class="fc" id="q-cncCostPerHour" type="number" step="0.01" value="${inp.cncCostPerHour||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">CNC Cost (INR/part)</label><div class="mono" id="qc-cncCost">₹0.00</div></div>
+        <div class="fg"><label class="lbl">VMC Cycle Time (minutes)</label><input class="fc" id="q-vmcCycleTimeMin" type="number" step="0.01" value="${inp.vmcCycleTimeMin||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">VMC Cost (INR/hour)</label><input class="fc" id="q-vmcCostPerHour" type="number" step="0.01" value="${inp.vmcCostPerHour||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">VMC Cost (INR/part)</label><div class="mono" id="qc-vmcCost">₹0.00</div></div>
+        <div class="fg"><label class="lbl">Drilling &amp; Counter Sunk (INR/part)</label><input class="fc" id="q-drilling" type="number" step="0.01" value="${inp.drilling||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">Leak Test (INR/part)</label><input class="fc" id="q-leakTest" type="number" step="0.01" value="${inp.leakTest||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">Inspection (INR/part)</label><input class="fc" id="q-inspection" type="number" step="0.01" value="${inp.inspection||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+      </div>
+      <div class="fg" style="margin-bottom:0;margin-top:6px"><label class="lbl">Total Other Process Cost — C (INR/part)</label><div class="mono" id="qc-otherProcess" style="font-weight:700;color:var(--navy)">₹0.00</div></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:12px">
+    <div class="ch" style="background:#f0f3f9"><h5>Final Cost Summary</h5></div>
+    <div class="cb">
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
+        <div class="fg"><label class="lbl">Total Process Cost (B+C)</label><div class="mono" id="qc-totalProcess">₹0.00</div></div>
+        <div class="fg"><label class="lbl">Casting Rejection (%)</label><input class="fc" id="q-castingRejectionPct" type="number" step="0.01" value="${num(inp.castingRejectionPct)*100}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">Casting Rejection Amount</label><div class="mono" id="qc-rejectionAmt">₹0.00</div></div>
+        <div class="fg"><label class="lbl">Packing (INR/part)</label><input class="fc" id="q-packing" type="number" step="0.01" value="${inp.packing||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">Transportation (INR/part)</label><input class="fc" id="q-transportation" type="number" step="0.01" value="${inp.transportation||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">Profit &amp; Overheads (%)</label><input class="fc" id="q-profitOverheadsPct" type="number" step="0.01" value="${num(inp.profitOverheadsPct)*100}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">Profit &amp; Overheads Amount</label><div class="mono" id="qc-profitAmt">₹0.00</div></div>
+        <div class="fg"><label class="lbl">GST (%) — informational</label><input class="fc" id="q-gstPct" type="number" step="0.01" value="${num(inp.gstPct)*100}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+      </div>
+      <div class="dvdr"></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+        <div><div class="lbl" style="margin-bottom:2px">FINAL PROCESS COST / PART</div><div class="mono" id="qc-finalCost" style="font-size:20px;font-weight:800;color:var(--navy)">₹0.00</div></div>
+        <div><div class="lbl" style="margin-bottom:2px">Incl. GST (informational)</div><div class="mono" id="qc-finalCostGst" style="font-size:15px;font-weight:700;color:var(--muted)">₹0.00</div></div>
+      </div>
+      <div class="muted" style="font-size:11px;margin-top:8px">Note: Raw material cost varies with market rate at the time of production. GST is applied additionally on the final cost per part.</div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:12px">
+    <div class="ch"><h5>Tooling &amp; CAPEX — Die, Fixtures, Gauges, Instruments</h5></div>
+    <div class="cb">
+      <div class="tw"><table>
+        <thead><tr><th>Category</th><th>Description</th><th style="width:150px">Cost (INR)</th><th style="width:40px"></th></tr></thead>
+        <tbody id="tooling-rows-body">${_mktToolingItems.length?_mktToolingItems.map((it,i)=>mktToolingRowHtml(it,i,editable)).join(''):`<tr><td colspan="4" style="text-align:center;color:#9ca3af;padding:10px">No tooling / CAPEX items added</td></tr>`}</tbody>
+      </table></div>
+      ${editable?`<button class="btn btn-o btn-sm" style="margin-top:8px" onclick="mktAddToolingRow()">+ Add Tooling Item</button>`:''}
+      <div class="dvdr"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;align-items:end">
+        <div class="fg" style="margin-bottom:0"><label class="lbl">Total Tooling &amp; CAPEX (one-time)</label><div class="mono" id="qc-toolingTotal" style="font-weight:700;color:var(--navy);font-size:15px">₹0.00</div></div>
+        <div class="fg" style="margin-bottom:0">
+          <label class="lbl" style="display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="q-amortize" ${q.amortizeEnabled?'checked':''} onchange="mktRecalcQuoteForm()" ${dis} style="width:14px;height:14px">
+            Amortize into per-piece price
+          </label>
+          <input class="fc" id="q-amortizeQty" type="number" placeholder="Expected quantity (pcs)" value="${q.amortizeQty||''}" oninput="mktRecalcQuoteForm()" ${dis} style="margin-top:4px">
+        </div>
+        <div class="fg" style="margin-bottom:0"><label class="lbl">Tooling Recovery / Part</label><div class="mono" id="qc-toolingPerPc" style="font-weight:700">—</div></div>
+      </div>
+      <div style="margin-top:10px;padding:10px;background:#f0f3f9;border-radius:8px">
+        <div class="lbl">FINAL PRICE / PART (incl. tooling recovery, if amortized)</div>
+        <div class="mono" id="qc-finalWithTooling" style="font-size:17px;font-weight:800;color:var(--navy)">—</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:12px">
+    <div class="ch"><h5>Remarks</h5></div>
+    <div class="cb"><input class="fc" id="q-notes" value="${esc(q.notes||'')}" placeholder="Any additional notes" ${dis}></div>
+  </div>
+
+  <div class="card" style="margin-bottom:12px">
+    <div class="ch"><h5>Approval Trail</h5></div>
+    <div class="cb">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;font-size:12.5px">
+        <div style="border:1px solid var(--border);border-radius:8px;padding:10px">
+          <div class="lbl">Created / Prepared By</div>
+          <div style="font-weight:700">${esc(q.createdBy||'—')}</div>
+          <div class="muted">${q.createdAt?new Date(q.createdAt).toLocaleString('en-IN'):'—'}</div>
+          ${q.submittedBy?`<div class="muted" style="margin-top:6px">Submitted: ${esc(q.submittedBy)} · ${q.submittedAt?new Date(q.submittedAt).toLocaleString('en-IN'):''}</div>`:''}
+        </div>
+        <div style="border:1px solid var(--border);border-radius:8px;padding:10px">
+          <div class="lbl">Approved By</div>
+          <div style="font-weight:700">${esc(q.approvedBy||'Pending')}</div>
+          <div class="muted">${q.approvedAt?new Date(q.approvedAt).toLocaleString('en-IN'):'—'}</div>
+          ${q.approvalNotes?`<div class="muted" style="margin-top:6px">Note: ${esc(q.approvalNotes)}</div>`:''}
+          ${q.rejectedBy?`<div style="color:#7f1d1d;margin-top:6px">Rejected by ${esc(q.rejectedBy)}: ${esc(q.rejectionNotes||'')}</div>`:''}
+        </div>
+      </div>
+      ${q.status==='Submitted'&&isApprover?`<div class="fg" style="margin-top:12px"><label class="lbl">Approval / Rejection Note</label><input class="fc" id="q-approval-notes" placeholder="Optional note for approval, required for rejection"></div>`:''}
+    </div>
+  </div>
+
+  <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px">
+    ${editable?`<button class="btn btn-g btn-sm" onclick="mktSaveQuotation(${id})">💾 Save All Changes</button>`:''}
+    <button class="btn btn-p btn-sm" onclick="mktPrintQuotation(${id})">🖨️ Print</button>
+  </div>`);
+
+  mktRecalcQuoteForm();
+}
+
+async function mktSaveQuotation(id, silent){
+  const q=await db.mktQuotations.get(id);
+  if(!q) return false;
+  if(!mktQuoteEditable(q.status)){ if(!silent) toast('Only Draft or Rejected quotations can be edited','d'); return false; }
+  const customerName=gv('q-customerName').trim();
+  const partName=gv('q-partName').trim();
+  if(!customerName||!partName){ if(!silent) toast('Customer and Part Name are required','d'); return false; }
+  mktSyncToolingFromDom();
+  const inputs=mktGatherQuoteInputs();
+  const amortizeEnabled=document.getElementById('q-amortize')?.checked||false;
+  const amortizeQty=num(gv('q-amortizeQty'));
+  await db.mktQuotations.update(id,{
+    date:gv('q-date'), customerName, partName,
+    partNumber:gv('q-partNumber').trim(),
+    materialGrade:gv('q-materialGrade').trim(),
+    inputs, toolingItems:_mktToolingItems, amortizeEnabled, amortizeQty,
+    notes:gv('q-notes').trim(),
+    updatedAt:new Date().toISOString()
+  });
+  if(!silent){ toast('✅ Quotation saved'); mktViewQuotation(id); }
+  return true;
+}
+
+async function mktSubmitQuotation(id){
+  const q=await db.mktQuotations.get(id);
+  if(!q) return;
+  if(!['Draft','Rejected'].includes(q.status)){ toast('Only Draft or Rejected quotations can be submitted','d'); return; }
+  if(!confirm(`Submit ${q.quoteFamily} (Rev ${q.revision}) for approval?`)) return;
+  const saved=await mktSaveQuotation(id, true);
+  if(saved===false) return;
+  const user=Auth.user;
+  await db.mktQuotations.update(id,{
+    status:'Submitted', submittedBy:user?.name||'', submittedAt:new Date().toISOString(),
+    rejectedBy:'', rejectedAt:'', rejectionNotes:''
+  });
+  toast('✅ Submitted for approval');
+  mktViewQuotation(id);
+  updateQcount();
+}
+
+async function mktApproveQuotation(id){
+  const user=Auth.user;
+  if(user?.role!=='APPROVER'){ toast('Only an Approver can approve quotations','d'); return; }
+  const q=await db.mktQuotations.get(id);
+  if(!q||q.status!=='Submitted'){ toast('Only submitted quotations can be approved','d'); return; }
+  if(!confirm(`Approve ${q.quoteFamily} (Rev ${q.revision})?`)) return;
+  const notes=(document.getElementById('q-approval-notes')?.value||'').trim();
+  await db.mktQuotations.update(id,{status:'Approved', approvedBy:user.name, approvedAt:new Date().toISOString(), approvalNotes:notes});
+  if(q.parentId){
+    const parent=await db.mktQuotations.get(q.parentId);
+    if(parent && parent.status!=='Superseded') await db.mktQuotations.update(parent.id,{status:'Superseded'});
+  }
+  toast('✅ Quotation approved');
+  mktViewQuotation(id);
+  updateQcount();
+}
+
+async function mktRejectQuotation(id){
+  const user=Auth.user;
+  if(user?.role!=='APPROVER'){ toast('Only an Approver can reject quotations','d'); return; }
+  const q=await db.mktQuotations.get(id);
+  if(!q||q.status!=='Submitted'){ toast('Only submitted quotations can be rejected','d'); return; }
+  const notes=(document.getElementById('q-approval-notes')?.value||'').trim();
+  if(!notes){ toast('Enter a reason for rejection','d'); return; }
+  if(!confirm(`Reject ${q.quoteFamily} (Rev ${q.revision})? It will go back to the creator for edits.`)) return;
+  await db.mktQuotations.update(id,{status:'Rejected', rejectedBy:user.name, rejectedAt:new Date().toISOString(), rejectionNotes:notes});
+  toast('Quotation rejected','d');
+  mktViewQuotation(id);
+  updateQcount();
+}
+
+async function mktReviseQuotation(id){
+  const user=Auth.user;
+  const q=await db.mktQuotations.get(id);
+  if(!q||q.status!=='Approved'){ toast('Only an Approved quotation can be revised','d'); return; }
+  const reason=prompt('Reason for this revision (e.g. material rate change, customer negotiation):');
+  if(!reason||!reason.trim()){ toast('Revision reason is required','d'); return; }
+  const newRec={
+    enqId:q.enqId, quoteFamily:q.quoteFamily,
+    revision:q.revision+1, parentId:q.id, revisionReason:reason.trim(),
+    status:'Draft',
+    date:new Date().toISOString().split('T')[0],
+    customerName:q.customerName, partName:q.partName, partNumber:q.partNumber, materialGrade:q.materialGrade,
+    inputs:{...q.inputs}, toolingItems:JSON.parse(JSON.stringify(q.toolingItems||[])),
+    amortizeEnabled:q.amortizeEnabled, amortizeQty:q.amortizeQty,
+    createdBy:user?.name||'', createdByUsername:user?.username||'', createdAt:new Date().toISOString(),
+    submittedBy:'', submittedAt:'',
+    approvedBy:'', approvedAt:'', approvalNotes:'',
+    rejectedBy:'', rejectedAt:'', rejectionNotes:'',
+    notes:''
+  };
+  const newId=await db.mktQuotations.add(newRec);
+  await db.mktQuotations.update(q.id,{status:'Superseded'});
+  await db.mktEnquiries.update(q.enqId,{quotationId:newId, quotationDone:true}).catch(()=>{});
+  toast(`✅ Revision ${newRec.revision} created`);
+  mktViewQuotation(newId);
+}
+
+async function mktDeleteQuotation(id){
+  const q=await db.mktQuotations.get(id);
+  if(!q) return;
+  if(q.status!=='Draft'){ toast('Only Draft quotations can be deleted — reject instead of deleting approval history','d'); return; }
+  if(!confirm(`Delete draft ${q.quoteFamily} Rev ${q.revision}? This cannot be undone.`)) return;
+  await db.mktQuotations.delete(id);
+  if(q.parentId){
+    const parent=await db.mktQuotations.get(q.parentId);
+    if(parent && parent.status==='Superseded') await db.mktQuotations.update(parent.id,{status:'Approved'});
+  }
+  toast('Draft deleted','d');
+  nav('mkt-quotations');
+}
+
+async function mktRevisionHistory(quoteFamily){
+  const all=await db.mktQuotations.where('quoteFamily').equals(quoteFamily).toArray().catch(()=>[]);
+  all.sort((a,b)=>a.revision-b.revision);
+  const ov=document.createElement('div');ov.className='overlay';ov.id='mkt-qhist-ov';
+  ov.innerHTML=`<div class="modal" style="width:760px;max-height:88vh;overflow-y:auto">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <h3>🕘 Revision History — <span class="mono" style="color:var(--navy)">${esc(quoteFamily)}</span></h3>
+      <button class="btn btn-o btn-sm" onclick="document.getElementById('mkt-qhist-ov').remove()">✕ Close</button>
+    </div>
+    <div class="tw"><table>
+      <thead><tr><th>Rev</th><th>Status</th><th>Date</th><th>Final Cost/Part</th><th>Created By</th><th>Approved/Rejected By</th><th>Reason for Revision</th><th></th></tr></thead>
+      <tbody>${all.map(q=>{
+        const calc=mktCalcQuote(q);
+        return`<tr>
+          <td style="text-align:center;font-weight:700">Rev ${q.revision}</td>
+          <td>${mktQuoteStatusBadge(q.status)}</td>
+          <td>${q.date||'—'}</td>
+          <td class="mono">₹${mktINR(calc.finalCostPerPart)}</td>
+          <td style="font-size:11.5px">${esc(q.createdBy||'—')}</td>
+          <td style="font-size:11.5px">${esc(q.approvedBy||q.rejectedBy||'—')}</td>
+          <td style="font-size:11.5px;color:var(--muted)">${esc(q.revisionReason||'—')}</td>
+          <td><button class="btn btn-o btn-xs" onclick="document.getElementById('mkt-qhist-ov').remove();mktViewQuotation(${q.id})">View</button></td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table></div>
+  </div>`;
+  document.body.appendChild(ov);
+}
+
+// ══════════════════════════════════════════════════════
+//  PRINT — QUOTATION
+// ══════════════════════════════════════════════════════
+async function mktPrintQuotation(id){
+  const q=await db.mktQuotations.get(id).catch(()=>null);
+  if(!q){toast('Not found','d');return;}
+  const inp=q.inputs||{};
+  const c=mktCalcQuote(q);
+  const today=new Date().toLocaleDateString('en-IN');
+  const toolingRows=(q.toolingItems||[]).map(t=>`<tr><td>${esc(t.category)}</td><td>${esc(t.description||'')}</td><td style="text-align:right">₹${mktINR(t.cost)}</td></tr>`).join('');
+
+  const w=window.open('','_blank');
+  w.document.write(`<!DOCTYPE html><html><head><title>${q.quoteFamily} Rev ${q.revision}</title>
+  <style>${mktPrintCSS()}</style></head><body>
+  <div class="pg-hdr">
+    <div><div class="co-name">V R ALUCAST</div><div class="co-sub">High Pressure Die Casting &nbsp;|&nbsp; Ichalkaranji</div></div>
+    <div><div class="rpt-title">QUOTATION</div><div class="rpt-sub">Marketing Department</div></div>
+    <div><div class="rpt-num">${q.quoteFamily} · Rev ${q.revision}</div><div style="font-size:7pt;text-align:right">${today}</div></div>
+  </div>
+
+  ${q.revision>0?`<div style="font-size:7.5pt;background:#fff4e5;border:1px solid #fcd34d;padding:5px 8px;margin-bottom:7px"><strong>Revision ${q.revision}</strong> — supersedes Rev ${q.revision-1}. Reason: ${esc(q.revisionReason||'—')}</div>`:''}
+
+  <div class="meta-grid" style="margin-bottom:7px">
+    <div class="mc" style="grid-column:span 2"><div class="ml">Customer</div><div class="mv">M/s ${esc(q.customerName)}</div></div>
+    <div class="mc"><div class="ml">Part Name</div><div class="mv">${esc(q.partName)}</div></div>
+    <div class="mc"><div class="ml">Part Number</div><div class="mv">${esc(q.partNumber||'—')}</div></div>
+    <div class="mc"><div class="ml">Grade</div><div class="mv">${esc(q.materialGrade||'—')}</div></div>
+    <div class="mc"><div class="ml">Date</div><div class="mv">${q.date||'—'}</div></div>
+  </div>
+
+  <div class="sec-bar">PROCESS COST BREAKDOWN</div>
+  <table class="dt" style="margin-bottom:8px">
+    <thead><tr><th>Description</th><th style="width:80px">Unit</th><th style="width:90px;text-align:right">Cost</th></tr></thead>
+    <tbody>
+      <tr><td>Shot Weight</td><td>KG</td><td style="text-align:right">${num(inp.shotWeight).toFixed(3)}</td></tr>
+      <tr><td>Net Weight</td><td>KG</td><td style="text-align:right">${num(inp.netWeight).toFixed(3)}</td></tr>
+      <tr><td>Total Product Weight (incl. melting loss ${(num(inp.meltingLossPct)*100).toFixed(1)}%)</td><td>KG</td><td style="text-align:right">${c.totalProductWeight.toFixed(3)}</td></tr>
+      <tr><td>Total Raw Material Cost (A)</td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.totalRawMaterialCost)}</td></tr>
+      <tr><td>Actual Shot Rate / Part (B)</td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.actualShotRate)}</td></tr>
+      <tr><td>Fettling</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.fettling)}</td></tr>
+      <tr><td>Trimming</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.trimming)}</td></tr>
+      <tr><td>Shot Blasting</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.shotBlasting)}</td></tr>
+      <tr><td>CNC</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.cncCost)}</td></tr>
+      <tr><td>VMC</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.vmcCost)}</td></tr>
+      <tr><td>Drilling &amp; Counter Sunk</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.drilling)}</td></tr>
+      <tr><td>Leak Test</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.leakTest)}</td></tr>
+      <tr><td>Inspection</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.inspection)}</td></tr>
+      <tr><td>Total Other Process Cost (C)</td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.otherProcessCost)}</td></tr>
+      <tr><td>Total Process Cost (B+C)</td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.totalProcessCost)}</td></tr>
+      <tr><td>Casting Rejection (${(num(inp.castingRejectionPct)*100).toFixed(1)}%)</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.castingRejectionAmt)}</td></tr>
+      <tr><td>Packing</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.packing)}</td></tr>
+      <tr><td>Transportation</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.transportation)}</td></tr>
+      <tr><td>Profit &amp; Overheads (${(num(inp.profitOverheadsPct)*100).toFixed(1)}%)</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.profitOverheadsAmt)}</td></tr>
+      <tr><td style="font-weight:bold;font-size:9pt">FINAL COST / PART</td><td>INR/PART</td><td style="text-align:right;font-weight:bold;font-size:9pt">₹${mktINR(c.finalCostPerPart)}</td></tr>
+    </tbody>
+  </table>
+
+  ${(q.toolingItems||[]).length?`
+  <div class="sec-bar">TOOLING &amp; CAPEX (ONE-TIME)</div>
+  <table class="dt" style="margin-bottom:4px">
+    <thead><tr><th>Category</th><th>Description</th><th style="width:90px;text-align:right">Cost</th></tr></thead>
+    <tbody>${toolingRows}
+      <tr><td colspan="2" style="text-align:right;font-weight:bold">Total Tooling &amp; CAPEX</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.toolingTotal)}</td></tr>
+    </tbody>
+  </table>
+  ${q.amortizeEnabled&&q.amortizeQty?`<div style="font-size:7.5pt;margin-bottom:8px">Amortized over ${q.amortizeQty} pcs &nbsp;→&nbsp; Tooling Recovery: <strong>₹${mktINR(c.toolingPerPiece)}/part</strong> &nbsp;|&nbsp; <strong>Final Price/Part incl. Tooling Recovery: ₹${mktINR(c.finalWithTooling)}</strong></div>`
+   :`<div style="font-size:7.5pt;margin-bottom:8px">Tooling cost quoted separately as a one-time development charge — not included in the per-piece price above.</div>`}
+  `:''}
+
+  <div class="sec-bar">NOTES</div>
+  <table class="dt" style="margin-bottom:8px"><tbody>
+    <tr><td>1. Raw material cost will vary and considered as per market rate at the time of production.</td></tr>
+    <tr><td>2. ${(num(inp.gstPct)*100).toFixed(0)}% GST applicable extra on final cost/part.</td></tr>
+    ${q.notes?`<tr><td>3. ${esc(q.notes)}</td></tr>`:''}
+  </tbody></table>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:8pt;margin-top:8px">
+    <div style="border:1px solid #000;padding:7px"><strong>Prepared By:</strong> ${esc(q.createdBy||'—')}<br><br>Signature: _________________________&nbsp;&nbsp;&nbsp; Date: ______________</div>
+    <div style="border:1px solid #000;padding:7px"><strong>Approved By:</strong> ${esc(q.approvedBy||'Pending Approval')}<br><br>Signature: _________________________&nbsp;&nbsp;&nbsp; Date: ______________</div>
+  </div>
+  <div style="margin-top:6px;font-size:7.5pt;color:#555">${q.quoteFamily} · Rev ${q.revision} &nbsp;|&nbsp; V R Alucast — Confidential</div>
   <script>window.onload=()=>window.print()<\/script></body></html>`);
   w.document.close();
 }

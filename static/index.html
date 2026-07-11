@@ -217,6 +217,7 @@ select.fc{cursor:pointer}
     <div class="sl-sec">Marketing</div>
     <a class="sl-item" data-view="mkt-enquiries" onclick="nav('mkt-enquiries')"><span class="ic">📋</span>Enquiry Register</a>
     <a class="sl-item" data-view="mkt-feasibility" onclick="nav('mkt-feasibility')"><span class="ic">🔍</span>Feasibility Reviews</a>
+    <a class="sl-item" id="nav-mkt-quotations" data-view="mkt-quotations" onclick="nav('mkt-quotations')"><span class="ic">💰</span>Quotations<span class="pc" id="qcount" style="display:none">0</span></a>
     <div class="sl-sec">HR & Training</div>
     <a class="sl-item" data-view="hr-employees" onclick="nav('hr-employees')"><span class="ic">👤</span>Employee Register</a>
     <a class="sl-item" data-view="hr-skillmatrix" onclick="nav('hr-skillmatrix')"><span class="ic">📊</span>Skill Matrix</a>
@@ -632,6 +633,7 @@ const db = {
   mktEnquiries:   makeTable('mktEnquiries'),
   mktFeasibility: makeTable('mktFeasibility'),
   mktFeasQns:     makeTable('mktFeasQns'),
+  mktQuotations:  makeTable('mktQuotations'),
   // Calibration
   calGauges:      makeTable('calGauges'),
   calRecords:     makeTable('calRecords'),
@@ -756,6 +758,7 @@ function showApp(){
   document.getElementById('nav-users').style.display=u.role==='APPROVER'?'flex':'none';
   loadAllTypes().then(()=>{
     nav('dashboard'); updatePcount(); startAutoBackup();
+    if(typeof updateQcount!=='undefined') updateQcount();
   });
 }
 
@@ -779,6 +782,7 @@ function nav(view,params=''){
     'hr-docsneeded':'Skill — Document Mapping',
     'mkt-enquiries':'Enquiry Register',
     'mkt-feasibility':'Feasibility Reviews',
+    'mkt-quotations':'Quotations',
     'pur-suppliers':'Supplier Register',
     'pur-approved':'Approved Supplier List',
     'pur-invoices':'Invoice / Delivery Register',
@@ -816,6 +820,7 @@ function nav(view,params=''){
     'hr-docsneeded':'Skill — Document Mapping',
     'mkt-enquiries':'Enquiry Register',
     'mkt-feasibility':'Feasibility Reviews',
+    'mkt-quotations':'Quotations',
     'pur-suppliers':'Supplier Register',
     'pur-approved':'Approved Supplier List',
     'pur-invoices':'Invoice / Delivery Register',
@@ -843,6 +848,7 @@ function nav(view,params=''){
     'hr-docsneeded':hrRenderDocsNeeded,
     'mkt-enquiries':mktRenderEnquiries,
     'mkt-feasibility':mktRenderFeasibility,
+    'mkt-quotations':mktRenderQuotations,
     'pur-suppliers':purRenderSuppliers,
     'pur-approved':purRenderApproved,
     'pur-invoices':purRenderInvoices,
@@ -966,6 +972,7 @@ window.views = {
   'cal-due':      typeof calRenderDue       !== 'undefined' ? calRenderDue       : null,
   'mkt-enquiries':typeof mktRenderEnquiries !== 'undefined' ? mktRenderEnquiries : null,
   'mkt-feasibility':typeof mktRenderFeasibility !== 'undefined' ? mktRenderFeasibility : null,
+  'mkt-quotations':typeof mktRenderQuotations !== 'undefined' ? mktRenderQuotations : null,
   'rm-labels':    typeof rmRenderLabels     !== 'undefined' ? rmRenderLabels     : null,
   'rm-register':  typeof rmRenderRegister   !== 'undefined' ? rmRenderRegister   : null,
   'qms2':         typeof QMS2 !== 'undefined' ? ()=>QMS2.renderDashboard() : null,
