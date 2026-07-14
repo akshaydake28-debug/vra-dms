@@ -619,7 +619,7 @@ QMS2_MODULES = [
     'qms2_cs_records','qms2_cs_results','qms2_images','qms2_cp_templates',
     'qms2_op_order',
     # Process Quality (PQ) modules
-    'pq_parts','pq_pfd_steps','pq_pfmea_rows','pq_cp_rows','pq_revisions',
+    'pq_parts','pq_pfd_steps','pq_pfmea_rows','pq_pfmea_templates','pq_cp_rows','pq_revisions',
 ]
 
 def qms2_flat(r):
@@ -972,12 +972,214 @@ def seed_pq():
 
     db.session.commit()
 
+
+# ══════════════════════════════════════════════════════
+#  PFMEA FAILURE-MODE LIBRARY (starter template)
+#  Generic, reusable failure modes keyed by process category.
+#  "Generate PFMEA from Process Flow" matches each PFD step's
+#  name against these categories (keyword match, a step can
+#  match more than one category, e.g. "Trimming / Fettling").
+#  Ratings are realistic starting points — always meant to be
+#  reviewed/edited per part, not used as-is.
+# ══════════════════════════════════════════════════════
+
+def seed_pq_pfmea_templates():
+    if GenericRecord.query.filter_by(module='pq_pfmea_templates').count() > 0:
+        return
+
+    def row(cat, function, mode, effect, sev, cause, occ, controls, det, action, resp, order):
+        return {
+            'processCategory': cat, 'function': function, 'failureMode': mode,
+            'failureEffect': effect, 'severity': sev, 'failureCause': cause,
+            'occurrence': occ, 'currentControls': controls, 'detection': det,
+            'rpn': sev * occ * det, 'recommendedAction': action,
+            'responsibility': resp, 'order': order,
+        }
+
+    TEMPLATE_ROWS = [
+        row('Raw Material Inspection',
+            'Verify chemical composition and quality of incoming material',
+            'Wrong grade or contaminated material accepted',
+            'Casting defects, poor mechanical properties, customer rejection',
+            8, 'No verification of CoC, supplier error, mix-up', 3,
+            'Visual inspection, CoC check, material traceability label', 4,
+            'Implement incoming spectroscopy check for every batch', 'QC Inspector', 1),
+        row('Raw Material Inspection',
+            'Confirm supplier Certificate of Conformance before release to stores',
+            'Missing or invalid CoC not detected',
+            'Non-conforming material used in production, traceability gap',
+            6, 'CoC not checked against PO, paperwork bypassed under schedule pressure', 3,
+            'CoC checklist at goods-in, batch hold until verified', 3,
+            'Add mandatory CoC field lock in incoming inspection record', 'Stores Incharge', 2),
+
+        row('Melting',
+            'Melt material to required temperature and composition',
+            'Temperature out of range (too high or too low)',
+            'Porosity, shrinkage, poor flow, casting defects',
+            7, 'Thermocouple failure, operator error, furnace malfunction', 3,
+            'Digital pyrometer, temperature log every 30 min', 3,
+            'Install automatic temperature alarm and interlock', 'Furnace Operator', 1),
+        row('Melting',
+            'Degas molten metal to remove hydrogen porosity',
+            'Insufficient degassing',
+            'Sub-surface porosity, part rejection at machining or customer end',
+            7, 'Degassing time too short, rotor speed incorrect', 4,
+            'Timed degassing cycle, visual dross check', 5,
+            'Density index test on each heat before casting', 'Furnace Operator', 2),
+        row('Melting',
+            'Maintain correct alloy composition in the furnace',
+            'Incorrect alloy / mixed grades charged',
+            'Off-spec mechanical properties, batch-wide rejection',
+            8, 'Grade mix-up at charging, returns not segregated by grade', 2,
+            'Colour-coded ingots, segregated storage by grade', 5,
+            'Spectrometer check on every heat before pour', 'Furnace Operator', 3),
+
+        row('Die Casting',
+            'Fill die cavity completely to produce a sound casting',
+            'Short shot / misrun',
+            'Incomplete part, 100% rejection',
+            9, 'Low metal temperature, low injection pressure, blocked gate', 3,
+            '100% visual check at machine, process parameter sheet', 2,
+            'SPC on injection pressure, temperature interlocks', 'Die Casting Operator', 1),
+        row('Die Casting',
+            'Maintain porosity-free structure in casting',
+            'Blow holes / porosity',
+            'Leakage, low strength, rejection at machining or pressure test',
+            8, 'Trapped air, high plunger speed in first phase, poor venting', 5,
+            'Shot profile monitoring, die vacuum system', 5,
+            'Introduce X-ray or density sampling plan for porosity', 'Process Engineer', 2),
+        row('Die Casting',
+            'Hold die temperature within process window',
+            'Die temperature out of range causing cold shut / soldering',
+            'Surface defects, die sticking, part rejection',
+            7, 'Inadequate die cooling, inconsistent cycle time', 4,
+            'Die thermal survey, cycle timer', 4,
+            'Add die temperature interlock tied to cycle start', 'Process Engineer', 3),
+
+        row('Trimming',
+            'Remove flash and gate material without damaging the part',
+            'Excess flash / gate not fully removed',
+            'Assembly interference, downstream tool damage',
+            5, 'Worn trim die, incorrect trim press setting', 4,
+            'Visual check at trim press, trim die PM schedule', 3,
+            'First-off check after every trim die change', 'Trim Press Operator', 1),
+        row('Trimming',
+            'Protect part surface and geometry during trimming',
+            'Part damage / dent from trim press mis-set',
+            'Cosmetic or functional rejection',
+            6, 'Trim press pressure too high, part mis-located in die', 3,
+            'Visual inspection post-trim', 3,
+            'Add locating pins / sensor to confirm part seating', 'Trim Press Operator', 2),
+
+        row('Fettling',
+            'Remove sharp edges and burrs left after trimming',
+            'Sharp edges / burrs not removed',
+            'Handling injury risk, assembly/sealing interference',
+            5, 'Manual fettling inconsistency, inadequate tooling', 4,
+            'Visual + touch check by operator', 3,
+            'Fettling work-instruction with reference photos at station', 'Fettling Operator', 1),
+        row('Fettling',
+            'Remove burrs without altering critical dimensions',
+            'Over-grinding causing dimension loss',
+            'Part out of tolerance, scrap',
+            6, 'Excessive manual grinding near critical features', 2,
+            'Dimension check on critical features after fettling', 4,
+            'Mark no-grind zones on fixture / part drawing', 'Fettling Operator', 2),
+
+        row('Shot Blasting',
+            'Clean casting surface of scale and oxide',
+            'Incomplete surface cleaning (scale/oxide remains)',
+            'Poor paint/coating adhesion, cosmetic rejection',
+            4, 'Insufficient blast time, worn media, shadowed areas', 4,
+            'Visual check after blasting', 4,
+            'Standardise blast cycle time and media replacement schedule', 'Shot Blast Operator', 1),
+        row('Shot Blasting',
+            'Achieve target surface finish without altering geometry',
+            'Excessive blasting causing surface roughness / dimension change',
+            'Surface finish out of spec, functional surface affected',
+            5, 'Blast time too long, media size/pressure incorrect', 2,
+            'Periodic profilometer check', 4,
+            'Define and lock blast parameters (time, pressure, media) per part', 'Process Engineer', 2),
+
+        row('Machining',
+            'Achieve dimensional tolerances per drawing',
+            'Dimensions out of tolerance',
+            'Assembly failure, customer rejection',
+            8, 'Tool wear, fixture error, incorrect program', 4,
+            'First-off inspection, periodic dimensional check', 3,
+            'SPC on critical dimensions, tool change frequency SOP', 'Machining Operator', 1),
+        row('Machining',
+            'Maintain tool integrity through the machining cycle',
+            'Tool breakage causing scrap or part damage',
+            'Part scrap, potential machine/fixture damage',
+            6, 'Tool life exceeded, excessive feed rate, hidden casting defect', 3,
+            'Tool life counter, operator monitoring', 4,
+            'Tool wear monitoring / automatic tool-life shutoff', 'Machining Operator', 2),
+        row('Machining',
+            'Run the correct CNC program and offsets for the part',
+            'Wrong program or offset loaded',
+            'Gross dimensional error, scrap, possible tool/machine crash',
+            8, 'Operator error, program not verified before cycle start', 2,
+            'Program verification checklist, first-off inspection', 5,
+            'Barcode/part-ID linked program selection (poka-yoke)', 'Machining Operator', 3),
+
+        row('Final Inspection',
+            'Detect and prevent defective parts from reaching the customer',
+            'Defective part passed to customer',
+            'Customer complaint, warranty claim, line stoppage',
+            9, 'Inspector error, inadequate sampling plan, gauge error', 2,
+            '100% visual, dimensional sampling per AQL', 3,
+            'Mistake-proof inspection with go/no-go gauges', 'QC Inspector', 1),
+        row('Final Inspection',
+            'Ensure part traceability marking is correct and legible',
+            'Incorrect or missing traceability marking',
+            'Loss of traceability, potential misidentification at customer',
+            5, 'Marking station skipped, wrong marking template used', 3,
+            'Visual check of marking at final inspection', 4,
+            'Add marking verification step to final inspection checklist', 'QC Inspector', 2),
+
+        row('Packing',
+            'Protect parts from damage during handling and transit',
+            'Wrong packaging leading to transit damage',
+            'Cosmetic/functional damage discovered at customer, complaint',
+            6, 'Wrong packaging spec used, inadequate cushioning', 3,
+            'Packing instruction at station, visual check before sealing', 4,
+            'Packing spec card attached to each part/order', 'Packing Operator', 1),
+        row('Packing',
+            'Pack correct quantity with correct label per order',
+            'Incorrect quantity or label mix-up',
+            'Wrong quantity/part shipped, customer complaint',
+            5, 'Manual count error, label mix-up between orders', 3,
+            'Count verification, label check against work order', 3,
+            'Weight-based quantity check or barcode scan at packing', 'Packing Operator', 2),
+
+        row('Dispatch',
+            'Ensure correct part is shipped to the correct customer',
+            'Wrong part or customer dispatched',
+            'Wrong shipment, customer line stoppage, cost of return logistics',
+            8, 'Similar-looking parts mixed up, dispatch address error', 2,
+            'Dispatch checklist, label vs. invoice cross-check', 4,
+            'Barcode scan match between part label and dispatch invoice', 'Dispatch Incharge', 1),
+        row('Dispatch',
+            'Ensure dispatch documentation accompanies every shipment',
+            'Missing dispatch documentation (packing list / CoA)',
+            'Customer receiving delay, compliance/audit non-conformance',
+            4, 'Document not printed/attached before vehicle leaves', 3,
+            'Dispatch checklist sign-off before gate pass', 3,
+            'Gate pass issued only after document checklist is signed', 'Dispatch Incharge', 2),
+    ]
+    for r in TEMPLATE_ROWS:
+        db.session.add(GenericRecord(module='pq_pfmea_templates', data=json.dumps(r)))
+    db.session.commit()
+    print("PFMEA failure-mode template library seeded")
+
 with app.app_context():
     try:
         db.create_all()
         seed_users()
         seed_qms2()
         seed_pq()
+        seed_pq_pfmea_templates()
         # Note: seed_defaults() removed — default data comes from backup restore
     except Exception as e:
         print(f"Startup warning: {e}")

@@ -1,7 +1,21 @@
 // Process Quality — Phase 1: Process Flow Diagram
 const PQ = (() => {
 
-  const _s = { partId: null, editMode: false, pending: {} };
+  const _s = { partId: null, editMode: false, pending: {}, pfmeaEditMode: false, pfmeaPending: {} };
+
+  // ── PFMEA generic failure-mode library: keyword match per process category ──
+  const PFMEA_CATEGORY_KEYWORDS = {
+    'Raw Material Inspection': ['raw material', 'incoming', 'receiving'],
+    'Melting':                 ['melt'],
+    'Die Casting':             ['die cast', 'casting'],
+    'Trimming':                ['trim'],
+    'Fettling':                ['fettl'],
+    'Shot Blasting':           ['shot blast', 'blasting'],
+    'Machining':               ['machin'],
+    'Final Inspection':        ['final inspection', 'final insp'],
+    'Packing':                 ['pack'],
+    'Dispatch':                ['dispatch', 'shipping'],
+  };
 
   // ── API ──────────────────────────────────────────────────────────────
   const api = async (method, url, body) => {
@@ -31,6 +45,12 @@ const PQ = (() => {
     return c < 90 ? String.fromCharCode(c + 1) : r + 'A';
   };
 
+  const rpnColor = rpn => rpn >= 200 ? { bg:'#fee2e2', fg:'#991b1b', label:'Critical' }
+                        : rpn >= 100 ? { bg:'#ffedd5', fg:'#c2410c', label:'High' }
+                        : rpn >= 50  ? { bg:'#fef9c3', fg:'#a16207', label:'Medium' }
+                        : rpn >= 25  ? { bg:'#ecfccb', fg:'#4d7c0f', label:'Low' }
+                                     : { bg:'#dcfce7', fg:'#166534', label:'OK' };
+
   // ══════════════════════════════════════════════════════════════════════
   //  DASHBOARD
   // ══════════════════════════════════════════════════════════════════════
@@ -52,13 +72,15 @@ const PQ = (() => {
         <td>${esc(p.partName||'')}</td>
         <td>${esc(p.material||'')}</td>
         <td>${statusBadge(p.pfdStatus)} <span class="mono" style="font-size:11px">Rev ${esc(p.pfdRev||'A')}</span></td>
+        <td>${statusBadge(p.pfmeaStatus)} <span class="mono" style="font-size:11px">Rev ${esc(p.pfmeaRev||'A')}</span></td>
         <td>
           <button class="btn btn-o btn-xs" onclick="PQ.openPfd(${p.id})">Open PFD</button>
+          <button class="btn btn-o btn-xs" style="margin-left:4px" onclick="PQ.openPfmea(${p.id})">Open PFMEA</button>
           <button class="btn btn-o btn-xs" style="margin-left:4px" onclick="PQ.editPart(${p.id})">Edit</button>
           <button class="btn btn-xs" style="background:#fee2e2;color:#b91c1c;border:1px solid #fecaca;margin-left:4px"
             onclick="PQ.deletePart(${p.id},'${esc(p.partNumber||'')}')">Delete</button>
         </td>
-      </tr>`).join('') || `<tr><td colspan="5" style="padding:28px;text-align:center;color:#9ca3af">
+      </tr>`).join('') || `<tr><td colspan="6" style="padding:28px;text-align:center;color:#9ca3af">
         No parts yet — <a style="color:#0d2f6e;font-weight:600;cursor:pointer" onclick="PQ.newPart()">create the first part →</a>
       </td></tr>`;
 
@@ -70,7 +92,7 @@ const PQ = (() => {
       <div class="card">
         <div class="tw">
           <table>
-            <thead><tr><th>Part No.</th><th>Part Name</th><th>Material</th><th>PFD Status</th><th></th></tr></thead>
+            <thead><tr><th>Part No.</th><th>Part Name</th><th>Material</th><th>PFD Status</th><th>PFMEA Status</th><th></th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
         </div>
@@ -166,13 +188,19 @@ const PQ = (() => {
       date:       document.getElementById('f-date').value,
       pfdRev:    'A',
       pfdStatus: 'Draft',
+      pfmeaRev:    'A',
+      pfmeaStatus: 'Draft',
     };
 
     if (pid) {
       // Preserve existing rev/status on edit
       const parts = await getAll('pq_parts');
       const existing = parts.find(p => p.id == pid);
-      if (existing) { data.pfdRev = existing.pfdRev; data.pfdStatus = existing.pfdStatus; }
+      if (existing) {
+        data.pfdRev = existing.pfdRev; data.pfdStatus = existing.pfdStatus;
+        data.pfmeaRev = existing.pfmeaRev; data.pfmeaStatus = existing.pfmeaStatus;
+        data.pfmeaDocNumber = existing.pfmeaDocNumber;
+      }
       data.id = pid;
       await save('pq_parts', data);
       toast('Part saved');
@@ -209,7 +237,20 @@ const PQ = (() => {
           sortOrder: s.sortOrder ?? s.id,
         });
       }
-      toast(`Part created with ${srcSteps.length} steps copied from template`);
+
+      // Copy PFMEA rows from template part too, so the new part starts
+      // with the same failure-mode analysis, ready to be tuned per part.
+      const allPfmeaRows = await getAll('pq_pfmea_rows');
+      const srcRows = allPfmeaRows
+        .filter(r => r.partId == tmplId)
+        .sort((a, b) => (a.order ?? a.id) - (b.order ?? b.id));
+      for (const r of srcRows) {
+        await save('pq_pfmea_rows', Object.assign({}, r, {
+          id: undefined, partId: newPid, status: 'Open', targetDate: '',
+        }));
+      }
+
+      toast(`Part created with ${srcSteps.length} steps and ${srcRows.length} PFMEA rows copied from template`);
     } else {
       toast('Part created — open PFD to add steps');
     }
@@ -724,6 +765,486 @@ const PQ = (() => {
     _renderPfd();
   }
 
+  // ══════════════════════════════════════════════════════════════════════
+  //  PFMEA — PROCESS FAILURE MODE & EFFECTS ANALYSIS
+  // ══════════════════════════════════════════════════════════════════════
+  async function openPfmea(pid) {
+    _s.partId = pid; _s.pfmeaEditMode = false; _s.pfmeaPending = {};
+    await _renderPfmea();
+  }
+
+  // Match a PFD step name against the failure-mode library. A step can
+  // match more than one category (e.g. "Trimming / Fettling").
+  function _matchPfmeaTemplates(stepName, templates) {
+    const s = String(stepName||'').toLowerCase();
+    const cats = Object.entries(PFMEA_CATEGORY_KEYWORDS)
+      .filter(([, kws]) => kws.some(k => s.includes(k)))
+      .map(([cat]) => cat);
+    if (!cats.length) return [];
+    return templates
+      .filter(t => cats.includes(t.processCategory))
+      .sort((a, b) => cats.indexOf(a.processCategory) - cats.indexOf(b.processCategory) || (a.order||0) - (b.order||0));
+  }
+
+  async function _ensurePfmeaDocNumber(part) {
+    if (part.pfmeaDocNumber) return part.pfmeaDocNumber;
+    const parts = await getAll('pq_parts');
+    const n = parts.filter(p => p.pfmeaDocNumber).length + 1;
+    const docNo = `VRA-PFMEA-${String(n).padStart(3, '0')}`;
+    await save('pq_parts', Object.assign({}, part, { id: part.id, pfmeaDocNumber: docNo }));
+    return docNo;
+  }
+
+  // Generate/refresh PFMEA rows from the current PFD. Idempotent per step —
+  // only adds rows for steps that don't already have any PFMEA row, so
+  // running it again after adding a new PFD step only fills the gap.
+  async function _generatePfmeaFromPfd() {
+    await _pfmeaFlushPending();
+    const [parts, allSteps, allRows, allTemplates] = await Promise.all([
+      getAll('pq_parts'), getAll('pq_pfd_steps'), getAll('pq_pfmea_rows'), getAll('pq_pfmea_templates')
+    ]);
+    const part = parts.find(p => p.id == _s.partId);
+    const steps = allSteps.filter(s => s.partId == _s.partId).sort((a, b) => (a.sortOrder ?? a.id) - (b.sortOrder ?? b.id));
+    if (!steps.length) { toast('No PFD steps yet — build the Process Flow Diagram first', 'e'); return; }
+
+    const existingRows = allRows.filter(r => r.partId == _s.partId);
+    const coveredOps = new Set(existingRows.map(r => r.opNumber));
+    let order = existingRows.length ? Math.max(...existingRows.map(r => r.order || 0)) : 0;
+    let added = 0;
+
+    for (const step of steps) {
+      if (coveredOps.has(step.opNumber)) continue;
+      const stepName = step.stepName || step.opName || '';
+      const matches = _matchPfmeaTemplates(stepName, allTemplates);
+      const toAdd = matches.length ? matches : [{
+        function: '', failureMode: '', failureEffect: '', severity: 1,
+        failureCause: '', occurrence: 1, currentControls: '', detection: 1,
+      }];
+      for (const t of toAdd) {
+        order += 1;
+        await save('pq_pfmea_rows', {
+          partId: _s.partId, opNumber: step.opNumber, processStep: stepName,
+          function: t.function || '', failureMode: t.failureMode || '', failureEffect: t.failureEffect || '',
+          severity: t.severity || 1, failureCause: t.failureCause || '', occurrence: t.occurrence || 1,
+          currentControls: t.currentControls || '', detection: t.detection || 1,
+          rpn: (t.severity||1) * (t.occurrence||1) * (t.detection||1),
+          recommendedAction: t.recommendedAction || '', responsibility: t.responsibility || '',
+          targetDate: '', status: 'Open', order,
+        });
+        added++;
+      }
+    }
+
+    if (added) await _ensurePfmeaDocNumber(part);
+    toast(added ? `Generated ${added} PFMEA row(s) from process flow` : 'All PFD steps already have PFMEA rows');
+    _renderPfmea();
+  }
+
+  async function _renderPfmea() {
+    const pid = _s.partId;
+    const [parts, allSteps, allRows, allRevs] = await Promise.all([
+      getAll('pq_parts'), getAll('pq_pfd_steps'), getAll('pq_pfmea_rows'), getAll('pq_revisions')
+    ]);
+    let part = parts.find(p => p.id == pid);
+    if (!part) { toast('Part not found', 'e'); renderDashboard(); return; }
+
+    const steps = allSteps.filter(s => s.partId == pid).sort((a, b) => (a.sortOrder ?? a.id) - (b.sortOrder ?? b.id));
+    const rows  = allRows.filter(r => r.partId == pid).sort((a, b) => (a.order ?? a.id) - (b.order ?? b.id));
+
+    // Any part with PFMEA rows (generated, manually added, or cloned from a
+    // template part) must carry a controlled document number.
+    if (rows.length && !part.pfmeaDocNumber) {
+      await _ensurePfmeaDocNumber(part);
+      part = (await getAll('pq_parts')).find(p => p.id == pid);
+    }
+
+    const locked   = !_s.pfmeaEditMode;
+    const status   = part.pfmeaStatus || 'Draft';
+    const released = status === 'Released';
+    const pending  = status === 'Pending Approval';
+    const docNo    = part.pfmeaDocNumber || '(not yet generated)';
+
+    const badge = released ? `<span class="badge ba">Released</span>`
+                : pending  ? `<span class="badge bp">⏳ Pending Approval</span>`
+                           : `<span class="badge bd">Draft</span>`;
+
+    const genBtn = `<button class="btn btn-o btn-sm" onclick="PQ._generatePfmeaFromPfd()">⚙️ Generate from Process Flow</button>`;
+    const actions = _s.pfmeaEditMode
+      ? `${genBtn}
+         <button class="btn btn-g btn-sm" onclick="PQ._pfmeaSaveAll()">📤 Submit for Approval</button>
+         <button class="btn btn-o btn-sm" onclick="PQ._pfmeaCancelEdit()">Cancel</button>`
+      : released
+        ? `<button class="btn btn-o btn-sm" onclick="window.print()">🖨 Print</button>
+           <button class="btn btn-o btn-sm" onclick="PQ._pfmeaNewRevision()">🔄 New Revision</button>`
+        : pending
+          ? `<button class="btn btn-o btn-sm" onclick="window.print()">🖨 Print</button>
+             <button class="btn btn-g btn-sm" onclick="PQ._pfmeaApprove()">✓ Approve</button>
+             <button class="btn btn-p btn-sm" onclick="PQ._pfmeaStartEdit()">✏️ Edit</button>`
+          : `${genBtn}
+             <button class="btn btn-o btn-sm" onclick="window.print()">🖨 Print</button>
+             <button class="btn btn-p btn-sm" onclick="PQ._pfmeaStartEdit()">✏️ Edit</button>`;
+
+    // Risk summary
+    const bands = { Critical:0, High:0, Medium:0, Low:0, OK:0 };
+    rows.forEach(r => { bands[rpnColor(r.rpn||0).label]++; });
+    const topRisks = [...rows].sort((a,b) => (b.rpn||0)-(a.rpn||0)).slice(0, 5);
+
+    setC(`
+      <style>
+        @media print {
+          .no-print { display:none !important; }
+          aside, .topbar { display:none !important; }
+          .main { margin:0 !important; }
+          .content { padding:8px !important; }
+        }
+        .btn-g { background:#16a34a;color:#fff;border:none; }
+        .btn-g:hover { background:#15803d; }
+        .pf-tbl { width:100%; border-collapse:collapse; font-size:11.5px; }
+        .pf-tbl th { background:#1e3a5f; color:#fff; padding:6px 8px; text-align:left; border:1px solid #ccc; font-size:10px; text-transform:uppercase; letter-spacing:.2px; }
+        .pf-tbl td { padding:5px 7px; border:1px solid #e5e7eb; vertical-align:top; }
+        .pf-in { width:100%; border:1px solid #c7d2fe; border-radius:3px; padding:3px 5px; font-size:11.5px; background:#fff; font-family:inherit; }
+        .pf-num { width:44px; text-align:center; border:1px solid #c7d2fe; border-radius:3px; padding:3px 2px; font-size:11.5px; }
+        .pf-rpn { display:inline-block; min-width:38px; text-align:center; font-weight:800; padding:3px 6px; border-radius:4px; font-size:12px; }
+      </style>
+
+      <div class="ph no-print">
+        <div>
+          <div style="display:flex;align-items:center;gap:7px;margin-bottom:3px">
+            <span class="tp" style="background:#b91c1c">PFMEA</span>
+            ${badge}
+            <span class="mono" style="color:#0d2f6e;font-weight:700">${esc(docNo)}</span>
+            <span style="color:#9ca3af">Rev ${esc(part.pfmeaRev||'A')}</span>
+          </div>
+          <h2>${esc(part.partName||'')} — PFMEA</h2>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <button class="btn btn-o btn-sm" onclick="PQ.renderDashboard()">← Parts</button>
+          ${actions}
+        </div>
+      </div>
+
+      ${_s.pfmeaEditMode ? `<div class="alert al-d no-print" style="margin-bottom:12px">
+        ✏️ Editing — rows can be freely added, edited or deleted while in Draft; nothing is logged until you click <b>Submit for Approval</b>.
+      </div>` : ''}
+      ${pending && !_s.pfmeaEditMode ? `<div class="alert al-w no-print" style="margin-bottom:12px">
+        ⏳ Pending approval. Click <b>Approve</b> to release it, or <b>Edit</b> to revise.
+      </div>` : ''}
+      ${!rows.length ? `<div class="alert al-d no-print" style="margin-bottom:12px">
+        No PFMEA rows yet. Click <b>Generate from Process Flow</b> to auto-create rows from the PFD, pre-filled from the standard failure-mode library where a process match is found.
+      </div>` : ''}
+
+      <!-- Document header -->
+      <div style="border:2px solid #0d2f6e;margin-bottom:16px;font-size:12px">
+        <table style="width:100%;border-collapse:collapse">
+          <tr>
+            <td rowspan="3" style="padding:10px 16px;border-right:1px solid #0d2f6e;width:180px;vertical-align:middle;text-align:center">
+              <div style="font-weight:800;font-size:15px;color:#0d2f6e;letter-spacing:.5px">V R ALUCAST</div>
+              <div style="font-size:9px;color:#6b7280;letter-spacing:.3px;margin-top:2px">QUALITY MANAGEMENT SYSTEM</div>
+            </td>
+            <td colspan="4" style="padding:8px 14px;border-bottom:1px solid #0d2f6e;font-weight:700;font-size:13px;color:#0d2f6e;text-align:center;letter-spacing:.5px">
+              PROCESS FAILURE MODE &amp; EFFECTS ANALYSIS (PFMEA)
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:6px 12px;border-right:1px solid #d1d5db;border-bottom:1px solid #d1d5db;width:22%">
+              <div style="font-size:9px;color:#6b7280;font-weight:600;text-transform:uppercase">Part Name</div>
+              <div style="font-weight:600;margin-top:2px">${esc(part.partName||'')}</div>
+            </td>
+            <td style="padding:6px 12px;border-right:1px solid #d1d5db;border-bottom:1px solid #d1d5db;width:22%">
+              <div style="font-size:9px;color:#6b7280;font-weight:600;text-transform:uppercase">Part Number</div>
+              <div style="font-weight:600;margin-top:2px">${esc(part.partNumber||'')}</div>
+            </td>
+            <td style="padding:6px 12px;border-right:1px solid #d1d5db;border-bottom:1px solid #d1d5db;width:22%">
+              <div style="font-size:9px;color:#6b7280;font-weight:600;text-transform:uppercase">Material</div>
+              <div style="font-weight:600;margin-top:2px">${esc(part.material||'')}</div>
+            </td>
+            <td style="padding:6px 12px;border-bottom:1px solid #d1d5db">
+              <div style="font-size:9px;color:#6b7280;font-weight:600;text-transform:uppercase">Date</div>
+              <div style="font-weight:600;margin-top:2px">${esc(part.date||'')}</div>
+            </td>
+          </tr>
+          <tr>
+            <td colspan="2" style="padding:6px 12px;border-right:1px solid #d1d5db">
+              <div style="font-size:9px;color:#6b7280;font-weight:600;text-transform:uppercase">Controlled Document Number</div>
+              <div style="font-weight:700;color:#0d2f6e;font-family:monospace;margin-top:2px">${esc(docNo)}</div>
+            </td>
+            <td style="padding:6px 12px;border-right:1px solid #d1d5db">
+              <div style="font-size:9px;color:#6b7280;font-weight:600;text-transform:uppercase">Revision</div>
+              <div style="font-weight:800;font-size:16px;color:#0d2f6e;margin-top:2px">${esc(part.pfmeaRev||'A')}</div>
+            </td>
+            <td style="padding:6px 12px">
+              <div style="font-size:9px;color:#6b7280;font-weight:600;text-transform:uppercase">Status</div>
+              <div style="font-weight:700;margin-top:2px;color:${released?'#16a34a':pending?'#d97706':'#6b7280'}">${esc(status)}</div>
+            </td>
+          </tr>
+        </table>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 240px;gap:14px;align-items:start">
+
+        <div>
+          ${steps.map(step => _buildPfmeaGroup(step, rows.filter(r => r.opNumber === step.opNumber), locked)).join('')}
+          ${!steps.length ? `<div class="card"><div class="cb" style="padding:24px;text-align:center;color:#9ca3af">No PFD steps — build the Process Flow Diagram first</div></div>` : ''}
+        </div>
+
+        <div class="no-print">
+          <div class="card" style="margin-bottom:14px">
+            <div class="ch"><h5>Risk Summary</h5></div>
+            <div class="cb" style="padding:11px">
+              ${['Critical','High','Medium','Low','OK'].map(label => {
+                const c = { Critical:'#991b1b', High:'#c2410c', Medium:'#a16207', Low:'#4d7c0f', OK:'#166534' }[label];
+                return `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:12.5px">
+                  <span style="color:${c};font-weight:600">${label}</span><span style="font-weight:700">${bands[label]}</span>
+                </div>`;
+              }).join('')}
+              <div style="border-top:1px solid #f0f3f9;margin-top:6px;padding-top:6px;font-size:12px;color:#6b7280">${rows.length} row(s) total</div>
+            </div>
+          </div>
+
+          ${topRisks.length ? `<div class="card" style="margin-bottom:14px">
+            <div class="ch"><h5>Top Risks</h5></div>
+            <div class="cb" style="padding:8px">
+              ${topRisks.map(r => {
+                const rc = rpnColor(r.rpn||0);
+                return `<div style="padding:6px 7px;background:#f9fafc;border-radius:6px;margin-bottom:3px;border:1px solid #e5e7eb">
+                  <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
+                    <span style="font-size:11px;font-weight:600;color:#374151">${esc(r.opNumber||'')} — ${esc((r.failureMode||'').slice(0,40))}</span>
+                    <span class="pf-rpn" style="background:${rc.bg};color:${rc.fg}">${r.rpn||0}</span>
+                  </div>
+                </div>`;
+              }).join('')}
+            </div>
+          </div>` : ''}
+
+          <div class="card">
+            <div class="ch"><h5>Revisions</h5></div>
+            <div class="cb" style="padding:8px">
+              ${(() => {
+                let entries = allRevs.filter(r => r.partId == pid && r.docType === 'pfmea').sort((a, b) => b.id - a.id);
+                if (!entries.length) {
+                  entries = [{ revision: part.pfmeaRev||'A', status: part.pfmeaStatus||'Draft', date: part.date||'', changedBy: part.approvedBy||'', changeSummary: 'Initial revision', _fallback: true }];
+                }
+                return entries.map(r => {
+                  const isCurrent = r._fallback || r.revision === part.pfmeaRev;
+                  const stBadge = r.status === 'Released'
+                    ? `<span class="badge ba" style="font-size:10px">Released</span>`
+                    : r.status === 'Pending Approval'
+                      ? `<span class="badge bp" style="font-size:10px">Pending</span>`
+                      : `<span class="badge bd" style="font-size:10px">Draft</span>`;
+                  return `<div style="padding:6px 7px;background:${isCurrent?'#edf1fb':'#f9fafc'};border-radius:6px;margin-bottom:3px;border:1px solid ${isCurrent?'#c5d0f0':'#e5e7eb'}">
+                    <div style="display:flex;justify-content:space-between;align-items:center">
+                      <span class="mono" style="font-weight:700;color:#0d2f6e">Rev ${esc(r.revision)}</span>
+                      ${stBadge}
+                    </div>
+                    <div class="muted" style="font-size:11px;margin-top:2px">${esc(r.date||'')} · ${esc(r.changedBy||'')}</div>
+                    ${r.changeSummary ? `<div style="font-size:11px;color:#374151;margin-top:2px">${esc(r.changeSummary)}</div>` : ''}
+                  </div>`;
+                }).join('');
+              })()}
+            </div>
+          </div>
+        </div>
+      </div>
+    `);
+  }
+
+  function _buildPfmeaGroup(step, rows, locked) {
+    const stepName = step.stepName || step.opName || '';
+    const body = rows.length ? rows.map(r => _buildPfmeaRow(r, locked)).join('') :
+      `<tr><td colspan="${locked?12:13}" style="text-align:center;color:#9ca3af;padding:10px">No failure modes for this step${locked?'':' — click "+ Add Failure Mode" below'}</td></tr>`;
+
+    return `
+      <div class="card" style="margin-bottom:14px">
+        <div class="ch" style="display:flex;justify-content:space-between;align-items:center">
+          <h5><span class="mono" style="color:#0d2f6e">${esc(step.opNumber||'')}</span> ${esc(stepName)}</h5>
+        </div>
+        <div class="cb" style="padding:0;overflow-x:auto">
+          <table class="pf-tbl">
+            <thead><tr>
+              <th style="min-width:140px">Function / Requirement</th>
+              <th style="min-width:140px">Potential Failure Mode</th>
+              <th style="min-width:140px">Potential Effect</th>
+              <th>S</th>
+              <th style="min-width:140px">Potential Cause</th>
+              <th>O</th>
+              <th style="min-width:140px">Current Controls</th>
+              <th>D</th>
+              <th>RPN</th>
+              <th style="min-width:140px">Recommended Action</th>
+              <th style="min-width:100px">Responsibility</th>
+              <th>Status</th>
+              ${locked ? '' : '<th></th>'}
+            </tr></thead>
+            <tbody>${body}</tbody>
+          </table>
+        </div>
+        ${!locked ? `<div style="padding:8px 12px">
+          <button class="btn btn-o btn-xs" onclick="PQ._addPfmeaRow('${esc(step.opNumber||'')}','${esc(stepName).replace(/'/g,"\\'")}')">+ Add Failure Mode</button>
+        </div>` : ''}
+      </div>`;
+  }
+
+  function _buildPfmeaRow(r, locked) {
+    const rc = rpnColor(r.rpn||0);
+    if (locked) {
+      return `<tr>
+        <td>${esc(r.function||'')}</td>
+        <td style="font-weight:600">${esc(r.failureMode||'')}</td>
+        <td>${esc(r.failureEffect||'')}</td>
+        <td style="text-align:center;font-weight:700">${r.severity||''}</td>
+        <td>${esc(r.failureCause||'')}</td>
+        <td style="text-align:center;font-weight:700">${r.occurrence||''}</td>
+        <td>${esc(r.currentControls||'')}</td>
+        <td style="text-align:center;font-weight:700">${r.detection||''}</td>
+        <td style="text-align:center"><span class="pf-rpn" style="background:${rc.bg};color:${rc.fg}">${r.rpn||0}</span></td>
+        <td>${esc(r.recommendedAction||'')}</td>
+        <td>${esc(r.responsibility||'')}</td>
+        <td>${esc(r.status||'Open')}</td>
+      </tr>`;
+    }
+    return `<tr>
+      <td><textarea class="pf-in" rows="2" oninput="PQ._pfmeaCell(${r.id},'function',this.value)">${esc(r.function||'')}</textarea></td>
+      <td><textarea class="pf-in" rows="2" oninput="PQ._pfmeaCell(${r.id},'failureMode',this.value)">${esc(r.failureMode||'')}</textarea></td>
+      <td><textarea class="pf-in" rows="2" oninput="PQ._pfmeaCell(${r.id},'failureEffect',this.value)">${esc(r.failureEffect||'')}</textarea></td>
+      <td><input type="number" min="1" max="10" class="pf-num" value="${r.severity||1}"
+            onchange="PQ._pfmeaRatingChange(${r.id},'severity',this.value)"></td>
+      <td><textarea class="pf-in" rows="2" oninput="PQ._pfmeaCell(${r.id},'failureCause',this.value)">${esc(r.failureCause||'')}</textarea></td>
+      <td><input type="number" min="1" max="10" class="pf-num" value="${r.occurrence||1}"
+            onchange="PQ._pfmeaRatingChange(${r.id},'occurrence',this.value)"></td>
+      <td><textarea class="pf-in" rows="2" oninput="PQ._pfmeaCell(${r.id},'currentControls',this.value)">${esc(r.currentControls||'')}</textarea></td>
+      <td><input type="number" min="1" max="10" class="pf-num" value="${r.detection||1}"
+            onchange="PQ._pfmeaRatingChange(${r.id},'detection',this.value)"></td>
+      <td style="text-align:center"><span id="pf-rpn-${r.id}" class="pf-rpn" style="background:${rc.bg};color:${rc.fg}">${r.rpn||0}</span></td>
+      <td><textarea class="pf-in" rows="2" oninput="PQ._pfmeaCell(${r.id},'recommendedAction',this.value)">${esc(r.recommendedAction||'')}</textarea></td>
+      <td><input class="pf-in" value="${esc(r.responsibility||'')}" oninput="PQ._pfmeaCell(${r.id},'responsibility',this.value)"></td>
+      <td>
+        <select class="pf-in" onchange="PQ._pfmeaCell(${r.id},'status',this.value)">
+          ${['Open','In Progress','Closed'].map(s => `<option value="${s}" ${((r.status||'Open')===s)?'selected':''}>${s}</option>`).join('')}
+        </select>
+      </td>
+      <td><button onclick="PQ._deletePfmeaRow(${r.id})" title="Delete"
+            style="border:1px solid #fca5a5;background:#fee2e2;color:#b91c1c;border-radius:3px;padding:2px 8px;cursor:pointer;font-size:12px">✕</button></td>
+    </tr>`;
+  }
+
+  function _pfmeaCell(id, field, val) {
+    if (!_s.pfmeaPending[id]) _s.pfmeaPending[id] = {};
+    _s.pfmeaPending[id][field] = val;
+  }
+
+  // Rating change (S/O/D) — update pending + recompute RPN live without a full re-render
+  function _pfmeaRatingChange(id, field, val) {
+    const n = Math.min(10, Math.max(1, parseInt(val, 10) || 1));
+    _pfmeaCell(id, field, n);
+    // recompute using pending values merged over nothing we can read back easily;
+    // read the three number inputs from the row directly via DOM
+    const row = document.getElementById(`pf-rpn-${id}`)?.closest('tr');
+    if (!row) return;
+    const nums = row.querySelectorAll('input[type=number]');
+    const s = parseInt(nums[0]?.value, 10) || 1;
+    const o = parseInt(nums[1]?.value, 10) || 1;
+    const d = parseInt(nums[2]?.value, 10) || 1;
+    const rpn = s * o * d;
+    _pfmeaCell(id, 'rpn', rpn);
+    const rc = rpnColor(rpn);
+    const badge = document.getElementById(`pf-rpn-${id}`);
+    if (badge) { badge.textContent = rpn; badge.style.background = rc.bg; badge.style.color = rc.fg; }
+  }
+
+  async function _pfmeaFlushPending() {
+    if (!Object.keys(_s.pfmeaPending).length) return;
+    const allRows = await getAll('pq_pfmea_rows');
+    for (const [id, changes] of Object.entries(_s.pfmeaPending)) {
+      const existing = allRows.find(r => r.id == id);
+      if (existing) await save('pq_pfmea_rows', Object.assign({}, existing, changes, { id: parseInt(id) }));
+    }
+    _s.pfmeaPending = {};
+  }
+
+  function _pfmeaStartEdit() { _s.pfmeaEditMode = true; _renderPfmea(); }
+  function _pfmeaCancelEdit() { _s.pfmeaEditMode = false; _s.pfmeaPending = {}; _renderPfmea(); }
+
+  async function _addPfmeaRow(opNumber, processStep) {
+    await _pfmeaFlushPending();
+    const allRows = await getAll('pq_pfmea_rows');
+    const existing = allRows.filter(r => r.partId == _s.partId);
+    const maxOrder = existing.length ? Math.max(...existing.map(r => r.order || 0)) : 0;
+    await save('pq_pfmea_rows', {
+      partId: _s.partId, opNumber, processStep,
+      function: '', failureMode: '', failureEffect: '', severity: 1,
+      failureCause: '', occurrence: 1, currentControls: '', detection: 1, rpn: 1,
+      recommendedAction: '', responsibility: '', targetDate: '', status: 'Open',
+      order: maxOrder + 1,
+    });
+    _s.pfmeaEditMode = true;
+    _renderPfmea();
+  }
+
+  async function _deletePfmeaRow(id) {
+    if (!confirm('Delete this failure mode row?')) return;
+    await remove('pq_pfmea_rows', id);
+    delete _s.pfmeaPending[id];
+    _renderPfmea();
+  }
+
+  async function _pfmeaSaveAll() {
+    const summary = prompt('Change summary (required):');
+    if (summary === null) return;
+    if (!summary.trim()) { toast('Please enter a change summary', 'e'); return; }
+
+    await _pfmeaFlushPending();
+
+    const parts  = await getAll('pq_parts');
+    const part   = parts.find(p => p.id == _s.partId);
+    const newRev = nextRev(part.pfmeaRev || 'A');
+
+    await save('pq_parts', Object.assign({}, part, {
+      id: part.id, pfmeaRev: newRev, pfmeaStatus: 'Pending Approval',
+      pfmeaLastChangeSummary: summary.trim(), pfmeaLastChangedAt: new Date().toISOString(),
+    }));
+
+    await save('pq_revisions', {
+      partId: _s.partId, docType: 'pfmea', revision: newRev, status: 'Pending Approval',
+      changeSummary: summary.trim(), changedBy: _userName(), date: _fmtDate(),
+    });
+
+    _s.pfmeaEditMode = false;
+    toast(`Submitted for approval — Rev ${newRev}`);
+    _renderPfmea();
+  }
+
+  async function _pfmeaApprove() {
+    if (!confirm('Approve and release this PFMEA?')) return;
+    const parts = await getAll('pq_parts');
+    const part  = parts.find(p => p.id == _s.partId);
+    const by    = _userName();
+
+    await save('pq_parts', Object.assign({}, part, {
+      id: part.id, pfmeaStatus: 'Released', pfmeaApprovedBy: by, pfmeaApprovedAt: new Date().toISOString(),
+    }));
+
+    const allRevs = await getAll('pq_revisions');
+    const revEntry = allRevs.find(r => r.partId == _s.partId && r.docType === 'pfmea' && r.revision === part.pfmeaRev);
+    if (revEntry) {
+      await save('pq_revisions', Object.assign({}, revEntry, {
+        id: revEntry.id, status: 'Released', approvedBy: by, approvedAt: _fmtDate(),
+      }));
+    }
+
+    toast('PFMEA Released');
+    _renderPfmea();
+  }
+
+  async function _pfmeaNewRevision() {
+    if (!confirm('Start a new revision? The current Released version will be superseded.')) return;
+    const parts = await getAll('pq_parts');
+    const part  = parts.find(p => p.id == _s.partId);
+    await save('pq_parts', Object.assign({}, part, { id: part.id, pfmeaStatus: 'Draft' }));
+    _s.pfmeaEditMode = true;
+    toast('New revision started — make your changes then Submit for Approval');
+    _renderPfmea();
+  }
+
   // ── Public ────────────────────────────────────────────────────────────
   return {
     renderDashboard,
@@ -732,5 +1253,8 @@ const PQ = (() => {
     _startEdit, _cancelEdit, _saveAll, _approve, _newRevision,
     _addStep, _addStepAfter, _deleteStep, _moveUp, _moveDown,
     _cell,
+    openPfmea, _generatePfmeaFromPfd,
+    _pfmeaStartEdit, _pfmeaCancelEdit, _pfmeaSaveAll, _pfmeaApprove, _pfmeaNewRevision,
+    _addPfmeaRow, _deletePfmeaRow, _pfmeaCell, _pfmeaRatingChange,
   };
 })();
