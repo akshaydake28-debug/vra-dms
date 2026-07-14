@@ -199,7 +199,6 @@ const PQ = (() => {
       if (existing) {
         data.pfdRev = existing.pfdRev; data.pfdStatus = existing.pfdStatus;
         data.pfmeaRev = existing.pfmeaRev; data.pfmeaStatus = existing.pfmeaStatus;
-        data.pfmeaDocNumber = existing.pfmeaDocNumber;
       }
       data.id = pid;
       await save('pq_parts', data);
@@ -786,15 +785,6 @@ const PQ = (() => {
       .sort((a, b) => cats.indexOf(a.processCategory) - cats.indexOf(b.processCategory) || (a.order||0) - (b.order||0));
   }
 
-  async function _ensurePfmeaDocNumber(part) {
-    if (part.pfmeaDocNumber) return part.pfmeaDocNumber;
-    const parts = await getAll('pq_parts');
-    const n = parts.filter(p => p.pfmeaDocNumber).length + 1;
-    const docNo = `VRA-PFMEA-${String(n).padStart(3, '0')}`;
-    await save('pq_parts', Object.assign({}, part, { id: part.id, pfmeaDocNumber: docNo }));
-    return docNo;
-  }
-
   // Generate/refresh PFMEA rows from the current PFD. Idempotent per step —
   // only adds rows for steps that don't already have any PFMEA row, so
   // running it again after adding a new PFD step only fills the gap.
@@ -835,7 +825,6 @@ const PQ = (() => {
       }
     }
 
-    if (added) await _ensurePfmeaDocNumber(part);
     toast(added ? `Generated ${added} PFMEA row(s) from process flow` : 'All PFD steps already have PFMEA rows');
     _renderPfmea();
   }
@@ -845,24 +834,17 @@ const PQ = (() => {
     const [parts, allSteps, allRows, allRevs] = await Promise.all([
       getAll('pq_parts'), getAll('pq_pfd_steps'), getAll('pq_pfmea_rows'), getAll('pq_revisions')
     ]);
-    let part = parts.find(p => p.id == pid);
+    const part = parts.find(p => p.id == pid);
     if (!part) { toast('Part not found', 'e'); renderDashboard(); return; }
 
     const steps = allSteps.filter(s => s.partId == pid).sort((a, b) => (a.sortOrder ?? a.id) - (b.sortOrder ?? b.id));
     const rows  = allRows.filter(r => r.partId == pid).sort((a, b) => (a.order ?? a.id) - (b.order ?? b.id));
 
-    // Any part with PFMEA rows (generated, manually added, or cloned from a
-    // template part) must carry a controlled document number.
-    if (rows.length && !part.pfmeaDocNumber) {
-      await _ensurePfmeaDocNumber(part);
-      part = (await getAll('pq_parts')).find(p => p.id == pid);
-    }
-
     const locked   = !_s.pfmeaEditMode;
     const status   = part.pfmeaStatus || 'Draft';
     const released = status === 'Released';
     const pending  = status === 'Pending Approval';
-    const docNo    = part.pfmeaDocNumber || '(not yet generated)';
+    const docNo    = `VRA-PFMEA-${part.partNumber||'XXX'}-REV-${part.pfmeaRev||'A'}`;
 
     const badge = released ? `<span class="badge ba">Released</span>`
                 : pending  ? `<span class="badge bp">⏳ Pending Approval</span>`
