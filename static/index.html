@@ -226,7 +226,10 @@ select.fc{cursor:pointer}
     <a class="sl-item" data-view="hr-schedule" onclick="nav('hr-schedule')"><span class="ic">📅</span>Training Schedule</a>
     <a class="sl-item" data-view="hr-docsneeded" onclick="nav('hr-docsneeded')"><span class="ic">📄</span>Skill — Doc Map</a>
     <div style="padding:6px 14px 2px;font-size:9.5px;font-weight:700;color:#4a6190;letter-spacing:.8px;text-transform:uppercase">Process Quality</div>
-    <a class="sl-item" data-view="pq" onclick="nav('pq')"><span class="ic">🏭</span>PFD / PFMEA / CP</a>
+    <a class="sl-item" data-view="pq-pfd" onclick="nav('pq-pfd')"><span class="ic">📐</span>Process Flow Diagrams</a>
+    <a class="sl-item" data-view="pq-pfmea" onclick="nav('pq-pfmea')"><span class="ic">⚠️</span>PFMEA</a>
+    <a class="sl-item" data-view="pq-cp" onclick="nav('pq-cp')"><span class="ic">🛡️</span>Control Plans</a>
+    <a class="sl-item" data-view="pq-cs" onclick="nav('pq-cs')"><span class="ic">📝</span>Check Sheets</a>
     <div class="sl-sec">Admin</div>
     <a class="sl-item" id="nav-users" data-view="users" onclick="nav('users')"><span class="ic">👥</span>Users</a>
     <a class="sl-item" data-view="doctypes" onclick="nav('doctypes')"><span class="ic">📂</span>Doc Types</a>
@@ -833,6 +836,10 @@ function nav(view,params=''){
   'qms2':'Process Quality — PFMEA',
   'qms2-cp':'Process Quality — Control Plans',
   'qms2-cs':'Process Quality — Checksheets',
+  'pq-pfd':'Process Quality — Process Flow Diagrams',
+  'pq-pfmea':'Process Quality — PFMEA',
+  'pq-cp':'Process Quality — Control Plans',
+  'pq-cs':'Process Quality — Check Sheets',
   };
   document.getElementById('topbar-title').textContent=titles[view]||'VRA DMS';
   const p=Object.fromEntries((params||'').split('&').filter(Boolean).map(s=>s.split('=')));
@@ -863,6 +870,10 @@ function nav(view,params=''){
 'qms2':    ()=>QMS2.renderDashboard(),
 'qms2-cp': ()=>QMS2.renderCpList(),
 'qms2-cs': ()=>QMS2.renderChecksheets(null),
+'pq-pfd':   ()=>PQ.renderPfdRegistry(),
+'pq-pfmea': ()=>PQ.renderPfmeaRegistry(),
+'pq-cp':    ()=>PQ.renderCpRegistry(),
+'pq-cs':    ()=>PQ.renderCsRegistry(),
   };
   if(views[view]) views[view](p);
   if(!['create','edit'].includes(view) && typeof setChatVisible !== 'undefined') setChatVisible(false);
