@@ -619,7 +619,7 @@ QMS2_MODULES = [
     'qms2_cs_records','qms2_cs_results','qms2_images','qms2_cp_templates',
     'qms2_op_order',
     # Process Quality (PQ) modules
-    'pq_parts','pq_pfd_steps','pq_pfmea_rows','pq_pfmea_templates','pq_cp_rows','pq_cp_templates','pq_revisions',
+    'pq_parts','pq_pfd_steps','pq_pfmea_rows','pq_pfmea_templates','pq_cp_rows','pq_cp_templates','pq_cs_records','pq_revisions',
 ]
 
 def qms2_flat(r):

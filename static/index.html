@@ -873,7 +873,7 @@ function nav(view,params=''){
 'pq-pfd':   ()=>PQ.renderPfdRegistry(),
 'pq-pfmea': ()=>PQ.renderPfmeaRegistry(),
 'pq-cp':    ()=>PQ.renderCpRegistry(),
-'pq-cs':    ()=>PQ.renderCsPlaceholder(),
+'pq-cs':    ()=>PQ.renderCsRegistry(),
   };
   if(views[view]) views[view](p);
   if(!['create','edit'].includes(view) && typeof setChatVisible !== 'undefined') setChatVisible(false);
