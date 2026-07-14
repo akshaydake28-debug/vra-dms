@@ -619,7 +619,7 @@ QMS2_MODULES = [
     'qms2_cs_records','qms2_cs_results','qms2_images','qms2_cp_templates',
     'qms2_op_order',
     # Process Quality (PQ) modules
-    'pq_parts','pq_pfd_steps','pq_pfmea_rows','pq_pfmea_templates','pq_cp_rows','pq_revisions',
+    'pq_parts','pq_pfd_steps','pq_pfmea_rows','pq_pfmea_templates','pq_cp_rows','pq_cp_templates','pq_cs_records','pq_revisions',
 ]
 
 def qms2_flat(r):
@@ -825,67 +825,8 @@ def seed_pq():
     for s in pfd_steps:
         db.session.add(GenericRecord(module='pq_pfd_steps', data=json.dumps(s)))
 
-    # PFMEA rows
-    pfmea_rows = [
-        {'partId': pid, 'opNumber': 'OP10', 'processStep': 'Raw Material Inspection',
-         'function': 'Verify chemical composition and quality of incoming ADC12 ingots',
-         'failureMode': 'Wrong grade or contaminated material accepted',
-         'failureEffect': 'Casting defects, poor mechanical properties, customer rejection',
-         'severity': 8, 'failureCause': 'No verification of CoC, supplier error, mix-up',
-         'occurrence': 3, 'currentControls': 'Visual inspection, CoC check, material traceability label',
-         'detection': 4, 'rpn': 96, 'recommendedAction': 'Implement incoming spectroscopy check for every batch',
-         'responsibility': 'QC Inspector', 'targetDate': '', 'status': 'Open', 'order': 1},
-        {'partId': pid, 'opNumber': 'OP20', 'processStep': 'Melting',
-         'function': 'Melt ADC12 ingots to required temperature and composition',
-         'failureMode': 'Temperature out of range (too high or too low)',
-         'failureEffect': 'Porosity, shrinkage, poor flow, casting defects',
-         'severity': 7, 'failureCause': 'Thermocouple failure, operator error, furnace malfunction',
-         'occurrence': 3, 'currentControls': 'Digital pyrometer, temperature log every 30 min',
-         'detection': 3, 'rpn': 63, 'recommendedAction': 'Install automatic temperature alarm and interlock',
-         'responsibility': 'Furnace Operator', 'targetDate': '', 'status': 'Open', 'order': 2},
-        {'partId': pid, 'opNumber': 'OP20', 'processStep': 'Melting',
-         'function': 'Degas molten metal to remove hydrogen porosity',
-         'failureMode': 'Insufficient degassing',
-         'failureEffect': 'Sub-surface porosity, part rejection at machining or customer end',
-         'severity': 7, 'failureCause': 'Degassing time too short, rotor speed incorrect',
-         'occurrence': 4, 'currentControls': 'Timed degassing cycle, visual dross check',
-         'detection': 5, 'rpn': 140, 'recommendedAction': 'Density index test on each heat before casting',
-         'responsibility': 'Furnace Operator', 'targetDate': '', 'status': 'Open', 'order': 3},
-        {'partId': pid, 'opNumber': 'OP30', 'processStep': 'Die Casting',
-         'function': 'Fill die cavity completely to produce sound casting',
-         'failureMode': 'Short shot / Misrun',
-         'failureEffect': 'Incomplete part, 100% rejection',
-         'severity': 9, 'failureCause': 'Low metal temperature, low injection pressure, blocked gate',
-         'occurrence': 3, 'currentControls': '100% visual check at machine, process parameter sheet',
-         'detection': 2, 'rpn': 54, 'recommendedAction': 'SPC on injection pressure, temperature interlocks',
-         'responsibility': 'Die Casting Operator', 'targetDate': '', 'status': 'Open', 'order': 4},
-        {'partId': pid, 'opNumber': 'OP30', 'processStep': 'Die Casting',
-         'function': 'Maintain porosity-free structure in casting',
-         'failureMode': 'Blow holes / Porosity',
-         'failureEffect': 'Leakage, low strength, rejection at machining or pressure test',
-         'severity': 8, 'failureCause': 'Trapped air, high plunger speed in first phase, poor venting',
-         'occurrence': 5, 'currentControls': 'Shot profile monitoring, die vacuum system',
-         'detection': 5, 'rpn': 200, 'recommendedAction': 'Introduce X-ray sampling plan for porosity',
-         'responsibility': 'Process Engineer', 'targetDate': '', 'status': 'Open', 'order': 5},
-        {'partId': pid, 'opNumber': 'OP70', 'processStep': 'Machining',
-         'function': 'Achieve dimensional tolerances per drawing',
-         'failureMode': 'Dimensions out of tolerance',
-         'failureEffect': 'Assembly failure, customer rejection',
-         'severity': 8, 'failureCause': 'Tool wear, fixture error, incorrect program',
-         'occurrence': 4, 'currentControls': 'First-off inspection, periodic dimensional check',
-         'detection': 3, 'rpn': 96, 'recommendedAction': 'SPC on critical dimensions, tool change frequency SOP',
-         'responsibility': 'Machining Operator', 'targetDate': '', 'status': 'Open', 'order': 6},
-        {'partId': pid, 'opNumber': 'OP80', 'processStep': 'Final Inspection',
-         'function': 'Detect and prevent defective parts from reaching customer',
-         'failureMode': 'Defective part passed to customer',
-         'failureEffect': 'Customer complaint, warranty claim, line stoppage',
-         'severity': 9, 'failureCause': 'Inspector error, inadequate sampling plan, gauge error',
-         'occurrence': 2, 'currentControls': '100% visual, dimensional sampling per AQL',
-         'detection': 3, 'rpn': 54, 'recommendedAction': 'Mistake-proof inspection with go/no-go gauges',
-         'responsibility': 'QC Inspector', 'targetDate': '', 'status': 'Open', 'order': 7},
-    ]
-    for row in pfmea_rows:
-        db.session.add(GenericRecord(module='pq_pfmea_rows', data=json.dumps(row)))
+    # PFMEA rows for the sample part are generated after the failure-mode
+    # template library is seeded — see seed_pq_pfmea_rows_for_sample_part().
 
     # Control Plan rows
     cp_rows = [
@@ -975,203 +916,318 @@ def seed_pq():
 
 # ══════════════════════════════════════════════════════
 #  PFMEA FAILURE-MODE LIBRARY (starter template)
-#  Generic, reusable failure modes keyed by process category.
-#  "Generate PFMEA from Process Flow" matches each PFD step's
-#  name against these categories (keyword match, a step can
-#  match more than one category, e.g. "Trimming / Fettling").
+#  Sourced from the VRA PFMEA Master Template (57 rows, OP10-OP100,
+#  10 process categories). "Generate PFMEA from Process Flow" matches
+#  each PFD step's name against these categories (keyword match, a
+#  step can match more than one category, e.g. "Trimming / Fettling").
 #  Ratings are realistic starting points — always meant to be
 #  reviewed/edited per part, not used as-is.
 # ══════════════════════════════════════════════════════
 
-def seed_pq_pfmea_templates():
-    if GenericRecord.query.filter_by(module='pq_pfmea_templates').count() > 0:
-        return
+PFMEA_TEMPLATE_ROW_COUNT = 57
 
-    def row(cat, function, mode, effect, sev, cause, occ, controls, det, action, resp, order):
+def seed_pq_pfmea_templates():
+    existing = GenericRecord.query.filter_by(module='pq_pfmea_templates').count()
+    if existing == PFMEA_TEMPLATE_ROW_COUNT:
+        return
+    if existing:
+        # Old/partial library from a previous version — replace with the
+        # current master-template-derived set.
+        GenericRecord.query.filter_by(module='pq_pfmea_templates').delete()
+        db.session.commit()
+
+    def row(cat, function, mode, effect, sev, cause, occ, prevention, detection_ctrl, det, action, resp, order):
         return {
             'processCategory': cat, 'function': function, 'failureMode': mode,
             'failureEffect': effect, 'severity': sev, 'failureCause': cause,
-            'occurrence': occ, 'currentControls': controls, 'detection': det,
-            'rpn': sev * occ * det, 'recommendedAction': action,
+            'occurrence': occ, 'preventionControls': prevention, 'detectionControls': detection_ctrl,
+            'detection': det, 'rpn': sev * occ * det, 'recommendedAction': action,
             'responsibility': resp, 'order': order,
         }
 
     TEMPLATE_ROWS = [
-        row('Raw Material Inspection',
-            'Verify chemical composition and quality of incoming material',
-            'Wrong grade or contaminated material accepted',
-            'Casting defects, poor mechanical properties, customer rejection',
-            8, 'No verification of CoC, supplier error, mix-up', 3,
-            'Visual inspection, CoC check, material traceability label', 4,
-            'Implement incoming spectroscopy check for every batch', 'QC Inspector', 1),
-        row('Raw Material Inspection',
-            'Confirm supplier Certificate of Conformance before release to stores',
-            'Missing or invalid CoC not detected',
-            'Non-conforming material used in production, traceability gap',
-            6, 'CoC not checked against PO, paperwork bypassed under schedule pressure', 3,
-            'CoC checklist at goods-in, batch hold until verified', 3,
-            'Add mandatory CoC field lock in incoming inspection record', 'Stores Incharge', 2),
-
-        row('Melting',
-            'Melt material to required temperature and composition',
-            'Temperature out of range (too high or too low)',
-            'Porosity, shrinkage, poor flow, casting defects',
-            7, 'Thermocouple failure, operator error, furnace malfunction', 3,
-            'Digital pyrometer, temperature log every 30 min', 3,
-            'Install automatic temperature alarm and interlock', 'Furnace Operator', 1),
-        row('Melting',
-            'Degas molten metal to remove hydrogen porosity',
-            'Insufficient degassing',
-            'Sub-surface porosity, part rejection at machining or customer end',
-            7, 'Degassing time too short, rotor speed incorrect', 4,
-            'Timed degassing cycle, visual dross check', 5,
-            'Density index test on each heat before casting', 'Furnace Operator', 2),
-        row('Melting',
-            'Maintain correct alloy composition in the furnace',
-            'Incorrect alloy / mixed grades charged',
-            'Off-spec mechanical properties, batch-wide rejection',
-            8, 'Grade mix-up at charging, returns not segregated by grade', 2,
-            'Colour-coded ingots, segregated storage by grade', 5,
-            'Spectrometer check on every heat before pour', 'Furnace Operator', 3),
-
-        row('Die Casting',
-            'Fill die cavity completely to produce a sound casting',
-            'Short shot / misrun',
-            'Incomplete part, 100% rejection',
-            9, 'Low metal temperature, low injection pressure, blocked gate', 3,
-            '100% visual check at machine, process parameter sheet', 2,
-            'SPC on injection pressure, temperature interlocks', 'Die Casting Operator', 1),
-        row('Die Casting',
-            'Maintain porosity-free structure in casting',
-            'Blow holes / porosity',
-            'Leakage, low strength, rejection at machining or pressure test',
-            8, 'Trapped air, high plunger speed in first phase, poor venting', 5,
-            'Shot profile monitoring, die vacuum system', 5,
-            'Introduce X-ray or density sampling plan for porosity', 'Process Engineer', 2),
-        row('Die Casting',
-            'Hold die temperature within process window',
-            'Die temperature out of range causing cold shut / soldering',
-            'Surface defects, die sticking, part rejection',
-            7, 'Inadequate die cooling, inconsistent cycle time', 4,
-            'Die thermal survey, cycle timer', 4,
-            'Add die temperature interlock tied to cycle start', 'Process Engineer', 3),
-
-        row('Trimming',
-            'Remove flash and gate material without damaging the part',
-            'Excess flash / gate not fully removed',
-            'Assembly interference, downstream tool damage',
-            5, 'Worn trim die, incorrect trim press setting', 4,
-            'Visual check at trim press, trim die PM schedule', 3,
-            'First-off check after every trim die change', 'Trim Press Operator', 1),
-        row('Trimming',
-            'Protect part surface and geometry during trimming',
-            'Part damage / dent from trim press mis-set',
-            'Cosmetic or functional rejection',
-            6, 'Trim press pressure too high, part mis-located in die', 3,
-            'Visual inspection post-trim', 3,
-            'Add locating pins / sensor to confirm part seating', 'Trim Press Operator', 2),
-
-        row('Fettling',
-            'Remove sharp edges and burrs left after trimming',
-            'Sharp edges / burrs not removed',
-            'Handling injury risk, assembly/sealing interference',
-            5, 'Manual fettling inconsistency, inadequate tooling', 4,
-            'Visual + touch check by operator', 3,
-            'Fettling work-instruction with reference photos at station', 'Fettling Operator', 1),
-        row('Fettling',
-            'Remove burrs without altering critical dimensions',
-            'Over-grinding causing dimension loss',
-            'Part out of tolerance, scrap',
-            6, 'Excessive manual grinding near critical features', 2,
-            'Dimension check on critical features after fettling', 4,
-            'Mark no-grind zones on fixture / part drawing', 'Fettling Operator', 2),
-
-        row('Shot Blasting',
-            'Clean casting surface of scale and oxide',
-            'Incomplete surface cleaning (scale/oxide remains)',
-            'Poor paint/coating adhesion, cosmetic rejection',
-            4, 'Insufficient blast time, worn media, shadowed areas', 4,
-            'Visual check after blasting', 4,
-            'Standardise blast cycle time and media replacement schedule', 'Shot Blast Operator', 1),
-        row('Shot Blasting',
-            'Achieve target surface finish without altering geometry',
-            'Excessive blasting causing surface roughness / dimension change',
-            'Surface finish out of spec, functional surface affected',
-            5, 'Blast time too long, media size/pressure incorrect', 2,
-            'Periodic profilometer check', 4,
-            'Define and lock blast parameters (time, pressure, media) per part', 'Process Engineer', 2),
-
-        row('Machining',
-            'Achieve dimensional tolerances per drawing',
-            'Dimensions out of tolerance',
-            'Assembly failure, customer rejection',
-            8, 'Tool wear, fixture error, incorrect program', 4,
-            'First-off inspection, periodic dimensional check', 3,
-            'SPC on critical dimensions, tool change frequency SOP', 'Machining Operator', 1),
-        row('Machining',
-            'Maintain tool integrity through the machining cycle',
-            'Tool breakage causing scrap or part damage',
-            'Part scrap, potential machine/fixture damage',
-            6, 'Tool life exceeded, excessive feed rate, hidden casting defect', 3,
-            'Tool life counter, operator monitoring', 4,
-            'Tool wear monitoring / automatic tool-life shutoff', 'Machining Operator', 2),
-        row('Machining',
-            'Run the correct CNC program and offsets for the part',
-            'Wrong program or offset loaded',
-            'Gross dimensional error, scrap, possible tool/machine crash',
-            8, 'Operator error, program not verified before cycle start', 2,
-            'Program verification checklist, first-off inspection', 5,
-            'Barcode/part-ID linked program selection (poka-yoke)', 'Machining Operator', 3),
-
-        row('Final Inspection',
-            'Detect and prevent defective parts from reaching the customer',
-            'Defective part passed to customer',
-            'Customer complaint, warranty claim, line stoppage',
-            9, 'Inspector error, inadequate sampling plan, gauge error', 2,
-            '100% visual, dimensional sampling per AQL', 3,
-            'Mistake-proof inspection with go/no-go gauges', 'QC Inspector', 1),
-        row('Final Inspection',
-            'Ensure part traceability marking is correct and legible',
-            'Incorrect or missing traceability marking',
-            'Loss of traceability, potential misidentification at customer',
-            5, 'Marking station skipped, wrong marking template used', 3,
-            'Visual check of marking at final inspection', 4,
-            'Add marking verification step to final inspection checklist', 'QC Inspector', 2),
-
-        row('Packing',
-            'Protect parts from damage during handling and transit',
-            'Wrong packaging leading to transit damage',
-            'Cosmetic/functional damage discovered at customer, complaint',
-            6, 'Wrong packaging spec used, inadequate cushioning', 3,
-            'Packing instruction at station, visual check before sealing', 4,
-            'Packing spec card attached to each part/order', 'Packing Operator', 1),
-        row('Packing',
-            'Pack correct quantity with correct label per order',
-            'Incorrect quantity or label mix-up',
-            'Wrong quantity/part shipped, customer complaint',
-            5, 'Manual count error, label mix-up between orders', 3,
-            'Count verification, label check against work order', 3,
-            'Weight-based quantity check or barcode scan at packing', 'Packing Operator', 2),
-
-        row('Dispatch',
-            'Ensure correct part is shipped to the correct customer',
-            'Wrong part or customer dispatched',
-            'Wrong shipment, customer line stoppage, cost of return logistics',
-            8, 'Similar-looking parts mixed up, dispatch address error', 2,
-            'Dispatch checklist, label vs. invoice cross-check', 4,
-            'Barcode scan match between part label and dispatch invoice', 'Dispatch Incharge', 1),
-        row('Dispatch',
-            'Ensure dispatch documentation accompanies every shipment',
-            'Missing dispatch documentation (packing list / CoA)',
-            'Customer receiving delay, compliance/audit non-conformance',
-            4, 'Document not printed/attached before vehicle leaves', 3,
-            'Dispatch checklist sign-off before gate pass', 3,
-            'Gate pass issued only after document checklist is signed', 'Dispatch Incharge', 2),
+        row('Raw Material Inspection', 'Verify incoming alloy grade matches purchase order', 'Wrong alloy grade received (e.g. LM24 instead of ADC12)', 'Non-conforming castings; customer rejection; scrap',
+            9, 'Supplier dispatch error; missing or incorrect CoC; no incoming check', 2, 'PO-linked CoC mandatory; colour-coded rack assignment', 'Spectrometer check on receipt (OES)', 2,
+            'Mandatory spectro on every heat before GRN; supplier corrective action', 'QC Inspector', 1),
+        row('Raw Material Inspection', 'Verify chemical composition is within grade limits', 'Chemical composition out of specified limits', 'Porosity, brittleness, hot tearing; casting rejection',
+            9, 'Supplier process deviation; recycled/mixed scrap in ingot', 3, 'Incoming spectro on every heat', 'OES Spectrometer — element-by-element check vs grade certificate', 2,
+            'Reject lot; quarantine; raise supplier NCR; re-test next lot', 'QC Inspector', 2),
+        row('Raw Material Inspection', 'Verify quantity and weight of incoming material', 'Short quantity or incorrect weight received', 'Production shortage; schedule disruption',
+            5, 'Supplier packing error; transit loss; weighbridge error', 2, 'Weigh all lots on platform scale; match against invoice', 'Platform weighing scale; compare with invoice', 2,
+            'Raise discrepancy report; inform purchase; do not consume until resolved', 'Stores In-charge', 3),
+        row('Raw Material Inspection', 'Ensure physical condition of ingots is acceptable', 'Cracked, corroded or contaminated ingots received', 'Inclusions in melt; porosity; machine damage',
+            7, 'Poor supplier handling; improper transit; no visual check at receipt', 2, '100% visual inspection on receipt; photographic record if rejected', 'Visual inspection under adequate lighting', 2,
+            'Reject damaged ingots; raise NCR; photograph and return', 'Stores In-charge', 4),
+        row('Raw Material Inspection', 'Ensure correct identification and segregated storage', 'Mixed grade storage; wrong colour code applied', 'Wrong grade used in production; mass rejection',
+            8, 'No segregation system; operator error in labelling', 2, 'Colour-coded racks per grade; GRN label before storage', 'Visual check of rack label and ingot colour code', 3,
+            'Re-segregate immediately; notify QC; spectro re-verify', 'Stores In-charge', 5),
+        row('Raw Material Inspection', 'Ensure incoming material is dry before storage', 'Wet or moisture-laden ingots stored or used', 'Steam explosion on charging; severe hydrogen porosity',
+            10, 'Open-air storage; rain exposure; no dryness check', 2, 'Covered storage mandatory; visual check before receipt', 'Visual inspection; touch test for moisture', 3,
+            'Quarantine wet material; dry before use; preheat returns', 'Stores In-charge', 6),
+        row('Melting', 'Melt aluminium ingot to correct temperature for casting', 'Metal temperature too low before casting', 'Cold shut; misrun; short fill; casting rejection',
+            8, 'Thermocouple failure; operator not monitoring; furnace malfunction', 3, 'Digital pyrometer check before every heat; alarm at minimum threshold', 'Digital pyrometer at furnace and at machine', 2,
+            'Do not cast; adjust furnace; verify temperature; re-check', 'Production In-charge', 1),
+        row('Melting', 'Melt aluminium ingot to correct temperature for casting', 'Metal temperature too high / overheating', 'Excessive oxide formation; hydrogen pickup; porosity; die erosion',
+            7, 'Furnace control failure; long idle holding time; inattentive operator', 2, 'Maximum temperature alarm; holding time limit per SOP', 'Digital pyrometer; furnace panel display', 3,
+            'Stop casting; skim oxides; lower temperature to range; check controls', 'Production In-charge', 2),
+        row('Melting', 'Maintain correct holding temperature between heats', 'Holding temperature drops below specified minimum', 'Premature solidification; cold shut; misrun',
+            7, 'Holding furnace power failure; broken thermocouple; power fluctuation', 2, 'Continuous thermocouple monitoring; low-temp alarm on holding furnace', 'Panel thermocouple; pyrometer spot check every 30 min', 3,
+            'Adjust holding furnace; verify temperature before next casting cycle', 'Operator', 3),
+        row('Melting', 'Remove dissolved hydrogen from melt by degassing', 'Inadequate degassing — insufficient time or flux', 'Hydrogen porosity in casting; rejection at final inspection or customer',
+            8, 'Operator skipped degassing; insufficient degassing time; wrong flux quantity', 3, 'Timed degassing per SOP; flux weighed before addition; log mandatory', 'Timer log; Reduced Pressure Test (RPT) sample if available', 4,
+            'Re-degas; do not cast; record deviation; RPT sample check', 'Production In-charge', 4),
+        row('Melting', 'Add correct flux quantity for dross removal', 'Wrong flux type or quantity added', 'Poor degassing; dross inclusions; surface defects in casting',
+            7, 'Operator estimating instead of weighing; wrong flux selected', 3, 'Flux weighed on scale; type and quantity per SOP; recorded in shift log', 'Weighing scale; shift log entry', 3,
+            'Add correct quantity; re-degas; record correction in log', 'Operator', 5),
+        row('Melting', 'Skim dross and oxides before casting', 'Skimming not done; oxide layer carried into casting', 'Oxide inclusions; hard spots; surface defects; rejection',
+            8, 'Operator skip; time pressure; no sign-off requirement', 3, 'Mandatory skim sign-off in shift log before every casting cycle', 'Visual inspection of melt surface before each ladle fill', 3,
+            'Re-skim; do not cast until surface is clean; supervisory sign-off', 'Operator', 6),
+        row('Melting', 'Verify chemical composition before casting', 'Composition not verified; out-of-spec metal cast', 'Non-conforming castings throughout batch; customer rejection',
+            9, 'Spectro skipped; assumed OK from supplier CoC alone', 2, 'Spectro result mandatory before first casting of each heat', 'OES Spectrometer result vs grade limits', 2,
+            'Halt casting; re-spectro; adjust with correct alloy; document', 'QC Inspector', 7),
+        row('Melting', 'Maintain ladle in clean and pre-heated condition', 'Cold or contaminated ladle used', 'Temperature drop on transfer; contamination; cold shut',
+            7, 'Ladle not pre-heated; residue from previous heat not cleaned', 2, 'Ladle pre-heat check before use; visual inspection; clean mandatory', 'Visual inspection; thermal check', 3,
+            'Pre-heat ladle; clean thoroughly; do not use if cracked', 'Operator', 8),
+        row('Melting', 'Maintain crucible in sound condition', 'Cracked or deteriorated crucible in use', 'Metal leakage; safety hazard; contamination of melt',
+            9, 'No crucible life tracking; no inspection schedule; thermal fatigue', 2, 'Daily visual inspection; crucible life counter; replace at crack', 'Visual inspection; physical tap test for cracks', 2,
+            'Replace immediately; stop production; safety check', 'Production In-charge', 9),
+        row('Die Casting', 'Produce casting with complete fill to drawing geometry', 'Short fill / misrun', 'Incomplete casting; 100% scrap; production loss',
+            8, 'Low metal temperature; insufficient shot pressure; blocked gate or vent', 3, 'Process parameter log; first-off inspection before production run', 'Visual inspection every casting; weight check', 2,
+            'Scrap casting; check metal temp, pressure, gate; adjust; re-run first-off', 'Production In-charge', 1),
+        row('Die Casting', 'Produce casting free of cold shut defects', 'Cold shut — visible seam / weak joint line on casting surface', 'Structural weakness; visual rejection; customer complaint',
+            8, 'Low metal temperature; slow injection speed; poor gate design', 3, 'Metal temp monitoring; injection speed parameter check', 'Visual inspection every casting under adequate lighting', 3,
+            'Scrap; increase metal temperature; review injection speed', 'Production In-charge', 2),
+        row('Die Casting', 'Produce casting free of internal and surface porosity', 'Porosity — gas, shrinkage, or hydrogen', 'Leak path; structural failure; machining exposure; customer rejection',
+            9, 'Trapped air; inadequate venting; hydrogen in melt; shrinkage', 4, 'Vacuum system; optimised vent design; degassing; intensification pressure', 'Visual on every casting; machining exposure check; X-ray if specified', 4,
+            'Scrap; review venting; increase intensification pressure; check degassing', 'Production In-charge', 3),
+        row('Die Casting', 'Maintain correct clamping force to prevent flash', 'Excessive flash on parting line and at die inserts', 'Extra material requiring trimming; dimensional risk; die damage',
+            5, 'Insufficient clamping tonnage; worn parting line; damaged die face', 3, 'Clamping force set per die design requirement; die inspection at change', 'Visual every casting; parting line gap check with feeler gauge', 2,
+            'Check clamping force; inspect parting line; shim or refurb die face', 'Die Setter', 4),
+        row('Die Casting', 'Maintain correct metal temperature at point of injection', 'Metal temperature out of range at shot sleeve', 'Cold shut / porosity / misrun depending on direction of deviation',
+            8, 'Long delay between ladle fill and shot; no machine-side monitoring', 3, 'Pyrometer check every 10 shots at machine; mandatory log', 'Digital pyrometer at machine; process parameter record', 3,
+            'Stop; adjust; verify temperature; re-run first-off before continuing', 'Operator', 5),
+        row('Die Casting', 'Maintain correct die temperature before and during production', 'Die too cold at start of run — below minimum operating temperature', 'Cold shut; surface defects; dimension variation on first shots',
+            7, 'Insufficient warm-up shots; no die temperature verification procedure', 3, 'Minimum warm-up shots defined in process sheet; pyrometer verification', 'IR pyrometer on fixed and moving half; temperature log', 3,
+            'Additional warm-up shots; re-check temperature; first-off after warm-up', 'Operator', 6),
+        row('Die Casting', 'Maintain correct die temperature during sustained production', 'Die overheating — above maximum operating temperature', 'Die soldering; sticking; surface defects; accelerated die wear',
+            7, 'Cooling channel blocked; insufficient die spray; high cycle rate', 3, 'Cooling water flow check; die spray timing and dilution per SOP', 'IR pyrometer; visual for die soldering / drag marks', 3,
+            'Increase die spray; check cooling channels; reduce cycle rate if needed', 'Operator', 7),
+        row('Die Casting', 'Apply correct die lubrication at correct spray pattern', 'Insufficient or uneven die lubrication', 'Sticking; die soldering; surface defects; premature die wear',
+            7, 'Blocked nozzle; wrong dilution ratio; spray timer misadjusted', 3, 'Spray pattern visual check; dilution ratio log; nozzle inspection at shift start', 'Visual spray coverage check each cycle; dilution ratio measurement', 3,
+            'Clean/replace nozzle; adjust spray timer; re-check coverage', 'Operator', 8),
+        row('Die Casting', 'Maintain plunger tip in correct condition', 'Worn or cracked plunger tip', 'Metal leakback; inconsistent shot weight; porosity',
+            7, 'No plunger tip life tracking; delayed replacement; no inspection schedule', 3, 'Plunger tip life counter; inspection at every die change', 'Visual inspection at die change; shot weight monitoring', 3,
+            'Replace plunger tip; monitor shot weight for first 10 shots after replacement', 'Die Setter', 9),
+        row('Die Casting', 'Maintain die vents in clear and functional condition', 'Blocked vents — metal or die coat buildup', 'Trapped air; gas porosity; incomplete fill',
+            8, 'No vent cleaning schedule; metal splash into vents', 3, 'Vent cleaning at every die change; visual inspection before closing', 'Visual inspection of vents before die close; casting porosity monitoring', 4,
+            'Clean vents; check vacuum system if fitted; run trial shots before production', 'Die Setter', 10),
+        row('Die Casting', 'Maintain die cavity in correct dimensional condition', 'Die cavity wear — dimensional drift over die life', 'Out-of-tolerance castings; customer assembly failures',
+            8, 'No die life tracking; no scheduled inspection; abrasive metal flow', 3, 'Die shot counter; scheduled cavity inspection at defined intervals', 'Dimensional check on castings; CMM/Vernier periodic measurement', 4,
+            'Dimensional check on castings; die repair or replacement when out of tolerance', 'Tool Room / QC', 11),
+        row('Die Casting', 'Produce casting to all drawing dimensions', 'Critical dimension out of tolerance', 'Assembly failure at customer; batch rejection; warranty claim',
+            9, 'Die wear; thermal expansion; wrong setup; damaged insert', 2, 'First-off mandatory; periodic dimensional check per control plan', 'CMM / Vernier caliper / go-no-go gauge per drawing requirement', 3,
+            'Stop production; 100% inspect batch; adjust die or process; supervisor sign-off', 'QC Inspector', 12),
+        row('Trimming', 'Remove runner, gates and overflow completely from casting', 'Incomplete runner or gate removal — stub remaining', 'Assembly interference at customer; rejection; rework',
+            7, 'Worn trim die; casting mislocated in die; operator skip', 2, '100% visual after trimming; go/no-go gauge for gate stub height', 'Visual + go/no-go gauge at gate locations', 2,
+            'Re-trim; inspect trim die; replace if worn; raise NCR if repeated', 'Operator', 1),
+        row('Trimming', 'Remove all flash from casting surfaces', 'Flash not fully removed on functional or mating surfaces', 'Assembly interference; cosmetic rejection; customer complaint',
+            6, 'Operator miss; complex geometry; insufficient fettling after trim', 3, 'WI with marked flash locations; 100% visual + tactile check', '100% visual + touch on all parting lines and flash areas', 3,
+            'Re-fettle; document location of miss; update WI if new flash area found', 'Operator', 2),
+        row('Trimming', 'Trim casting without introducing new damage', 'Casting cracked or damaged during trimming operation', 'Structural failure; scrap; dimensional distortion',
+            8, 'Casting still hot; excessive press force; wrong die clearance; misloading', 2, 'Minimum cooling time before trimming defined in SOP; die clearance check', 'Visual inspection after every trim; crack detection if critical part', 2,
+            'Scrap; review cooling time; inspect die clearance; operator retraining', 'Production In-charge', 3),
+        row('Trimming', 'Load casting correctly in trim die every cycle', 'Casting incorrectly loaded in trim die', 'Wrong area trimmed; casting damage; die damage; scrap',
+            8, 'No locating pins; similar-looking casting faces; operator error', 2, 'Locating pins on trim die (poka-yoke); visual loading check before stroke', 'Visual check of casting seating before every press stroke', 2,
+            'Stop; re-seat; inspect die; add poka-yoke if not present', 'Die Setter', 4),
+        row('Trimming', 'Maintain trim die in correct condition', 'Trim die worn, chipped or misaligned', 'Inconsistent trimming; casting damage; flash not removed',
+            7, 'No trim die inspection schedule; no die life tracking', 3, 'Trim die inspection at defined intervals; die life counter', 'Visual inspection at shift start and after every die change', 3,
+            'Sharpen or replace die; raise work order to tool room', 'Tool Room', 5),
+        row('Fettling', 'Remove all sharp edges from functional and handling surfaces', 'Sharp edge not removed from assembly or handling surface', 'Operator injury; customer assembly worker injury; rejection',
+            7, 'Operator missed edge; inadequate WI; complex geometry; fatigue', 3, 'Fettling map on WI with all sharp edges marked; gloves mandatory; 100% touch check', 'Visual + tactile (gloved hand) on all marked surfaces', 3,
+            'Deburr; update WI if new edge found; operator training', 'Operator', 1),
+        row('Fettling', 'Remove residual flash from blind spots and internal areas', 'Flash remaining in blind spots, holes or internal cavities', 'Customer assembly failure; field complaint',
+            7, 'Difficult geometry; no specific instruction for internal areas; visual miss', 3, 'Part-specific WI identifying all internal flash areas; use mirror or probe', 'Visual with mirror / air-blow probe check of internal areas', 4,
+            'Re-fettle; document location; update WI; raise NCR if repeated', 'Operator', 2),
+        row('Fettling', 'Complete fettling without introducing surface damage', 'Casting surface damaged during fettling — gouges, dents', 'Cosmetic rejection; dimensional change; customer complaint',
+            6, 'Excessive force; wrong tool; casting slipping; no fixture', 2, 'Correct tool per WI; rubber-padded fixture if required', 'Visual inspection post-fettling', 3,
+            'Segregate; assess damage vs drawing tolerance; raise NCR if rejected', 'Operator', 3),
+        row('Shot Blasting', 'Clean casting surface and achieve required surface finish', 'Insufficient blasting coverage — surface not fully cleaned', 'Residual die coat / oxide; corrosion risk; poor paint or plating adhesion',
+            6, 'Low cycle time; blocked nozzle; overloaded basket; low shot velocity', 2, 'Cycle time set per SOP; coverage check on first batch; nozzle inspection', 'Visual coverage check; timer log', 2,
+            'Re-blast batch; check nozzle; verify cycle time setting', 'Operator', 1),
+        row('Shot Blasting', 'Clean casting surface without causing physical damage', 'Surface damage — dents, peening marks, dimensional change', 'Cosmetic rejection; tolerance impact on critical surfaces',
+            5, 'Excessive cycle time; wrong shot size; over-blasting thin sections', 2, 'Cycle time limit; shot size specification per part; protective masking if required', 'Visual inspection post-blast; check critical dimension if applicable', 2,
+            'Remove from blaster; assess; mask critical surfaces before re-blasting', 'Operator', 2),
+        row('Shot Blasting', 'Maintain correct shot media size and condition', 'Shot media degraded, undersized or contaminated', 'Poor cleaning efficiency; surface appearance inconsistency',
+            5, 'No media inspection schedule; media attrition not monitored', 3, 'Weekly sieve check of shot size distribution; media top-up schedule', 'Sieve check record; visual check of blasted surface appearance', 3,
+            'Replace degraded media; clean machine; re-blast affected parts', 'Operator', 3),
+        row('Shot Blasting', 'Ensure no casting mix-up during blasting', 'Wrong parts or mixed parts loaded into blasting batch', 'Wrong parts processed; traceability lost; customer complaint',
+            7, 'Unlabelled or mixed bins; similar-looking parts; no batch segregation', 2, 'Batch tag mandatory before blasting; one part number per basket', 'Visual check of basket tag before loading; check after unloading', 2,
+            'Stop; identify and segregate; re-tag correctly; inform supervisor', 'Operator', 4),
+        row('Machining', 'Machine casting to all critical dimensions on drawing', 'Critical dimension out of tolerance', 'Assembly failure at customer; batch rejection; warranty claim',
+            9, 'Tool wear; fixture error; wrong offset; thermal expansion; worn spindle', 3, 'First-off 100% dimensional check; periodic check every 25 pieces', 'CMM / Vernier caliper / micrometer / go-no-go per drawing', 2,
+            'Stop; 100% inspect batch; adjust CNC offsets; replace tool if worn', 'Operator / QC', 1),
+        row('Machining', 'Ensure correct CNC program is loaded before production', 'Wrong program loaded — incorrect revision or wrong part program', 'Entire batch machined incorrectly; 100% scrap; high cost loss',
+            10, 'Setup error; multiple programs with similar names; no verification step', 1, 'Program number + revision verified against job card before every run', 'Program name displayed on CNC controller vs job card check', 1,
+            'Stop immediately; identify affected parts; scrap; supervisor sign-off; lock program', 'Operator', 2),
+        row('Machining', 'Maintain cutting tool in correct condition throughout run', 'Worn, chipped or broken cutting tool', 'Out-of-tolerance dimensions; poor surface finish; scrap',
+            8, 'No tool life tracking; delayed replacement; tool breakage undetected', 3, 'Tool life counter per program; inspection every 50 pieces or shift start', 'Visual tool inspection; surface finish check on machined part', 2,
+            'Replace tool; 100% inspect parts machined since last tool check', 'Operator', 3),
+        row('Machining', 'Locate and clamp casting correctly in machining fixture', 'Casting incorrectly located or clamped in fixture', 'All dimensions shifted; batch rejection; potential fixture damage',
+            9, 'No poka-yoke; similar casting faces; worn locating pins; operator error', 2, 'Locating pin check before run; clamping force verification; poka-yoke fixture', 'Visual seating check; first-off dimensional check', 1,
+            'Stop; re-locate; re-check first-off; inspect fixture pins and clamps', 'Operator', 4),
+        row('Machining', 'Produce burr-free machined surfaces on functional areas', 'Burrs remaining on machined surfaces — holes, bores, faces', 'Assembly interference; injury to assembly worker; customer complaint',
+            6, 'Tool wear; high feed rate; no deburring step; inadequate WI', 3, 'Deburring step mandatory after machining; 100% check per WI', 'Visual + tactile check on all machined surfaces', 2,
+            'Deburr; re-inspect; check tool condition; adjust feed if recurring', 'Operator', 5),
+        row('Machining', 'Maintain coolant level and flow during machining', 'Insufficient coolant — low level or blocked delivery', 'Tool overheating; surface burn; dimensional error; shortened tool life',
+            6, 'No coolant level check at shift start; blocked delivery pipe; pump failure', 3, 'Coolant level and flow check at shift start; alarm if flow drops', 'Visual flow check; temperature monitoring if available', 3,
+            'Top up coolant; check pump; clean filter; stop if flow not restored', 'Operator', 6),
+        row('Final Inspection', 'Inspect 100% of castings for visible surface defects', 'Non-conforming casting despatched to customer — surface defects', 'Customer rejection; line stoppage; warranty claim; penalty',
+            10, 'Inspection skip; inadequate lighting; operator fatigue; no AQL plan', 2, 'Mandatory 100% visual under min 500 lux; two-stage inspection if critical', '100% visual; fluorescent light inspection for critical surfaces', 3,
+            'Reject non-conforming; raise NCR; root cause analysis within 24 hours', 'QC Inspector', 1),
+        row('Final Inspection', 'Verify all critical and major dimensions before despatch', 'Out-of-tolerance dimension not detected and despatched', 'Customer assembly failure; field recall; warranty claim',
+            10, 'Sampling plan too lenient; gauge not calibrated; measurement error', 2, 'Calibrated gauges; AQL sampling per customer or internal standard', 'CMM / Vernier / Go-No-Go gauge per inspection plan', 2,
+            'Reject batch; 100% re-inspect; check gauge calibration; notify customer', 'QC Inspector', 2),
+        row('Final Inspection', 'Verify correct part identification and marking on every piece', 'Unidentified parts despatched; wrong part number marked', 'Customer identification failure; line stoppage; traceability loss',
+            8, 'Label printing error; manual marking illegible; no check step', 2, 'Printed label from system; 100% label check before packing sign-off', 'Visual check of label vs packing list; barcode scan if available', 2,
+            'Re-label; re-verify; do not despatch without confirmed identity', 'QC Inspector', 3),
+        row('Final Inspection', 'Verify quantity against despatch order before packing', 'Wrong quantity passed to packing', 'Customer short supply; line stoppage; emergency air freight cost',
+            7, 'Count error; mix-up of reject and accept bins; manual count only', 2, 'Weigh-count on calibrated scale; count vs work order before releasing to packing', 'Weigh-count record vs work order', 2,
+            'Recount; correct quantity; document discrepancy; inform production', 'QC Inspector', 4),
+        row('Packing', 'Pack castings in correct packaging per customer standard', 'Wrong packaging type used — incorrect boxes, dividers or foam', 'Parts damaged in transit; customer rejection; rework',
+            7, 'No customer packing standard available; old packing used; operator error', 2, 'Customer packing standard on file; packing WI with photos; supervisor check', 'Visual check vs packing WI / customer standard', 2,
+            'Re-pack; obtain correct materials; update packing WI', 'Stores In-charge', 1),
+        row('Packing', 'Pack correct quantity per box as per packing standard', 'Wrong quantity per box — over or under packed', 'Customer count error; line disruption; claim',
+            6, 'Manual counting; distraction; no weigh-count step', 2, 'Weigh-count each box before sealing; weigh-count log', 'Weigh-count record per box', 2,
+            'Recount box; correct quantity; re-weigh; record correction', 'Stores In-charge', 2),
+        row('Packing', 'Apply correct customer label on every box', 'Incorrect, missing or illegible label applied to box', 'Customer identification failure; wrong box opened on line; rejection',
+            8, 'Label printing error; wrong template used; illegible thermal print', 2, 'Label printed from system-linked template; 100% label verify before sealing', 'Visual label check vs packing list; scan if barcode used', 2,
+            'Reprint label; re-verify; do not seal box without confirmed label', 'Stores In-charge', 3),
+        row('Packing', 'Protect castings from damage during packing operation', 'Casting surface scratched or damaged while being packed', 'Cosmetic rejection at customer; rework cost',
+            6, 'Parts dropped; no protective layer; rushing; no handling WI', 2, 'Soft gloves mandatory; foam/paper liner in box base; handling WI', 'Visual check after packing; random box inspection before sealing', 3,
+            'Inspect packed box; replace damaged parts; add protective liner', 'Stores In-charge', 4),
+        row('Dispatch', 'Despatch correct material against correct delivery order', 'Wrong part or wrong customer order despatched', 'Customer assembly stoppage; emergency recall; relationship damage',
+            10, 'Similar-looking orders; manual process; no cross-check with DO', 1, 'Cross-check delivery order vs packing list vs loaded boxes before sealing truck', 'Document check — delivery order vs packing list vs physical boxes', 2,
+            'Stop despatch; re-verify all boxes; correct before loading; supervisor sign-off', 'Stores In-charge', 1),
+        row('Dispatch', 'Ensure all despatch documents are present and correct', 'Missing or incorrect documents — invoice, packing list, CoC, LR', 'Customs hold; customer rejection; payment delay; audit non-conformance',
+            7, 'Documents not prepared in time; wrong revision; manual errors', 2, 'Document checklist before despatch sign-off; system-generated packing list', 'Document review checklist signed before truck loading', 2,
+            'Arrange missing documents; do not release truck without complete set', 'Stores In-charge', 2),
+        row('Dispatch', 'Ensure boxes are properly sealed and secured for transit', 'Improperly sealed or poorly secured boxes in transit', 'Parts damaged in transit; customer complaint; replacement cost',
+            7, 'Tape running out; no strapping on heavy boxes; no vehicle check', 2, 'Sealing check before loading; strapping on boxes >5 kg; vehicle dunnage check', 'Visual check of all sealed boxes before loading', 2,
+            'Re-seal; re-strap; ensure proper dunnage in vehicle before departure', 'Stores In-charge', 3),
+        row('Dispatch', 'Maintain correct lot number traceability through despatch', 'Lot number not recorded on despatch documents or labels', 'Loss of traceability; cannot isolate field complaint; audit failure',
+            8, 'Manual lot tracking; no system link between production and despatch', 2, 'Lot number on every label; recorded on packing list and invoice', 'Lot number check on label vs packing list before despatch', 2,
+            'Add lot number to label; update packing list; do not despatch without traceability', 'QC Inspector', 4),
     ]
     for r in TEMPLATE_ROWS:
         db.session.add(GenericRecord(module='pq_pfmea_templates', data=json.dumps(r)))
     db.session.commit()
     print("PFMEA failure-mode template library seeded")
+
+
+# Mirrors PFMEA_CATEGORY_KEYWORDS in static/modules/pq.js — keep both in sync.
+PFMEA_CATEGORY_KEYWORDS = {
+    'Raw Material Inspection': ['raw material', 'incoming', 'receiving'],
+    'Melting':                 ['melt'],
+    'Die Casting':             ['die cast', 'casting'],
+    'Trimming':                ['trim'],
+    'Fettling':                ['fettl'],
+    'Shot Blasting':           ['shot blast', 'blasting'],
+    'Machining':               ['machin'],
+    'Final Inspection':        ['final inspection', 'final insp'],
+    'Packing':                 ['pack'],
+    'Dispatch':                ['dispatch', 'shipping'],
+}
+
+def _match_pfmea_categories(step_name):
+    s = (step_name or '').lower()
+    return [cat for cat, kws in PFMEA_CATEGORY_KEYWORDS.items() if any(k in s for k in kws)]
+
+def seed_pq_pfmea_rows_for_sample_part():
+    """Generate PFMEA rows for the seeded sample part (VRA-DC-001) from the
+    template library, the same way the UI's 'Generate from Process Flow'
+    button does — keeps the demo data in sync with the master template."""
+    part_rec = next((r for r in GenericRecord.query.filter_by(module='pq_parts').all()
+                      if json.loads(r.data).get('partNumber') == 'VRA-DC-001'), None)
+    if not part_rec:
+        return
+    pid = part_rec.id
+    existing_rows = GenericRecord.query.filter_by(module='pq_pfmea_rows').all()
+    if any(json.loads(r.data).get('partId') == pid for r in existing_rows):
+        return
+
+    steps = sorted(
+        [json.loads(r.data) for r in GenericRecord.query.filter_by(module='pq_pfd_steps').all()
+         if json.loads(r.data).get('partId') == pid],
+        key=lambda s: s.get('order', 0))
+    templates = [json.loads(r.data) for r in GenericRecord.query.filter_by(module='pq_pfmea_templates').all()]
+
+    order = 0
+    for step in steps:
+        cats = _match_pfmea_categories(step.get('stepName', ''))
+        matches = [t for t in templates if t.get('processCategory') in cats]
+        for t in matches:
+            order += 1
+            db.session.add(GenericRecord(module='pq_pfmea_rows', data=json.dumps({
+                'partId': pid, 'opNumber': step.get('opNumber'), 'processStep': step.get('stepName'),
+                'function': t['function'], 'failureMode': t['failureMode'], 'failureEffect': t['failureEffect'],
+                'severity': t['severity'], 'failureCause': t['failureCause'], 'occurrence': t['occurrence'],
+                'preventionControls': t['preventionControls'], 'detectionControls': t['detectionControls'],
+                'detection': t['detection'], 'rpn': t['rpn'], 'recommendedAction': t['recommendedAction'],
+                'responsibility': t['responsibility'], 'targetDate': '', 'status': 'Open', 'order': order,
+            })))
+    db.session.commit()
+    print(f"PFMEA rows generated for sample part ({order} rows)")
+
+
+# ══════════════════════════════════════════════════════
+#  CONTROL PLAN FALLBACK LIBRARY (starter template)
+#  Used by "Generate Control Plan" for a PFD step that doesn't yet have
+#  matching PFMEA rows to derive characteristics from. When PFMEA rows
+#  do exist for a step, those are used instead (richer, part-tuned data).
+# ══════════════════════════════════════════════════════
+
+def seed_pq_cp_templates():
+    if GenericRecord.query.filter_by(module='pq_cp_templates').count() > 0:
+        return
+
+    def row(cat, charName, classification, method, controlMethod, reactionPlan, order):
+        return {
+            'processCategory': cat, 'charName': charName, 'classification': classification,
+            'method': method, 'controlMethod': controlMethod, 'reactionPlan': reactionPlan, 'order': order,
+        }
+
+    CP_TEMPLATE_ROWS = [
+        row('Raw Material Inspection', 'Chemical Composition', 'Critical', 'OES Spectrometer',
+            'CoC verification + spectro on every incoming heat', 'Reject lot; quarantine; raise supplier NCR', 1),
+        row('Melting', 'Melt Temperature', 'Critical', 'Digital pyrometer',
+            'Pyrometer check before every heat; alarm at threshold', 'Do not cast; adjust furnace; re-verify', 1),
+        row('Melting', 'Degassing Time', 'Special', 'Timer log',
+            'Timed degassing per SOP; flux weighed before addition', 'Re-degas; do not cast; record deviation', 2),
+        row('Die Casting', 'Injection Pressure / Shot Profile', 'Critical', 'Machine parameter log',
+            'Process parameter log; first-off inspection every run', 'Stop; adjust; re-run first-off', 1),
+        row('Die Casting', 'Die / Metal Temperature', 'Special', 'IR pyrometer',
+            'Pyrometer verification at warm-up and every 10 shots', 'Additional warm-up shots; re-check temperature', 2),
+        row('Trimming', 'Gate / Flash Removal', 'Major', 'Visual + go/no-go gauge',
+            '100% visual after trimming', 'Re-trim; inspect trim die; raise NCR if repeated', 1),
+        row('Fettling', 'Sharp Edge / Burr Removal', 'Major', 'Visual + tactile check',
+            'Fettling map on WI with all sharp edges marked', 'Deburr; update WI if new edge found', 1),
+        row('Shot Blasting', 'Surface Cleanliness', 'Minor', 'Visual coverage check',
+            'Cycle time set per SOP; coverage check on first batch', 'Re-blast batch; check nozzle', 1),
+        row('Machining', 'Critical Dimensions', 'Critical', 'CMM / Vernier / go-no-go gauge',
+            'First-off 100% dimensional check; periodic check every 25 pcs', 'Stop; 100% inspect batch; adjust offsets', 1),
+        row('Final Inspection', 'Visual Surface Defects', 'Critical', '100% visual under min 500 lux',
+            'Mandatory 100% visual; two-stage inspection if critical', 'Reject non-conforming; raise NCR', 1),
+        row('Final Inspection', 'Critical Dimensions', 'Critical', 'CMM / Vernier / go-no-go gauge',
+            'Calibrated gauges; AQL sampling per customer standard', 'Reject batch; 100% re-inspect', 2),
+        row('Packing', 'Packaging Type & Quantity', 'Major', 'Visual + weigh-count',
+            'Customer packing standard on file; weigh-count each box', 'Re-pack; obtain correct materials', 1),
+        row('Dispatch', 'Delivery Order / Document Match', 'Major', 'Document checklist',
+            'Cross-check delivery order vs packing list vs boxes', 'Stop despatch; re-verify all boxes', 1),
+    ]
+    for r in CP_TEMPLATE_ROWS:
+        db.session.add(GenericRecord(module='pq_cp_templates', data=json.dumps(r)))
+    db.session.commit()
+    print("Control Plan fallback template library seeded")
 
 with app.app_context():
     try:
@@ -1180,6 +1236,8 @@ with app.app_context():
         seed_qms2()
         seed_pq()
         seed_pq_pfmea_templates()
+        seed_pq_pfmea_rows_for_sample_part()
+        seed_pq_cp_templates()
         # Note: seed_defaults() removed — default data comes from backup restore
     except Exception as e:
         print(f"Startup warning: {e}")
