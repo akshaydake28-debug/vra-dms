@@ -1329,20 +1329,261 @@ const PQ = (() => {
       </div>`);
   }
 
-  function renderCsPlaceholder() {
+  // ══════════════════════════════════════════════════════════════════════
+  //  CHECK SHEET — shop-floor recording against Control Plan characteristics.
+  //  Unlike PFD/PFMEA/CP this isn't a revision-controlled document; it's an
+  //  operational log (fill a record per shift/lot, view/delete past records).
+  // ══════════════════════════════════════════════════════════════════════
+  async function renderCsRegistry() {
+    setC('<div style="padding:40px;text-align:center;color:#9ca3af">Loading…</div>');
+    const [parts, allCpRows, allCsRecords] = await Promise.all([
+      getAll('pq_parts'), getAll('pq_cp_rows'), getAll('pq_cs_records')
+    ]);
+
+    const rows = parts.map(p => {
+      const chars   = allCpRows.filter(r => r.partId == p.id && r.includeInChecksheet !== false);
+      const records = allCsRecords.filter(r => r.partId == p.id);
+      const hasChars = chars.length > 0;
+      return `
+      <tr>
+        <td style="font-weight:600;color:#0d2f6e">${esc(p.partNumber||'')}</td>
+        <td>${esc(p.partName||'')}</td>
+        <td>${hasChars ? `${chars.length} characteristic(s)` : `<span style="color:#9ca3af">— build the Control Plan first</span>`}</td>
+        <td>${records.length} record(s)</td>
+        <td>
+          ${hasChars
+            ? `<button class="btn btn-o btn-xs" onclick="PQ.openCs(${p.id})">Open Check Sheet</button>`
+            : `<button class="btn btn-o btn-xs" onclick="PQ.openCp(${p.id})">Open Control Plan</button>`}
+        </td>
+      </tr>`;
+    }).join('') || `<tr><td colspan="5" style="padding:28px;text-align:center;color:#9ca3af">
+      No parts yet — build a <a style="color:#0d2f6e;font-weight:600;cursor:pointer" onclick="PQ.renderPfdRegistry()">Process Flow Diagram</a> first.
+    </td></tr>`;
+
     setC(`
       <div class="ph"><h2>Check Sheets</h2></div>
       <div class="card">
-        <div class="cb" style="padding:40px;text-align:center;color:#6b7280">
-          <div style="font-size:15px;font-weight:600;color:#374151;margin-bottom:8px">Coming soon</div>
-          <div style="max-width:480px;margin:0 auto;font-size:13px;line-height:1.6">
-            Check Sheets will let operators log actual measured values for each Control Plan
-            characteristic (pass/fail, per batch or shift), pulling the characteristic list
-            straight from the Control Plan. Build out your <a style="color:#0d2f6e;font-weight:600;cursor:pointer" onclick="PQ.renderCpRegistry()">Control Plans</a>
-            first — Check Sheets will generate from them the same way PFMEA generates from the PFD.
-          </div>
+        <div class="tw">
+          <table>
+            <thead><tr><th>Part No.</th><th>Part Name</th><th>Characteristics</th><th>Records</th><th></th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
         </div>
       </div>`);
+  }
+
+  async function openCs(pid) {
+    _s.partId = pid;
+    await _renderCs();
+  }
+
+  async function _renderCs() {
+    const pid = _s.partId;
+    const [parts, allCpRows, allRecords] = await Promise.all([
+      getAll('pq_parts'), getAll('pq_cp_rows'), getAll('pq_cs_records')
+    ]);
+    const part = parts.find(p => p.id == pid);
+    if (!part) { toast('Part not found', 'e'); renderCsRegistry(); return; }
+
+    const chars   = allCpRows.filter(r => r.partId == pid && r.includeInChecksheet !== false)
+      .sort((a, b) => (a.order ?? a.id) - (b.order ?? b.id));
+    const records = allRecords.filter(r => r.partId == pid).sort((a, b) => b.id - a.id);
+
+    setC(`
+      <style>
+        .cp-tbl { width:100%; border-collapse:collapse; font-size:11.5px; }
+        .cp-tbl th { background:#1e3a5f; color:#fff; padding:6px 8px; text-align:left; border:1px solid #ccc; font-size:10px; text-transform:uppercase; letter-spacing:.2px; }
+        .cp-tbl td { padding:5px 7px; border:1px solid #e5e7eb; vertical-align:top; }
+      </style>
+      <div class="ph">
+        <div>
+          <div style="display:flex;align-items:center;gap:7px;margin-bottom:3px">
+            <span class="tp" style="background:#7c3aed">CS</span>
+          </div>
+          <h2>${esc(part.partName||'')} — Check Sheet</h2>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <button class="btn btn-o btn-sm" onclick="PQ.renderCsRegistry()">← Check Sheets</button>
+          <button class="btn btn-p btn-sm" onclick="PQ._fillCsModal()" ${chars.length?'':'disabled'}>📝 Fill Check Sheet</button>
+        </div>
+      </div>
+
+      ${!chars.length ? `<div class="alert al-d" style="margin-bottom:12px">
+        No characteristics marked for check sheets yet. Add rows to the <a style="cursor:pointer;font-weight:600" onclick="PQ.openCp(${pid})">Control Plan</a> first.
+      </div>` : ''}
+
+      <div style="display:grid;grid-template-columns:1fr 280px;gap:14px;align-items:start">
+        <div class="card">
+          <div class="ch"><h5>Characteristics Tracked (${chars.length})</h5></div>
+          <div class="cb" style="padding:0;overflow-x:auto">
+            <table class="cp-tbl">
+              <thead><tr><th>Op</th><th>Char #</th><th>Characteristic</th><th>Specification</th><th>Tolerance</th></tr></thead>
+              <tbody>${chars.map(c => `<tr>
+                <td class="mono">${esc(c.opNumber||'')}</td>
+                <td class="mono">${esc(c.charNumber||'')}</td>
+                <td>${esc(c.charName||'')}</td>
+                <td>${esc(c.specification||'')}</td>
+                <td>${esc(c.tolerance||'')}</td>
+              </tr>`).join('') || `<tr><td colspan="5" style="text-align:center;color:#9ca3af;padding:10px">No characteristics</td></tr>`}</tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="ch"><h5>Filled Records (${records.length})</h5></div>
+          <div class="cb" style="padding:8px">
+            ${records.length ? records.map(r => {
+              const ok = (r.results||[]).filter(x => x.result === 'OK').length;
+              const ng = (r.results||[]).filter(x => x.result === 'NG').length;
+              return `<div style="padding:8px;background:#f9fafc;border-radius:6px;margin-bottom:6px;border:1px solid #e5e7eb">
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                  <span style="font-weight:700;font-size:12px">${esc(r.date||'')} · Shift ${esc(r.shift||'')}</span>
+                  <span style="font-size:11px"><span style="color:#16a34a;font-weight:700">${ok} OK</span> · <span style="color:#dc2626;font-weight:700">${ng} NG</span></span>
+                </div>
+                <div class="muted" style="font-size:11px;margin-top:2px">Lot ${esc(r.lotNumber||'—')} · ${esc(r.operator||'—')}</div>
+                <div style="margin-top:6px;display:flex;gap:6px">
+                  <button class="btn btn-xs btn-o" onclick="PQ._viewCsRecord(${r.id})">View</button>
+                  <button class="btn btn-xs" style="background:#fee2e2;color:#b91c1c" onclick="PQ._deleteCsRecord(${r.id})">Delete</button>
+                </div>
+              </div>`;
+            }).join('') : `<div style="padding:12px;color:#9ca3af;text-align:center;font-size:12px">No records yet</div>`}
+          </div>
+        </div>
+      </div>
+    `);
+  }
+
+  async function _fillCsModal() {
+    const allCpRows = await getAll('pq_cp_rows');
+    const chars = allCpRows.filter(r => r.partId == _s.partId && r.includeInChecksheet !== false)
+      .sort((a, b) => (a.order ?? a.id) - (b.order ?? b.id));
+    if (!chars.length) { toast('No characteristics to check', 'e'); return; }
+
+    const modal = document.createElement('div');
+    modal.id = 'pq-cs-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:#0008;z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;overflow-y:auto';
+    modal.innerHTML = `
+    <div style="background:#fff;border-radius:12px;width:100%;max-width:900px;max-height:92vh;overflow-y:auto;box-shadow:0 20px 60px #0004">
+      <div style="padding:14px 18px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:#fff;z-index:1">
+        <div style="font-weight:700;font-size:14px;color:#0d2f6e">Fill Check Sheet</div>
+        <button onclick="document.getElementById('pq-cs-modal').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#6b7280">✕</button>
+      </div>
+      <div style="padding:14px;display:grid;grid-template-columns:repeat(3,1fr);gap:10px;border-bottom:1px solid #f3f4f6">
+        <div><label class="lbl">Date</label><input class="input fc" id="cs-date" type="date" value="${_fmtDate()}"></div>
+        <div><label class="lbl">Shift</label><select class="input fc" id="cs-shift"><option>A</option><option>B</option><option>C</option></select></div>
+        <div><label class="lbl">Lot Number</label><input class="input fc" id="cs-lot" placeholder="LOT-2026-001"></div>
+        <div><label class="lbl">Operator</label><input class="input fc" id="cs-operator" placeholder="Name"></div>
+        <div><label class="lbl">Inspector</label><input class="input fc" id="cs-inspector" placeholder="Name"></div>
+      </div>
+      <div style="padding:14px">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="background:#1e3a5f;color:#fff">
+            <th style="padding:7px 8px;width:30px">#</th>
+            <th style="padding:7px 8px">Characteristic</th>
+            <th style="padding:7px 8px">Specification</th>
+            <th style="padding:7px 8px;width:130px">Actual Value</th>
+            <th style="padding:7px 8px;width:90px;text-align:center">Result</th>
+          </tr></thead>
+          <tbody>
+            ${chars.map((c, i) => `<tr style="border-bottom:1px solid #f3f4f6">
+              <td style="padding:7px 8px;color:#94a3b8">${i + 1}</td>
+              <td style="padding:7px 8px;font-weight:500">${esc(c.charName||'')}</td>
+              <td style="padding:7px 8px;color:#6b7280;font-size:11px">${esc(c.specification||'')}${c.tolerance ? ' / '+esc(c.tolerance) : ''}</td>
+              <td style="padding:4px 6px"><input style="width:100%;padding:5px 7px;border:1px solid #e2e8f0;border-radius:4px;font-size:12px" id="cs-val-${c.id}" placeholder="Enter value"></td>
+              <td style="padding:4px 6px;text-align:center">
+                <select id="cs-res-${c.id}" style="padding:4px 6px;border:1px solid #e2e8f0;border-radius:4px;font-size:11px">
+                  <option value="OK">✓ OK</option><option value="NG">✗ NG</option><option value="NA">N/A</option>
+                </select>
+              </td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+      <div style="padding:0 14px 14px;display:flex;gap:8px">
+        <button class="btn btn-p" onclick="PQ._saveCsRecord([${chars.map(c => c.id).join(',')}])">💾 Save Record</button>
+        <button class="btn btn-o" onclick="document.getElementById('pq-cs-modal').remove()">Cancel</button>
+      </div>
+    </div>`;
+    document.body.appendChild(modal);
+  }
+
+  async function _saveCsRecord(charIds) {
+    const allCpRows = await getAll('pq_cp_rows');
+    const results = charIds.map(id => {
+      const c = allCpRows.find(x => x.id == id) || {};
+      return {
+        charId: id, charNumber: c.charNumber || '', charName: c.charName || '',
+        spec: c.specification || '', tolerance: c.tolerance || '',
+        actual: document.getElementById(`cs-val-${id}`)?.value || '',
+        result: document.getElementById(`cs-res-${id}`)?.value || 'OK',
+      };
+    });
+    await save('pq_cs_records', {
+      partId: _s.partId,
+      date: document.getElementById('cs-date')?.value || _fmtDate(),
+      shift: document.getElementById('cs-shift')?.value || 'A',
+      lotNumber: document.getElementById('cs-lot')?.value || '',
+      operator: document.getElementById('cs-operator')?.value || '',
+      inspector: document.getElementById('cs-inspector')?.value || '',
+      results,
+    });
+    document.getElementById('pq-cs-modal')?.remove();
+    toast('Check sheet saved');
+    _renderCs();
+  }
+
+  async function _viewCsRecord(id) {
+    const records = await getAll('pq_cs_records');
+    const rec = records.find(r => r.id == id);
+    if (!rec) return;
+    const ok = (rec.results||[]).filter(r => r.result === 'OK').length;
+    const ng = (rec.results||[]).filter(r => r.result === 'NG').length;
+
+    const modal = document.createElement('div');
+    modal.id = 'pq-cs-view-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:#0008;z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+    modal.innerHTML = `
+    <div style="background:#fff;border-radius:12px;width:100%;max-width:700px;max-height:90vh;overflow-y:auto">
+      <div style="padding:14px 18px;border-bottom:1px solid #e5e7eb;display:flex;justify-content:space-between;align-items:center">
+        <div style="font-weight:700;color:#0d2f6e">Check Sheet — ${esc(rec.date||'')}</div>
+        <button onclick="document.getElementById('pq-cs-view-modal').remove()" style="background:none;border:none;font-size:20px;cursor:pointer">✕</button>
+      </div>
+      <div style="padding:14px;font-size:12px;display:grid;grid-template-columns:1fr 1fr;gap:8px;border-bottom:1px solid #f3f4f6">
+        <div>Shift: <b>${esc(rec.shift||'')}</b></div>
+        <div>Lot: <b>${esc(rec.lotNumber||'—')}</b></div>
+        <div>Operator: <b>${esc(rec.operator||'—')}</b></div>
+        <div>Inspector: <b>${esc(rec.inspector||'—')}</b></div>
+        <div style="color:#16a34a">OK: <b>${ok}</b></div>
+        <div style="color:#dc2626">NG: <b>${ng}</b></div>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="background:#f8fafc">
+          <th style="padding:7px 10px">#</th><th style="padding:7px 10px">Characteristic</th>
+          <th style="padding:7px 10px">Spec</th><th style="padding:7px 10px">Actual</th>
+          <th style="padding:7px 10px;text-align:center">Result</th>
+        </tr></thead>
+        <tbody>
+          ${(rec.results||[]).map((r, i) => `<tr style="border-bottom:1px solid #f3f4f6;background:${r.result==='NG'?'#fff7f7':'#fff'}">
+            <td style="padding:6px 10px;color:#94a3b8">${i + 1}</td>
+            <td style="padding:6px 10px">${esc(r.charName||'')}</td>
+            <td style="padding:6px 10px;color:#6b7280;font-size:11px">${esc(r.spec||'')}</td>
+            <td style="padding:6px 10px;font-weight:500">${esc(r.actual||'—')}</td>
+            <td style="padding:6px 10px;text-align:center;font-weight:700;color:${r.result==='OK'?'#16a34a':r.result==='NG'?'#dc2626':'#6b7280'}">${esc(r.result||'')}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      <div style="padding:12px 14px">
+        <button class="btn btn-o" onclick="document.getElementById('pq-cs-view-modal').remove()">Close</button>
+      </div>
+    </div>`;
+    document.body.appendChild(modal);
+  }
+
+  async function _deleteCsRecord(id) {
+    if (!confirm('Delete this check sheet record?')) return;
+    await remove('pq_cs_records', id);
+    toast('Deleted');
+    _renderCs();
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -1781,9 +2022,10 @@ const PQ = (() => {
     openPfmea, _generatePfmeaFromPfd,
     _pfmeaStartEdit, _pfmeaCancelEdit, _pfmeaSaveAll, _pfmeaApprove, _pfmeaNewRevision,
     _addPfmeaRow, _deletePfmeaRow, _pfmeaCell, _pfmeaRatingChange,
-    renderPfdRegistry, renderPfmeaRegistry, renderCpRegistry, renderCsPlaceholder,
+    renderPfdRegistry, renderPfmeaRegistry, renderCpRegistry,
     openCp, _generateCpFromPfd,
     _cpStartEdit, _cpCancelEdit, _cpSaveAll, _cpApprove, _cpNewRevision,
     _addCpRow, _deleteCpRow, _cpCell,
+    renderCsRegistry, openCs, _fillCsModal, _saveCsRecord, _viewCsRecord, _deleteCsRecord,
   };
 })();
