@@ -1,7 +1,7 @@
 // Process Quality — Phase 1: Process Flow Diagram
 const PQ = (() => {
 
-  const _s = { partId: null, editMode: false, pending: {}, pfmeaEditMode: false, pfmeaPending: {} };
+  const _s = { partId: null, editMode: false, pending: {}, pfmeaEditMode: false, pfmeaPending: {}, cpEditMode: false, cpPending: {} };
 
   // ── PFMEA generic failure-mode library: keyword match per process category ──
   const PFMEA_CATEGORY_KEYWORDS = {
@@ -72,27 +72,25 @@ const PQ = (() => {
         <td>${esc(p.partName||'')}</td>
         <td>${esc(p.material||'')}</td>
         <td>${statusBadge(p.pfdStatus)} <span class="mono" style="font-size:11px">Rev ${esc(p.pfdRev||'A')}</span></td>
-        <td>${statusBadge(p.pfmeaStatus)} <span class="mono" style="font-size:11px">Rev ${esc(p.pfmeaRev||'A')}</span></td>
         <td>
           <button class="btn btn-o btn-xs" onclick="PQ.openPfd(${p.id})">Open PFD</button>
-          <button class="btn btn-o btn-xs" style="margin-left:4px" onclick="PQ.openPfmea(${p.id})">Open PFMEA</button>
           <button class="btn btn-o btn-xs" style="margin-left:4px" onclick="PQ.editPart(${p.id})">Edit</button>
           <button class="btn btn-xs" style="background:#fee2e2;color:#b91c1c;border:1px solid #fecaca;margin-left:4px"
             onclick="PQ.deletePart(${p.id},'${esc(p.partNumber||'')}')">Delete</button>
         </td>
-      </tr>`).join('') || `<tr><td colspan="6" style="padding:28px;text-align:center;color:#9ca3af">
+      </tr>`).join('') || `<tr><td colspan="5" style="padding:28px;text-align:center;color:#9ca3af">
         No parts yet — <a style="color:#0d2f6e;font-weight:600;cursor:pointer" onclick="PQ.newPart()">create the first part →</a>
       </td></tr>`;
 
     setC(`
       <div class="ph">
-        <h2>Process Flow Diagram</h2>
+        <h2>Process Flow Diagrams</h2>
         <button class="btn btn-p" onclick="PQ.newPart()">➕ New Part</button>
       </div>
       <div class="card">
         <div class="tw">
           <table>
-            <thead><tr><th>Part No.</th><th>Part Name</th><th>Material</th><th>PFD Status</th><th>PFMEA Status</th><th></th></tr></thead>
+            <thead><tr><th>Part No.</th><th>Part Name</th><th>Material</th><th>PFD Status</th><th></th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
         </div>
@@ -190,6 +188,8 @@ const PQ = (() => {
       pfdStatus: 'Draft',
       pfmeaRev:    'A',
       pfmeaStatus: 'Draft',
+      cpRev:    'A',
+      cpStatus: 'Draft',
     };
 
     if (pid) {
@@ -199,6 +199,7 @@ const PQ = (() => {
       if (existing) {
         data.pfdRev = existing.pfdRev; data.pfdStatus = existing.pfdStatus;
         data.pfmeaRev = existing.pfmeaRev; data.pfmeaStatus = existing.pfmeaStatus;
+        data.cpRev = existing.cpRev; data.cpStatus = existing.cpStatus;
       }
       data.id = pid;
       await save('pq_parts', data);
@@ -249,7 +250,16 @@ const PQ = (() => {
         }));
       }
 
-      toast(`Part created with ${srcSteps.length} steps and ${srcRows.length} PFMEA rows copied from template`);
+      // Copy Control Plan rows too, same reasoning as PFMEA above.
+      const allCpRows = await getAll('pq_cp_rows');
+      const srcCpRows = allCpRows
+        .filter(r => r.partId == tmplId)
+        .sort((a, b) => (a.order ?? a.id) - (b.order ?? b.id));
+      for (const r of srcCpRows) {
+        await save('pq_cp_rows', Object.assign({}, r, { id: undefined, partId: newPid }));
+      }
+
+      toast(`Part created with ${srcSteps.length} steps, ${srcRows.length} PFMEA rows and ${srcCpRows.length} Control Plan rows copied from template`);
     } else {
       toast('Part created — open PFD to add steps');
     }
@@ -808,7 +818,7 @@ const PQ = (() => {
       const matches = _matchPfmeaTemplates(stepName, allTemplates);
       const toAdd = matches.length ? matches : [{
         function: '', failureMode: '', failureEffect: '', severity: 1,
-        failureCause: '', occurrence: 1, currentControls: '', detection: 1,
+        failureCause: '', occurrence: 1, preventionControls: '', detectionControls: '', detection: 1,
       }];
       for (const t of toAdd) {
         order += 1;
@@ -816,7 +826,7 @@ const PQ = (() => {
           partId: _s.partId, opNumber: step.opNumber, processStep: stepName,
           function: t.function || '', failureMode: t.failureMode || '', failureEffect: t.failureEffect || '',
           severity: t.severity || 1, failureCause: t.failureCause || '', occurrence: t.occurrence || 1,
-          currentControls: t.currentControls || '', detection: t.detection || 1,
+          preventionControls: t.preventionControls || '', detectionControls: t.detectionControls || '', detection: t.detection || 1,
           rpn: (t.severity||1) * (t.occurrence||1) * (t.detection||1),
           recommendedAction: t.recommendedAction || '', responsibility: t.responsibility || '',
           targetDate: '', status: 'Open', order,
@@ -900,7 +910,7 @@ const PQ = (() => {
           <h2>${esc(part.partName||'')} — PFMEA</h2>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-          <button class="btn btn-o btn-sm" onclick="PQ.renderDashboard()">← Parts</button>
+          <button class="btn btn-o btn-sm" onclick="PQ.renderPfmeaRegistry()">← PFMEA</button>
           ${actions}
         </div>
       </div>
@@ -1033,7 +1043,7 @@ const PQ = (() => {
   function _buildPfmeaGroup(step, rows, locked) {
     const stepName = step.stepName || step.opName || '';
     const body = rows.length ? rows.map(r => _buildPfmeaRow(r, locked)).join('') :
-      `<tr><td colspan="${locked?12:13}" style="text-align:center;color:#9ca3af;padding:10px">No failure modes for this step${locked?'':' — click "+ Add Failure Mode" below'}</td></tr>`;
+      `<tr><td colspan="${locked?13:14}" style="text-align:center;color:#9ca3af;padding:10px">No failure modes for this step${locked?'':' — click "+ Add Failure Mode" below'}</td></tr>`;
 
     return `
       <div class="card" style="margin-bottom:14px">
@@ -1049,7 +1059,8 @@ const PQ = (() => {
               <th>S</th>
               <th style="min-width:140px">Potential Cause</th>
               <th>O</th>
-              <th style="min-width:140px">Current Controls</th>
+              <th style="min-width:140px">Prevention Controls</th>
+              <th style="min-width:140px">Detection Controls</th>
               <th>D</th>
               <th>RPN</th>
               <th style="min-width:140px">Recommended Action</th>
@@ -1076,7 +1087,8 @@ const PQ = (() => {
         <td style="text-align:center;font-weight:700">${r.severity||''}</td>
         <td>${esc(r.failureCause||'')}</td>
         <td style="text-align:center;font-weight:700">${r.occurrence||''}</td>
-        <td>${esc(r.currentControls||'')}</td>
+        <td>${esc(r.preventionControls||'')}</td>
+        <td>${esc(r.detectionControls||'')}</td>
         <td style="text-align:center;font-weight:700">${r.detection||''}</td>
         <td style="text-align:center"><span class="pf-rpn" style="background:${rc.bg};color:${rc.fg}">${r.rpn||0}</span></td>
         <td>${esc(r.recommendedAction||'')}</td>
@@ -1093,7 +1105,8 @@ const PQ = (() => {
       <td><textarea class="pf-in" rows="2" oninput="PQ._pfmeaCell(${r.id},'failureCause',this.value)">${esc(r.failureCause||'')}</textarea></td>
       <td><input type="number" min="1" max="10" class="pf-num" value="${r.occurrence||1}"
             onchange="PQ._pfmeaRatingChange(${r.id},'occurrence',this.value)"></td>
-      <td><textarea class="pf-in" rows="2" oninput="PQ._pfmeaCell(${r.id},'currentControls',this.value)">${esc(r.currentControls||'')}</textarea></td>
+      <td><textarea class="pf-in" rows="2" oninput="PQ._pfmeaCell(${r.id},'preventionControls',this.value)">${esc(r.preventionControls||'')}</textarea></td>
+      <td><textarea class="pf-in" rows="2" oninput="PQ._pfmeaCell(${r.id},'detectionControls',this.value)">${esc(r.detectionControls||'')}</textarea></td>
       <td><input type="number" min="1" max="10" class="pf-num" value="${r.detection||1}"
             onchange="PQ._pfmeaRatingChange(${r.id},'detection',this.value)"></td>
       <td style="text-align:center"><span id="pf-rpn-${r.id}" class="pf-rpn" style="background:${rc.bg};color:${rc.fg}">${r.rpn||0}</span></td>
@@ -1154,7 +1167,7 @@ const PQ = (() => {
     await save('pq_pfmea_rows', {
       partId: _s.partId, opNumber, processStep,
       function: '', failureMode: '', failureEffect: '', severity: 1,
-      failureCause: '', occurrence: 1, currentControls: '', detection: 1, rpn: 1,
+      failureCause: '', occurrence: 1, preventionControls: '', detectionControls: '', detection: 1, rpn: 1,
       recommendedAction: '', responsibility: '', targetDate: '', status: 'Open',
       order: maxOrder + 1,
     });
@@ -1227,6 +1240,536 @@ const PQ = (() => {
     _renderPfmea();
   }
 
+  // ══════════════════════════════════════════════════════════════════════
+  //  REGISTRIES — separate PFD / PFMEA / Control Plan / Check Sheet tabs,
+  //  linked by partId (same pattern as Enquiry / Feasibility / Quotation:
+  //  independent registries, chained by "Create/Open" actions).
+  // ══════════════════════════════════════════════════════════════════════
+  const renderPfdRegistry = renderDashboard;
+
+  async function renderPfmeaRegistry() {
+    setC('<div style="padding:40px;text-align:center;color:#9ca3af">Loading…</div>');
+    const [parts, allRows] = await Promise.all([getAll('pq_parts'), getAll('pq_pfmea_rows')]);
+
+    const statusBadge = st => {
+      if (st === 'Released')          return `<span class="badge ba">Released</span>`;
+      if (st === 'Pending Approval')  return `<span class="badge bp">⏳ Pending</span>`;
+      return `<span class="badge bd">Draft</span>`;
+    };
+
+    const rows = parts.map(p => {
+      const partRows = allRows.filter(r => r.partId == p.id);
+      const hasRows  = partRows.length > 0;
+      const maxRpn   = hasRows ? Math.max(...partRows.map(r => r.rpn || 0)) : 0;
+      const rc       = rpnColor(maxRpn);
+      return `
+      <tr>
+        <td style="font-weight:600;color:#0d2f6e">${esc(p.partNumber||'')}</td>
+        <td>${esc(p.partName||'')}</td>
+        <td>${statusBadge(p.pfmeaStatus)} <span class="mono" style="font-size:11px">Rev ${esc(p.pfmeaRev||'A')}</span></td>
+        <td>${hasRows ? `${partRows.length} row(s) · <span class="pf-rpn" style="background:${rc.bg};color:${rc.fg}">Top RPN ${maxRpn}</span>` : `<span style="color:#9ca3af">—</span>`}</td>
+        <td>
+          <button class="btn ${hasRows?'btn-o':'btn-p'} btn-xs" onclick="PQ.openPfmea(${p.id})">${hasRows ? 'Open PFMEA' : '⚙️ Create PFMEA'}</button>
+        </td>
+      </tr>`;
+    }).join('') || `<tr><td colspan="5" style="padding:28px;text-align:center;color:#9ca3af">
+      No parts yet — build a <a style="color:#0d2f6e;font-weight:600;cursor:pointer" onclick="PQ.renderPfdRegistry()">Process Flow Diagram</a> first, then create its PFMEA here.
+    </td></tr>`;
+
+    setC(`
+      <style>.pf-rpn{display:inline-block;min-width:30px;text-align:center;font-weight:800;padding:2px 6px;border-radius:4px;font-size:11px}</style>
+      <div class="ph"><h2>PFMEA</h2></div>
+      <div class="card">
+        <div class="tw">
+          <table>
+            <thead><tr><th>Part No.</th><th>Part Name</th><th>PFMEA Status</th><th>Risk</th><th></th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </div>`);
+  }
+
+  async function renderCpRegistry() {
+    setC('<div style="padding:40px;text-align:center;color:#9ca3af">Loading…</div>');
+    const [parts, allRows] = await Promise.all([getAll('pq_parts'), getAll('pq_cp_rows')]);
+
+    const statusBadge = st => {
+      if (st === 'Released')          return `<span class="badge ba">Released</span>`;
+      if (st === 'Pending Approval')  return `<span class="badge bp">⏳ Pending</span>`;
+      return `<span class="badge bd">Draft</span>`;
+    };
+
+    const rows = parts.map(p => {
+      const partRows = allRows.filter(r => r.partId == p.id);
+      const hasRows  = partRows.length > 0;
+      const critical = partRows.filter(r => r.classification === 'Critical').length;
+      return `
+      <tr>
+        <td style="font-weight:600;color:#0d2f6e">${esc(p.partNumber||'')}</td>
+        <td>${esc(p.partName||'')}</td>
+        <td>${statusBadge(p.cpStatus)} <span class="mono" style="font-size:11px">Rev ${esc(p.cpRev||'A')}</span></td>
+        <td>${hasRows ? `${partRows.length} characteristic(s)${critical ? ` · <span style="color:#991b1b;font-weight:700">${critical} Critical</span>` : ''}` : `<span style="color:#9ca3af">—</span>`}</td>
+        <td>
+          <button class="btn ${hasRows?'btn-o':'btn-p'} btn-xs" onclick="PQ.openCp(${p.id})">${hasRows ? 'Open Control Plan' : '⚙️ Create Control Plan'}</button>
+        </td>
+      </tr>`;
+    }).join('') || `<tr><td colspan="5" style="padding:28px;text-align:center;color:#9ca3af">
+      No parts yet — build a <a style="color:#0d2f6e;font-weight:600;cursor:pointer" onclick="PQ.renderPfdRegistry()">Process Flow Diagram</a> first, then create its Control Plan here.
+    </td></tr>`;
+
+    setC(`
+      <div class="ph"><h2>Control Plans</h2></div>
+      <div class="card">
+        <div class="tw">
+          <table>
+            <thead><tr><th>Part No.</th><th>Part Name</th><th>Control Plan Status</th><th>Characteristics</th><th></th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </div>`);
+  }
+
+  function renderCsPlaceholder() {
+    setC(`
+      <div class="ph"><h2>Check Sheets</h2></div>
+      <div class="card">
+        <div class="cb" style="padding:40px;text-align:center;color:#6b7280">
+          <div style="font-size:15px;font-weight:600;color:#374151;margin-bottom:8px">Coming soon</div>
+          <div style="max-width:480px;margin:0 auto;font-size:13px;line-height:1.6">
+            Check Sheets will let operators log actual measured values for each Control Plan
+            characteristic (pass/fail, per batch or shift), pulling the characteristic list
+            straight from the Control Plan. Build out your <a style="color:#0d2f6e;font-weight:600;cursor:pointer" onclick="PQ.renderCpRegistry()">Control Plans</a>
+            first — Check Sheets will generate from them the same way PFMEA generates from the PFD.
+          </div>
+        </div>
+      </div>`);
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  //  CONTROL PLAN
+  // ══════════════════════════════════════════════════════════════════════
+  const cpClassColor = cls => cls === 'Critical' ? { bg:'#fee2e2', fg:'#991b1b' }
+                            : cls === 'Major'    ? { bg:'#ffedd5', fg:'#c2410c' }
+                            : cls === 'Special'  ? { bg:'#dbeafe', fg:'#1d4ed8' }
+                                                  : { bg:'#dcfce7', fg:'#166534' };
+
+  const _classFromRpn = rpn => rpn >= 100 ? 'Critical' : rpn >= 50 ? 'Major' : 'Minor';
+
+  async function openCp(pid) {
+    _s.partId = pid; _s.cpEditMode = false; _s.cpPending = {};
+    await _renderCp();
+  }
+
+  function _matchCpTemplates(stepName, templates) {
+    const s = String(stepName||'').toLowerCase();
+    const cats = Object.entries(PFMEA_CATEGORY_KEYWORDS)
+      .filter(([, kws]) => kws.some(k => s.includes(k)))
+      .map(([cat]) => cat);
+    if (!cats.length) return [];
+    return templates
+      .filter(t => cats.includes(t.processCategory))
+      .sort((a, b) => cats.indexOf(a.processCategory) - cats.indexOf(b.processCategory) || (a.order||0) - (b.order||0));
+  }
+
+  // Generate Control Plan rows from the PFD. Where PFMEA rows already exist
+  // for a step, characteristics are derived from them (richer, part-tuned).
+  // Otherwise falls back to the generic per-category CP template library.
+  // Idempotent per step, same as PFMEA generation.
+  async function _generateCpFromPfd() {
+    await _cpFlushPending();
+    const [parts, allSteps, allPfmeaRows, allCpRows, allCpTemplates] = await Promise.all([
+      getAll('pq_parts'), getAll('pq_pfd_steps'), getAll('pq_pfmea_rows'), getAll('pq_cp_rows'), getAll('pq_cp_templates')
+    ]);
+    const steps = allSteps.filter(s => s.partId == _s.partId).sort((a, b) => (a.sortOrder ?? a.id) - (b.sortOrder ?? b.id));
+    if (!steps.length) { toast('No PFD steps yet — build the Process Flow Diagram first', 'e'); return; }
+
+    const existingRows = allCpRows.filter(r => r.partId == _s.partId);
+    const coveredOps = new Set(existingRows.map(r => r.opNumber));
+    let order = existingRows.length ? Math.max(...existingRows.map(r => r.order || 0)) : 0;
+    let added = 0;
+
+    for (const step of steps) {
+      if (coveredOps.has(step.opNumber)) continue;
+      const stepName = step.stepName || step.opName || '';
+      const pfmeaForStep = allPfmeaRows.filter(r => r.partId == _s.partId && r.opNumber === step.opNumber);
+
+      const sourceRows = pfmeaForStep.length
+        ? pfmeaForStep.map(pf => ({
+            charName: pf.function, classification: _classFromRpn(pf.rpn || 0),
+            method: pf.detectionControls, controlMethod: pf.preventionControls, reactionPlan: pf.recommendedAction,
+          }))
+        : (_matchCpTemplates(stepName, allCpTemplates).length
+            ? _matchCpTemplates(stepName, allCpTemplates)
+            : [{ charName: '', classification: 'Minor', method: '', controlMethod: '', reactionPlan: '' }]);
+
+      let seq = 0;
+      for (const src of sourceRows) {
+        seq += 1; order += 1;
+        await save('pq_cp_rows', {
+          partId: _s.partId, opNumber: step.opNumber, processStep: stepName,
+          machine: '', charNumber: `${step.opNumber}.${String(seq).padStart(2, '0')}`,
+          charName: src.charName || '', classification: src.classification || 'Minor',
+          specification: '', tolerance: '', method: src.method || '', gauge: '',
+          sampleSize: '', frequency: '', controlMethod: src.controlMethod || '',
+          reactionPlan: src.reactionPlan || '', remarks: '', includeInChecksheet: true, order,
+        });
+        added++;
+      }
+    }
+    toast(added ? `Generated ${added} Control Plan row(s)` : 'All PFD steps already have Control Plan rows');
+    _renderCp();
+  }
+
+  async function _renderCp() {
+    const pid = _s.partId;
+    const [parts, allSteps, allRows, allRevs] = await Promise.all([
+      getAll('pq_parts'), getAll('pq_pfd_steps'), getAll('pq_cp_rows'), getAll('pq_revisions')
+    ]);
+    const part = parts.find(p => p.id == pid);
+    if (!part) { toast('Part not found', 'e'); renderCpRegistry(); return; }
+
+    const steps = allSteps.filter(s => s.partId == pid).sort((a, b) => (a.sortOrder ?? a.id) - (b.sortOrder ?? b.id));
+    const rows  = allRows.filter(r => r.partId == pid).sort((a, b) => (a.order ?? a.id) - (b.order ?? b.id));
+
+    const locked   = !_s.cpEditMode;
+    const status   = part.cpStatus || 'Draft';
+    const released = status === 'Released';
+    const pending  = status === 'Pending Approval';
+    const docNo    = `VRA-CP-${part.partNumber||'XXX'}-REV-${part.cpRev||'A'}`;
+
+    const badge = released ? `<span class="badge ba">Released</span>`
+                : pending  ? `<span class="badge bp">⏳ Pending Approval</span>`
+                           : `<span class="badge bd">Draft</span>`;
+
+    const genBtn = `<button class="btn btn-o btn-sm" onclick="PQ._generateCpFromPfd()">⚙️ Generate from Process Flow</button>`;
+    const actions = _s.cpEditMode
+      ? `${genBtn}
+         <button class="btn btn-g btn-sm" onclick="PQ._cpSaveAll()">📤 Submit for Approval</button>
+         <button class="btn btn-o btn-sm" onclick="PQ._cpCancelEdit()">Cancel</button>`
+      : released
+        ? `<button class="btn btn-o btn-sm" onclick="window.print()">🖨 Print</button>
+           <button class="btn btn-o btn-sm" onclick="PQ._cpNewRevision()">🔄 New Revision</button>`
+        : pending
+          ? `<button class="btn btn-o btn-sm" onclick="window.print()">🖨 Print</button>
+             <button class="btn btn-g btn-sm" onclick="PQ._cpApprove()">✓ Approve</button>
+             <button class="btn btn-p btn-sm" onclick="PQ._cpStartEdit()">✏️ Edit</button>`
+          : `${genBtn}
+             <button class="btn btn-o btn-sm" onclick="window.print()">🖨 Print</button>
+             <button class="btn btn-p btn-sm" onclick="PQ._cpStartEdit()">✏️ Edit</button>`;
+
+    const bands = { Critical:0, Major:0, Special:0, Minor:0 };
+    rows.forEach(r => { bands[r.classification||'Minor'] = (bands[r.classification||'Minor']||0) + 1; });
+
+    setC(`
+      <style>
+        @media print { .no-print { display:none !important; } aside, .topbar { display:none !important; } .main { margin:0 !important; } .content { padding:8px !important; } }
+        .btn-g { background:#16a34a;color:#fff;border:none; } .btn-g:hover { background:#15803d; }
+        .cp-tbl { width:100%; border-collapse:collapse; font-size:11.5px; }
+        .cp-tbl th { background:#1e3a5f; color:#fff; padding:6px 8px; text-align:left; border:1px solid #ccc; font-size:10px; text-transform:uppercase; letter-spacing:.2px; }
+        .cp-tbl td { padding:5px 7px; border:1px solid #e5e7eb; vertical-align:top; }
+        .cp-in { width:100%; border:1px solid #c7d2fe; border-radius:3px; padding:3px 5px; font-size:11.5px; background:#fff; font-family:inherit; }
+        .cp-cls { display:inline-block; min-width:52px; text-align:center; font-weight:700; padding:3px 6px; border-radius:4px; font-size:11px; }
+      </style>
+
+      <div class="ph no-print">
+        <div>
+          <div style="display:flex;align-items:center;gap:7px;margin-bottom:3px">
+            <span class="tp" style="background:#0e7490">CP</span>
+            ${badge}
+            <span class="mono" style="color:#0d2f6e;font-weight:700">${esc(docNo)}</span>
+            <span style="color:#9ca3af">Rev ${esc(part.cpRev||'A')}</span>
+          </div>
+          <h2>${esc(part.partName||'')} — Control Plan</h2>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <button class="btn btn-o btn-sm" onclick="PQ.renderCpRegistry()">← Control Plans</button>
+          ${actions}
+        </div>
+      </div>
+
+      ${_s.cpEditMode ? `<div class="alert al-d no-print" style="margin-bottom:12px">
+        ✏️ Editing — rows can be freely added, edited or deleted while in Draft; nothing is logged until you click <b>Submit for Approval</b>.
+      </div>` : ''}
+      ${pending && !_s.cpEditMode ? `<div class="alert al-w no-print" style="margin-bottom:12px">
+        ⏳ Pending approval. Click <b>Approve</b> to release it, or <b>Edit</b> to revise.
+      </div>` : ''}
+      ${!rows.length ? `<div class="alert al-d no-print" style="margin-bottom:12px">
+        No Control Plan rows yet. Click <b>Generate from Process Flow</b> — characteristics are derived from the PFMEA where one exists for a step, otherwise from the standard control-plan library.
+      </div>` : ''}
+
+      <div style="border:2px solid #0d2f6e;margin-bottom:16px;font-size:12px">
+        <table style="width:100%;border-collapse:collapse">
+          <tr>
+            <td rowspan="3" style="padding:10px 16px;border-right:1px solid #0d2f6e;width:180px;vertical-align:middle;text-align:center">
+              <div style="font-weight:800;font-size:15px;color:#0d2f6e;letter-spacing:.5px">V R ALUCAST</div>
+              <div style="font-size:9px;color:#6b7280;letter-spacing:.3px;margin-top:2px">QUALITY MANAGEMENT SYSTEM</div>
+            </td>
+            <td colspan="4" style="padding:8px 14px;border-bottom:1px solid #0d2f6e;font-weight:700;font-size:13px;color:#0d2f6e;text-align:center;letter-spacing:.5px">
+              CONTROL PLAN
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:6px 12px;border-right:1px solid #d1d5db;border-bottom:1px solid #d1d5db;width:22%">
+              <div style="font-size:9px;color:#6b7280;font-weight:600;text-transform:uppercase">Part Name</div>
+              <div style="font-weight:600;margin-top:2px">${esc(part.partName||'')}</div>
+            </td>
+            <td style="padding:6px 12px;border-right:1px solid #d1d5db;border-bottom:1px solid #d1d5db;width:22%">
+              <div style="font-size:9px;color:#6b7280;font-weight:600;text-transform:uppercase">Part Number</div>
+              <div style="font-weight:600;margin-top:2px">${esc(part.partNumber||'')}</div>
+            </td>
+            <td style="padding:6px 12px;border-right:1px solid #d1d5db;border-bottom:1px solid #d1d5db;width:22%">
+              <div style="font-size:9px;color:#6b7280;font-weight:600;text-transform:uppercase">Material</div>
+              <div style="font-weight:600;margin-top:2px">${esc(part.material||'')}</div>
+            </td>
+            <td style="padding:6px 12px;border-bottom:1px solid #d1d5db">
+              <div style="font-size:9px;color:#6b7280;font-weight:600;text-transform:uppercase">Date</div>
+              <div style="font-weight:600;margin-top:2px">${esc(part.date||'')}</div>
+            </td>
+          </tr>
+          <tr>
+            <td colspan="2" style="padding:6px 12px;border-right:1px solid #d1d5db">
+              <div style="font-size:9px;color:#6b7280;font-weight:600;text-transform:uppercase">Controlled Document Number</div>
+              <div style="font-weight:700;color:#0d2f6e;font-family:monospace;margin-top:2px">${esc(docNo)}</div>
+            </td>
+            <td style="padding:6px 12px;border-right:1px solid #d1d5db">
+              <div style="font-size:9px;color:#6b7280;font-weight:600;text-transform:uppercase">Revision</div>
+              <div style="font-weight:800;font-size:16px;color:#0d2f6e;margin-top:2px">${esc(part.cpRev||'A')}</div>
+            </td>
+            <td style="padding:6px 12px">
+              <div style="font-size:9px;color:#6b7280;font-weight:600;text-transform:uppercase">Status</div>
+              <div style="font-weight:700;margin-top:2px;color:${released?'#16a34a':pending?'#d97706':'#6b7280'}">${esc(status)}</div>
+            </td>
+          </tr>
+        </table>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 240px;gap:14px;align-items:start">
+        <div>
+          ${steps.map(step => _buildCpGroup(step, rows.filter(r => r.opNumber === step.opNumber), locked)).join('')}
+          ${!steps.length ? `<div class="card"><div class="cb" style="padding:24px;text-align:center;color:#9ca3af">No PFD steps — build the Process Flow Diagram first</div></div>` : ''}
+        </div>
+
+        <div class="no-print">
+          <div class="card" style="margin-bottom:14px">
+            <div class="ch"><h5>Classification Summary</h5></div>
+            <div class="cb" style="padding:11px">
+              ${['Critical','Major','Special','Minor'].map(label => {
+                const c = cpClassColor(label);
+                return `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:12.5px">
+                  <span style="color:${c.fg};font-weight:600">${label}</span><span style="font-weight:700">${bands[label]||0}</span>
+                </div>`;
+              }).join('')}
+              <div style="border-top:1px solid #f0f3f9;margin-top:6px;padding-top:6px;font-size:12px;color:#6b7280">${rows.length} row(s) total</div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="ch"><h5>Revisions</h5></div>
+            <div class="cb" style="padding:8px">
+              ${(() => {
+                let entries = allRevs.filter(r => r.partId == pid && r.docType === 'cp').sort((a, b) => b.id - a.id);
+                if (!entries.length) {
+                  entries = [{ revision: part.cpRev||'A', status: part.cpStatus||'Draft', date: part.date||'', changedBy: part.approvedBy||'', changeSummary: 'Initial revision', _fallback: true }];
+                }
+                return entries.map(r => {
+                  const isCurrent = r._fallback || r.revision === part.cpRev;
+                  const stBadge = r.status === 'Released'
+                    ? `<span class="badge ba" style="font-size:10px">Released</span>`
+                    : r.status === 'Pending Approval'
+                      ? `<span class="badge bp" style="font-size:10px">Pending</span>`
+                      : `<span class="badge bd" style="font-size:10px">Draft</span>`;
+                  return `<div style="padding:6px 7px;background:${isCurrent?'#edf1fb':'#f9fafc'};border-radius:6px;margin-bottom:3px;border:1px solid ${isCurrent?'#c5d0f0':'#e5e7eb'}">
+                    <div style="display:flex;justify-content:space-between;align-items:center">
+                      <span class="mono" style="font-weight:700;color:#0d2f6e">Rev ${esc(r.revision)}</span>
+                      ${stBadge}
+                    </div>
+                    <div class="muted" style="font-size:11px;margin-top:2px">${esc(r.date||'')} · ${esc(r.changedBy||'')}</div>
+                    ${r.changeSummary ? `<div style="font-size:11px;color:#374151;margin-top:2px">${esc(r.changeSummary)}</div>` : ''}
+                  </div>`;
+                }).join('');
+              })()}
+            </div>
+          </div>
+        </div>
+      </div>
+    `);
+  }
+
+  function _buildCpGroup(step, rows, locked) {
+    const stepName = step.stepName || step.opName || '';
+    const body = rows.length ? rows.map(r => _buildCpRow(r, locked)).join('') :
+      `<tr><td colspan="${locked?11:12}" style="text-align:center;color:#9ca3af;padding:10px">No characteristics for this step${locked?'':' — click "+ Add Characteristic" below'}</td></tr>`;
+
+    return `
+      <div class="card" style="margin-bottom:14px">
+        <div class="ch" style="display:flex;justify-content:space-between;align-items:center">
+          <h5><span class="mono" style="color:#0d2f6e">${esc(step.opNumber||'')}</span> ${esc(stepName)}</h5>
+        </div>
+        <div class="cb" style="padding:0;overflow-x:auto">
+          <table class="cp-tbl">
+            <thead><tr>
+              <th>Char #</th>
+              <th style="min-width:140px">Characteristic</th>
+              <th>Class</th>
+              <th style="min-width:100px">Machine</th>
+              <th style="min-width:110px">Specification</th>
+              <th style="min-width:90px">Tolerance</th>
+              <th style="min-width:140px">Method</th>
+              <th style="min-width:100px">Gauge</th>
+              <th style="min-width:90px">Sample Size</th>
+              <th style="min-width:100px">Frequency</th>
+              <th style="min-width:140px">Control Method</th>
+              <th style="min-width:140px">Reaction Plan</th>
+              ${locked ? '' : '<th></th>'}
+            </tr></thead>
+            <tbody>${body}</tbody>
+          </table>
+        </div>
+        ${!locked ? `<div style="padding:8px 12px">
+          <button class="btn btn-o btn-xs" onclick="PQ._addCpRow('${esc(step.opNumber||'')}','${esc(stepName).replace(/'/g,"\\'")}')">+ Add Characteristic</button>
+        </div>` : ''}
+      </div>`;
+  }
+
+  function _buildCpRow(r, locked) {
+    const cc = cpClassColor(r.classification||'Minor');
+    if (locked) {
+      return `<tr>
+        <td class="mono">${esc(r.charNumber||'')}</td>
+        <td style="font-weight:600">${esc(r.charName||'')}</td>
+        <td><span class="cp-cls" style="background:${cc.bg};color:${cc.fg}">${esc(r.classification||'Minor')}</span></td>
+        <td>${esc(r.machine||'')}</td>
+        <td>${esc(r.specification||'')}</td>
+        <td>${esc(r.tolerance||'')}</td>
+        <td>${esc(r.method||'')}</td>
+        <td>${esc(r.gauge||'')}</td>
+        <td>${esc(r.sampleSize||'')}</td>
+        <td>${esc(r.frequency||'')}</td>
+        <td>${esc(r.controlMethod||'')}</td>
+        <td>${esc(r.reactionPlan||'')}</td>
+      </tr>`;
+    }
+    return `<tr>
+      <td><input class="cp-in" value="${esc(r.charNumber||'')}" oninput="PQ._cpCell(${r.id},'charNumber',this.value)"></td>
+      <td><textarea class="cp-in" rows="2" oninput="PQ._cpCell(${r.id},'charName',this.value)">${esc(r.charName||'')}</textarea></td>
+      <td>
+        <select class="cp-in" onchange="PQ._cpCell(${r.id},'classification',this.value)">
+          ${['Critical','Major','Special','Minor'].map(c => `<option value="${c}" ${((r.classification||'Minor')===c)?'selected':''}>${c}</option>`).join('')}
+        </select>
+      </td>
+      <td><input class="cp-in" value="${esc(r.machine||'')}" oninput="PQ._cpCell(${r.id},'machine',this.value)"></td>
+      <td><input class="cp-in" value="${esc(r.specification||'')}" oninput="PQ._cpCell(${r.id},'specification',this.value)"></td>
+      <td><input class="cp-in" value="${esc(r.tolerance||'')}" oninput="PQ._cpCell(${r.id},'tolerance',this.value)"></td>
+      <td><textarea class="cp-in" rows="2" oninput="PQ._cpCell(${r.id},'method',this.value)">${esc(r.method||'')}</textarea></td>
+      <td><input class="cp-in" value="${esc(r.gauge||'')}" oninput="PQ._cpCell(${r.id},'gauge',this.value)"></td>
+      <td><input class="cp-in" value="${esc(r.sampleSize||'')}" oninput="PQ._cpCell(${r.id},'sampleSize',this.value)"></td>
+      <td><input class="cp-in" value="${esc(r.frequency||'')}" oninput="PQ._cpCell(${r.id},'frequency',this.value)"></td>
+      <td><textarea class="cp-in" rows="2" oninput="PQ._cpCell(${r.id},'controlMethod',this.value)">${esc(r.controlMethod||'')}</textarea></td>
+      <td><textarea class="cp-in" rows="2" oninput="PQ._cpCell(${r.id},'reactionPlan',this.value)">${esc(r.reactionPlan||'')}</textarea></td>
+      <td><button onclick="PQ._deleteCpRow(${r.id})" title="Delete"
+            style="border:1px solid #fca5a5;background:#fee2e2;color:#b91c1c;border-radius:3px;padding:2px 8px;cursor:pointer;font-size:12px">✕</button></td>
+    </tr>`;
+  }
+
+  function _cpCell(id, field, val) {
+    if (!_s.cpPending[id]) _s.cpPending[id] = {};
+    _s.cpPending[id][field] = val;
+  }
+
+  async function _cpFlushPending() {
+    if (!Object.keys(_s.cpPending).length) return;
+    const allRows = await getAll('pq_cp_rows');
+    for (const [id, changes] of Object.entries(_s.cpPending)) {
+      const existing = allRows.find(r => r.id == id);
+      if (existing) await save('pq_cp_rows', Object.assign({}, existing, changes, { id: parseInt(id) }));
+    }
+    _s.cpPending = {};
+  }
+
+  function _cpStartEdit() { _s.cpEditMode = true; _renderCp(); }
+  function _cpCancelEdit() { _s.cpEditMode = false; _s.cpPending = {}; _renderCp(); }
+
+  async function _addCpRow(opNumber, processStep) {
+    await _cpFlushPending();
+    const allRows = await getAll('pq_cp_rows');
+    const existing = allRows.filter(r => r.partId == _s.partId);
+    const maxOrder = existing.length ? Math.max(...existing.map(r => r.order || 0)) : 0;
+    await save('pq_cp_rows', {
+      partId: _s.partId, opNumber, processStep,
+      machine: '', charNumber: '', charName: '', classification: 'Minor',
+      specification: '', tolerance: '', method: '', gauge: '', sampleSize: '', frequency: '',
+      controlMethod: '', reactionPlan: '', remarks: '', includeInChecksheet: true,
+      order: maxOrder + 1,
+    });
+    _s.cpEditMode = true;
+    _renderCp();
+  }
+
+  async function _deleteCpRow(id) {
+    if (!confirm('Delete this characteristic?')) return;
+    await remove('pq_cp_rows', id);
+    delete _s.cpPending[id];
+    _renderCp();
+  }
+
+  async function _cpSaveAll() {
+    const summary = prompt('Change summary (required):');
+    if (summary === null) return;
+    if (!summary.trim()) { toast('Please enter a change summary', 'e'); return; }
+
+    await _cpFlushPending();
+
+    const parts  = await getAll('pq_parts');
+    const part   = parts.find(p => p.id == _s.partId);
+    const newRev = nextRev(part.cpRev || 'A');
+
+    await save('pq_parts', Object.assign({}, part, {
+      id: part.id, cpRev: newRev, cpStatus: 'Pending Approval',
+      cpLastChangeSummary: summary.trim(), cpLastChangedAt: new Date().toISOString(),
+    }));
+
+    await save('pq_revisions', {
+      partId: _s.partId, docType: 'cp', revision: newRev, status: 'Pending Approval',
+      changeSummary: summary.trim(), changedBy: _userName(), date: _fmtDate(),
+    });
+
+    _s.cpEditMode = false;
+    toast(`Submitted for approval — Rev ${newRev}`);
+    _renderCp();
+  }
+
+  async function _cpApprove() {
+    if (!confirm('Approve and release this Control Plan?')) return;
+    const parts = await getAll('pq_parts');
+    const part  = parts.find(p => p.id == _s.partId);
+    const by    = _userName();
+
+    await save('pq_parts', Object.assign({}, part, {
+      id: part.id, cpStatus: 'Released', cpApprovedBy: by, cpApprovedAt: new Date().toISOString(),
+    }));
+
+    const allRevs = await getAll('pq_revisions');
+    const revEntry = allRevs.find(r => r.partId == _s.partId && r.docType === 'cp' && r.revision === part.cpRev);
+    if (revEntry) {
+      await save('pq_revisions', Object.assign({}, revEntry, {
+        id: revEntry.id, status: 'Released', approvedBy: by, approvedAt: _fmtDate(),
+      }));
+    }
+
+    toast('Control Plan Released');
+    _renderCp();
+  }
+
+  async function _cpNewRevision() {
+    if (!confirm('Start a new revision? The current Released version will be superseded.')) return;
+    const parts = await getAll('pq_parts');
+    const part  = parts.find(p => p.id == _s.partId);
+    await save('pq_parts', Object.assign({}, part, { id: part.id, cpStatus: 'Draft' }));
+    _s.cpEditMode = true;
+    toast('New revision started — make your changes then Submit for Approval');
+    _renderCp();
+  }
+
   // ── Public ────────────────────────────────────────────────────────────
   return {
     renderDashboard,
@@ -1238,5 +1781,9 @@ const PQ = (() => {
     openPfmea, _generatePfmeaFromPfd,
     _pfmeaStartEdit, _pfmeaCancelEdit, _pfmeaSaveAll, _pfmeaApprove, _pfmeaNewRevision,
     _addPfmeaRow, _deletePfmeaRow, _pfmeaCell, _pfmeaRatingChange,
+    renderPfdRegistry, renderPfmeaRegistry, renderCpRegistry, renderCsPlaceholder,
+    openCp, _generateCpFromPfd,
+    _cpStartEdit, _cpCancelEdit, _cpSaveAll, _cpApprove, _cpNewRevision,
+    _addCpRow, _deleteCpRow, _cpCell,
   };
 })();
