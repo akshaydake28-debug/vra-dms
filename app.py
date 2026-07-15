@@ -620,6 +620,7 @@ QMS2_MODULES = [
     'qms2_op_order',
     # Process Quality (PQ) modules
     'pq_parts','pq_pfd_steps','pq_pfmea_rows','pq_pfmea_templates','pq_cp_rows','pq_cp_templates','pq_cs_records','pq_revisions',
+    'pq_grades','pq_grade_doc',
 ]
 
 def qms2_flat(r):
@@ -1229,6 +1230,80 @@ def seed_pq_cp_templates():
     db.session.commit()
     print("Control Plan fallback template library seeded")
 
+
+# ══════════════════════════════════════════════════════
+#  GRADE MASTER — controlled reference document
+#  Sourced from VRA-SOP-001 (Raw Material Chemical Composition) and
+#  VRA-SOP-017 (Alloy Specification and Color Codes), both Active Rev A
+#  in the Documents module. AC4B and LM2 have composition data but no
+#  color code assigned in SOP-017 (left blank until updated there).
+# ══════════════════════════════════════════════════════
+
+def seed_pq_grades():
+    if GenericRecord.query.filter_by(module='pq_grades').count() > 0:
+        return
+
+    def grade(name, colour, standard, notes, comp, order):
+        return {'grade': name, 'colourCode': colour, 'standard': standard,
+                'notes': notes, 'composition': comp, 'order': order}
+
+    GRADES = [
+        grade('ADC12', 'Green', 'JIS H5302',
+              'High-pressure die casting. Primary grade for V R Alucast production.',
+              'Si:9.6–12.0%, Fe:≤1.3%, Cu:1.5–3.5%, Mg:≤0.30%, Mn:≤0.50%, Ti:≤0.30%, '
+              'Zn:≤1.0%, Ni:≤0.50%, Pb:≤0.20%, Sn:≤0.20%, Al:Balance', 1),
+        grade('A380', 'Blue', 'ASTM B85',
+              'General purpose die casting alloy. Good fluidity and pressure tightness.',
+              'Si:7.5–9.5%, Fe:≤1.3%, Cu:3.0–4.0%, Mg:≤0.10%, Mn:≤0.50%, '
+              'Zn:≤3.0%, Ni:≤0.50%, Sn:≤0.35%, Al:Balance', 2),
+        grade('A383', 'Yellow', 'ASTM B85',
+              'Improved die casting alloy. Better for thin-wall complex parts.',
+              'Si:9.5–11.5%, Fe:≤0.8%, Cu:2.0–3.0%, Mg:0.10–0.20%, Mn:≤0.50%, '
+              'Zn:≤3.0%, Ni:≤0.30%, Sn:≤0.15%, Al:Balance', 3),
+        grade('AC4B', '', 'JIS H5202',
+              'Sand/gravity casting. Good machinability and corrosion resistance.',
+              'Si:7.0–10.0%, Fe:≤0.8%, Cu:2.0–4.0%, Mg:≤0.50%, Mn:≤0.50%, Ti:≤0.20%, '
+              'Zn:≤0.10%, Ni:≤0.10%, Pb:≤0.20%, Sn:≤0.10%, Al:Balance', 4),
+        grade('ANSI360', 'Black', 'ANSI H35.1',
+              'Similar to A380. Used in North American specifications.',
+              'Si:9.0–10.0%, Fe:≤2.0%, Cu:≤0.4%, Mg:0.40–0.60%, Mn:≤0.35%, '
+              'Zn:≤0.5%, Ni:≤0.5%, Sn:≤0.15%, Al:Balance', 5),
+        grade('LM2', '', 'BS 1490',
+              'British standard die casting alloy. General purpose.',
+              'Si:9.0–11.5%, Fe:≤1.0%, Cu:0.7–2.5%, Mg:≤0.30%, Mn:≤0.50%, Ti:≤0.20%, '
+              'Zn:≤2.0%, Ni:≤0.50%, Pb:≤0.10%, Sn:≤0.20%, Al:Balance', 6),
+        grade('LM6', 'Brown', 'BS 1490',
+              'High silicon alloy. Excellent corrosion resistance and castability.',
+              'Si:10.0–13.0%, Fe:≤0.5%, Cu:≤0.2%, Mg:≤0.20%, Mn:≤0.50%, Ti:≤0.20%, '
+              'Zn:≤0.1%, Ni:≤0.1%, Pb:≤0.10%, Sn:≤0.05%, Al:Balance', 7),
+        grade('LM24', 'White', 'BS 1490',
+              'High strength die casting alloy. Good pressure tightness.',
+              'Si:7.5–9.5%, Fe:≤1.3%, Cu:3.0–4.0%, Mg:0.20–0.40%, Mn:≤0.50%, Ti:≤0.20%, '
+              'Zn:≤3.0%, Ni:≤0.50%, Pb:≤0.30%, Sn:≤0.20%, Sr:≤0.50%, Al:Balance', 8),
+    ]
+    for g in GRADES:
+        db.session.add(GenericRecord(module='pq_grades', data=json.dumps(g)))
+
+    # Singleton controlled-document header (Grade Master isn't per-part).
+    # Seeded as Released since it's a direct digitisation of already-Active
+    # SOPs, not a new draft document.
+    today = __import__('datetime').date.today().isoformat()
+    doc = GenericRecord(module='pq_grade_doc', data=json.dumps({
+        'rev': 'A', 'status': 'Released',
+        'preparedBy': 'Quality Team', 'approvedBy': 'Akshay Dake',
+        'date': today, 'approvedAt': today,
+        'lastChangeSummary': 'Initial import from VRA-SOP-001 (Raw Material Chemical Composition) and VRA-SOP-017 (Alloy Specification and Color Codes)',
+    }))
+    db.session.add(doc)
+    db.session.flush()
+    db.session.add(GenericRecord(module='pq_revisions', data=json.dumps({
+        'partId': None, 'docType': 'grademaster', 'revision': 'A', 'status': 'Released',
+        'changeSummary': 'Initial import from VRA-SOP-001 and VRA-SOP-017',
+        'changedBy': 'Akshay Dake', 'date': today, 'approvedBy': 'Akshay Dake', 'approvedAt': today,
+    })))
+    db.session.commit()
+    print("Grade Master seeded (8 grades from VRA-SOP-001 / VRA-SOP-017)")
+
 with app.app_context():
     try:
         db.create_all()
@@ -1238,6 +1313,7 @@ with app.app_context():
         seed_pq_pfmea_templates()
         seed_pq_pfmea_rows_for_sample_part()
         seed_pq_cp_templates()
+        seed_pq_grades()
         # Note: seed_defaults() removed — default data comes from backup restore
     except Exception as e:
         print(f"Startup warning: {e}")
