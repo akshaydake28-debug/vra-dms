@@ -676,11 +676,20 @@ const PQ = (() => {
     const part  = parts.find(p => p.id == _s.partId);
     const by    = _userName();
 
+    // A revised, Released PFD means any PFMEA/CP already generated from the
+    // previous version may no longer match the process — flag them for
+    // review. Only flag documents that actually exist yet.
+    const [pfmeaRows, cpRows] = await Promise.all([getAll('pq_pfmea_rows'), getAll('pq_cp_rows')]);
+    const hasPfmea = pfmeaRows.some(r => r.partId == _s.partId);
+    const hasCp    = cpRows.some(r => r.partId == _s.partId);
+
     await save('pq_parts', Object.assign({}, part, {
       id:         part.id,
       pfdStatus:  'Released',
       approvedBy: by,
       approvedAt: new Date().toISOString(),
+      pfmeaOutdated: hasPfmea ? true : part.pfmeaOutdated,
+      cpOutdated:    hasCp ? true : part.cpOutdated,
     }));
 
     // Update the matching revision entry to Released
@@ -841,6 +850,7 @@ const PQ = (() => {
       }
     }
 
+    if (part.pfmeaOutdated) await save('pq_parts', Object.assign({}, part, { id: part.id, pfmeaOutdated: false }));
     toast(added ? `Generated ${added} PFMEA row(s) from process flow` : 'All PFD steps already have PFMEA rows');
     _renderPfmea();
   }
@@ -929,6 +939,9 @@ const PQ = (() => {
       </div>` : ''}
       ${!rows.length ? `<div class="alert al-d no-print" style="margin-bottom:12px">
         No PFMEA rows yet. Click <b>Generate from Process Flow</b> to auto-create rows from the PFD, pre-filled from the standard failure-mode library where a process match is found.
+      </div>` : ''}
+      ${part.pfmeaOutdated ? `<div class="alert al-w no-print" style="margin-bottom:12px">
+        ⚠️ The Process Flow Diagram has been revised since this PFMEA was last generated. Click <b>Generate from Process Flow</b> to pick up any new/changed steps, then review affected rows.
       </div>` : ''}
 
       <!-- Document header -->
@@ -1301,7 +1314,8 @@ const PQ = (() => {
       <tr>
         <td style="font-weight:600;color:#0d2f6e">${esc(p.partNumber||'')}</td>
         <td>${esc(p.partName||'')}</td>
-        <td>${statusBadge(p.pfmeaStatus)} <span class="mono" style="font-size:11px">Rev ${esc(p.pfmeaRev||'A')}</span></td>
+        <td>${statusBadge(p.pfmeaStatus)} <span class="mono" style="font-size:11px">Rev ${esc(p.pfmeaRev||'A')}</span>
+          ${p.pfmeaOutdated ? `<span title="PFD was revised since this PFMEA was last generated" style="margin-left:5px;font-size:11px;color:#b45309;font-weight:700">⚠️ PFD updated</span>` : ''}</td>
         <td>${hasRows ? `${partRows.length} row(s) · <span class="pf-rpn" style="background:${rc.bg};color:${rc.fg}">Top RPN ${maxRpn}</span>` : `<span style="color:#9ca3af">—</span>`}</td>
         <td>
           <button class="btn ${hasRows?'btn-o':'btn-p'} btn-xs" onclick="PQ.openPfmea(${p.id})">${hasRows ? 'Open PFMEA' : '⚙️ Create PFMEA'}</button>
@@ -1342,7 +1356,8 @@ const PQ = (() => {
       <tr>
         <td style="font-weight:600;color:#0d2f6e">${esc(p.partNumber||'')}</td>
         <td>${esc(p.partName||'')}</td>
-        <td>${statusBadge(p.cpStatus)} <span class="mono" style="font-size:11px">Rev ${esc(p.cpRev||'A')}</span></td>
+        <td>${statusBadge(p.cpStatus)} <span class="mono" style="font-size:11px">Rev ${esc(p.cpRev||'A')}</span>
+          ${p.cpOutdated ? `<span title="PFD was revised since this Control Plan was last generated" style="margin-left:5px;font-size:11px;color:#b45309;font-weight:700">⚠️ PFD updated</span>` : ''}</td>
         <td>${hasRows ? `${partRows.length} characteristic(s)${critical ? ` · <span style="color:#991b1b;font-weight:700">${critical} Critical</span>` : ''}` : `<span style="color:#9ca3af">—</span>`}</td>
         <td>
           <button class="btn ${hasRows?'btn-o':'btn-p'} btn-xs" onclick="PQ.openCp(${p.id})">${hasRows ? 'Open Control Plan' : '⚙️ Create Control Plan'}</button>
@@ -1945,19 +1960,27 @@ const PQ = (() => {
   // Generate Control Plan rows from the PFD. Where PFMEA rows already exist
   // for a step, characteristics are derived from them (richer, part-tuned).
   // Otherwise falls back to the generic per-category CP template library.
-  // Idempotent per step, same as PFMEA generation.
+  // Idempotent per step, same as PFMEA generation. Chemical-composition
+  // characteristics are auto-filled from the part's grade (Grade Master)
+  // so the same manual step the live datalist saves also happens for
+  // free at generation time.
+  const _COMPOSITION_HINT = /composition|chemical|alloy grade/i;
+
   async function _generateCpFromPfd() {
     await _cpFlushPending();
-    const [parts, allSteps, allPfmeaRows, allCpRows, allCpTemplates] = await Promise.all([
-      getAll('pq_parts'), getAll('pq_pfd_steps'), getAll('pq_pfmea_rows'), getAll('pq_cp_rows'), getAll('pq_cp_templates')
+    const [parts, allSteps, allPfmeaRows, allCpRows, allCpTemplates, allGrades] = await Promise.all([
+      getAll('pq_parts'), getAll('pq_pfd_steps'), getAll('pq_pfmea_rows'), getAll('pq_cp_rows'), getAll('pq_cp_templates'), getAll('pq_grades')
     ]);
+    const part = parts.find(p => p.id == _s.partId);
     const steps = allSteps.filter(s => s.partId == _s.partId).sort((a, b) => (a.sortOrder ?? a.id) - (b.sortOrder ?? b.id));
     if (!steps.length) { toast('No PFD steps yet — build the Process Flow Diagram first', 'e'); return; }
+
+    const partGrade = allGrades.find(g => String(g.grade||'').toLowerCase() === String(part?.material||'').toLowerCase());
 
     const existingRows = allCpRows.filter(r => r.partId == _s.partId);
     const coveredOps = new Set(existingRows.map(r => r.opNumber));
     let order = existingRows.length ? Math.max(...existingRows.map(r => r.order || 0)) : 0;
-    let added = 0;
+    let added = 0, gradeFilled = 0;
 
     for (const step of steps) {
       if (coveredOps.has(step.opNumber)) continue;
@@ -1981,18 +2004,25 @@ const PQ = (() => {
       let seq = 0;
       for (const src of sourceRows) {
         seq += 1; order += 1;
+        const isComposition = partGrade && _COMPOSITION_HINT.test(src.charName || '');
+        if (isComposition) gradeFilled++;
         await save('pq_cp_rows', {
           partId: _s.partId, opNumber: step.opNumber, processStep: stepName,
           machine: '', charNumber: `${step.opNumber}.${String(seq).padStart(2, '0')}`,
           charName: src.charName || '', classification: src.classification || 'Minor',
-          specification: '', tolerance: '', frequency: '',
+          specification: isComposition ? partGrade.grade : '',
+          tolerance: isComposition ? partGrade.composition : '',
+          frequency: '',
           controlMethod: src.controlMethod || '',
           reactionPlan: src.reactionPlan || '', remarks: '', includeInChecksheet: true, order,
         });
         added++;
       }
     }
-    toast(added ? `Generated ${added} Control Plan row(s)` : 'All PFD steps already have Control Plan rows');
+    if (part.cpOutdated) await save('pq_parts', Object.assign({}, part, { id: part.id, cpOutdated: false }));
+    toast(added
+      ? `Generated ${added} Control Plan row(s)${gradeFilled ? ` — ${gradeFilled} auto-filled from Grade Master (${partGrade.grade})` : ''}`
+      : 'All PFD steps already have Control Plan rows');
     _renderCp();
   }
 
@@ -2077,6 +2107,9 @@ const PQ = (() => {
       </div>` : ''}
       ${!rows.length ? `<div class="alert al-d no-print" style="margin-bottom:12px">
         No Control Plan rows yet. Click <b>Generate from Process Flow</b> — characteristics are derived from the PFMEA where one exists for a step, otherwise from the standard control-plan library.
+      </div>` : ''}
+      ${part.cpOutdated ? `<div class="alert al-w no-print" style="margin-bottom:12px">
+        ⚠️ The Process Flow Diagram has been revised since this Control Plan was last generated. Click <b>Generate from Process Flow</b> to pick up any new/changed steps, then review affected rows.
       </div>` : ''}
 
       <div style="border:2px solid #0d2f6e;margin-bottom:16px;font-size:12px">
