@@ -2,7 +2,6 @@
 const PQ = (() => {
 
   const _s = { partId: null, editMode: false, pending: {}, pfmeaEditMode: false, pfmeaPending: {}, cpEditMode: false, cpPending: {}, cpPrintFilter: '' };
-  const _g = { editMode: false, pending: {} };
 
   const GRADE_COLOR_SWATCH = {
     green:'#16a34a', blue:'#2563eb', yellow:'#ca8a04', black:'#111827',
@@ -1653,44 +1652,12 @@ const PQ = (() => {
   }
 
   // ══════════════════════════════════════════════════════════════════════
-  //  GRADE MASTER — shared controlled reference document (not per-part).
+  //  GRADE MASTER — plain master list (like the Gauge Register: no Draft/
+  //  Approve workflow, no revisions — edit a grade, it saves immediately).
   //  Feeds the Control Plan's Specification → Tolerance auto-fill.
   // ══════════════════════════════════════════════════════════════════════
   async function renderGradeMaster() {
-    _g.editMode = false; _g.pending = {};
-    await _renderGradeMaster();
-  }
-
-  async function _renderGradeMaster() {
-    const [docs, grades, allRevs] = await Promise.all([
-      getAll('pq_grade_doc'), getAll('pq_grades'), getAll('pq_revisions')
-    ]);
-    let doc = docs[0];
-    if (!doc) doc = await save('pq_grade_doc', { rev: 'A', status: 'Draft', date: _fmtDate() });
-    const rows = grades.slice().sort((a, b) => (a.order ?? a.id) - (b.order ?? b.id));
-
-    const locked   = !_g.editMode;
-    const status   = doc.status || 'Draft';
-    const released = status === 'Released';
-    const pending  = status === 'Pending Approval';
-    const docNo    = `VRA-GRADEMASTER-REV-${doc.rev||'A'}`;
-
-    const badge = released ? `<span class="badge ba">Released</span>`
-                : pending  ? `<span class="badge bp">⏳ Pending Approval</span>`
-                           : `<span class="badge bd">Draft</span>`;
-
-    const actions = _g.editMode
-      ? `<button class="btn btn-g btn-sm" onclick="PQ._gSaveAll()">📤 Submit for Approval</button>
-         <button class="btn btn-o btn-sm" onclick="PQ._gCancelEdit()">Cancel</button>`
-      : released
-        ? `<button class="btn btn-o btn-sm" onclick="window.print()">🖨 Print</button>
-           <button class="btn btn-o btn-sm" onclick="PQ._gNewRevision()">🔄 New Revision</button>`
-        : pending
-          ? `<button class="btn btn-o btn-sm" onclick="window.print()">🖨 Print</button>
-             <button class="btn btn-g btn-sm" onclick="PQ._gApprove()">✓ Approve</button>
-             <button class="btn btn-p btn-sm" onclick="PQ._gStartEdit()">✏️ Edit</button>`
-          : `<button class="btn btn-o btn-sm" onclick="window.print()">🖨 Print</button>
-             <button class="btn btn-p btn-sm" onclick="PQ._gStartEdit()">✏️ Edit</button>`;
+    const grades = (await getAll('pq_grades')).sort((a, b) => (a.order ?? a.id) - (b.order ?? b.id));
 
     setC(`
       <style>
@@ -1699,288 +1666,151 @@ const PQ = (() => {
           aside, .topbar { display:none !important; }
           .main { margin:0 !important; }
           .content { padding:8px !important; }
-          .pq-doc-grid { display:block !important; }
           .cb { overflow:visible !important; }
+          /* Multi-column grid layouts can silently reorder items across a
+             print page break in this engine — force a single column for
+             print so every grade prints in the same order it's listed on
+             screen, with no risk of shuffling. */
+          .gm-grid { display:block !important; }
+          .gm-grid .card { margin-bottom:12px !important; }
         }
-        .btn-g { background:#16a34a;color:#fff;border:none; } .btn-g:hover { background:#15803d; }
-        .gm-tbl { width:100%; border-collapse:collapse; font-size:11.5px; }
-        .gm-tbl th { background:#1e3a5f; color:#fff; padding:6px 8px; text-align:left; border:1px solid #ccc; font-size:10px; text-transform:uppercase; letter-spacing:.2px; }
-        .gm-tbl td { padding:5px 7px; border:1px solid #e5e7eb; vertical-align:top; }
-        .gm-in { width:100%; border:1px solid #c7d2fe; border-radius:3px; padding:3px 5px; font-size:11.5px; background:#fff; font-family:inherit; }
+        .gm-tbl { width:auto; min-width:260px; border-collapse:collapse; font-size:12px; }
+        .gm-tbl th, .gm-tbl td { padding:5px 10px; border:1px solid #e5e7eb; text-align:left; }
+        .gm-tbl th { background:#f3f4f6; color:#374151; font-weight:600; width:70px; }
         .gm-swatch { display:inline-block; width:11px; height:11px; border-radius:3px; border:1px solid #0002; margin-right:5px; vertical-align:middle; }
-        .gm-el-grid { display:grid; grid-template-columns:repeat(6,1fr); gap:6px; margin-bottom:8px; }
-        .gm-el-grid label { font-size:9px; color:#6b7280; text-transform:uppercase; font-weight:600; display:block; margin-bottom:2px; }
       </style>
 
       <div class="ph no-print">
-        <div>
-          <div style="display:flex;align-items:center;gap:7px;margin-bottom:3px">
-            <span class="tp" style="background:#166534">GM</span>
-            ${badge}
-            <span class="mono" style="color:#0d2f6e;font-weight:700">${esc(docNo)}</span>
-            <span style="color:#9ca3af">Rev ${esc(doc.rev||'A')}</span>
-          </div>
-          <h2>Grade Master — Alloy Specification &amp; Color Codes</h2>
-        </div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">${actions}</div>
-      </div>
-
-      ${_g.editMode ? `<div class="alert al-d no-print" style="margin-bottom:12px">
-        ✏️ Editing — rows can be freely added, edited or deleted while in Draft; nothing is logged until you click <b>Submit for Approval</b>.
-      </div>` : ''}
-      ${pending && !_g.editMode ? `<div class="alert al-w no-print" style="margin-bottom:12px">
-        ⏳ Pending approval. Click <b>Approve</b> to release it, or <b>Edit</b> to revise.
-      </div>` : ''}
-
-      <div style="border:2px solid #0d2f6e;margin-bottom:16px;font-size:12px">
-        <table style="width:100%;border-collapse:collapse">
-          <tr>
-            <td rowspan="2" style="padding:10px 16px;border-right:1px solid #0d2f6e;width:180px;vertical-align:middle;text-align:center">
-              <div style="font-weight:800;font-size:15px;color:#0d2f6e;letter-spacing:.5px">V R ALUCAST</div>
-              <div style="font-size:9px;color:#6b7280;letter-spacing:.3px;margin-top:2px">QUALITY MANAGEMENT SYSTEM</div>
-            </td>
-            <td colspan="3" style="padding:8px 14px;border-bottom:1px solid #0d2f6e;font-weight:700;font-size:13px;color:#0d2f6e;text-align:center;letter-spacing:.5px">
-              GRADE MASTER — ALLOY SPECIFICATION &amp; COLOR CODES
-            </td>
-          </tr>
-          <tr>
-            <td style="padding:6px 12px;border-right:1px solid #d1d5db">
-              <div style="font-size:9px;color:#6b7280;font-weight:600;text-transform:uppercase">Controlled Document Number</div>
-              <div style="font-weight:700;color:#0d2f6e;font-family:monospace;margin-top:2px">${esc(docNo)}</div>
-            </td>
-            <td style="padding:6px 12px;border-right:1px solid #d1d5db">
-              <div style="font-size:9px;color:#6b7280;font-weight:600;text-transform:uppercase">Revision</div>
-              <div style="font-weight:800;font-size:16px;color:#0d2f6e;margin-top:2px">${esc(doc.rev||'A')}</div>
-            </td>
-            <td style="padding:6px 12px">
-              <div style="font-size:9px;color:#6b7280;font-weight:600;text-transform:uppercase">Status</div>
-              <div style="font-weight:700;margin-top:2px;color:${released?'#16a34a':pending?'#d97706':'#6b7280'}">${esc(status)}</div>
-            </td>
-          </tr>
-        </table>
-      </div>
-
-      <div class="pq-doc-grid" style="display:grid;grid-template-columns:1fr 240px;gap:14px;align-items:start">
-        <div>
-          ${rows.length ? rows.map(g => _buildGradeCard(g, locked)).join('') : `<div class="card"><div class="cb" style="padding:24px;text-align:center;color:#9ca3af">No grades yet</div></div>`}
-          ${!locked ? `<div style="padding:4px 0">
-            <button class="btn btn-o btn-xs" onclick="PQ._addGrade()">+ Add Grade</button>
-          </div>` : ''}
-        </div>
-
-        <div class="no-print">
-          <div class="card">
-            <div class="ch"><h5>Revisions</h5></div>
-            <div class="cb" style="padding:8px">
-              ${(() => {
-                let entries = allRevs.filter(r => r.docType === 'grademaster').sort((a, b) => b.id - a.id);
-                if (!entries.length) {
-                  entries = [{ revision: doc.rev||'A', status: doc.status||'Draft', date: doc.date||'', changedBy: doc.approvedBy||'', changeSummary: 'Initial revision', _fallback: true }];
-                }
-                return entries.map(r => {
-                  const isCurrent = r._fallback || r.revision === doc.rev;
-                  const stBadge = r.status === 'Released'
-                    ? `<span class="badge ba" style="font-size:10px">Released</span>`
-                    : r.status === 'Pending Approval'
-                      ? `<span class="badge bp" style="font-size:10px">Pending</span>`
-                      : `<span class="badge bd" style="font-size:10px">Draft</span>`;
-                  return `<div style="padding:6px 7px;background:${isCurrent?'#edf1fb':'#f9fafc'};border-radius:6px;margin-bottom:3px;border:1px solid ${isCurrent?'#c5d0f0':'#e5e7eb'}">
-                    <div style="display:flex;justify-content:space-between;align-items:center">
-                      <span class="mono" style="font-weight:700;color:#0d2f6e">Rev ${esc(r.revision)}</span>
-                      ${stBadge}
-                    </div>
-                    <div class="muted" style="font-size:11px;margin-top:2px">${esc(r.date||'')} · ${esc(r.changedBy||'')}</div>
-                    ${r.changeSummary ? `<div style="font-size:11px;color:#374151;margin-top:2px">${esc(r.changeSummary)}</div>` : ''}
-                  </div>`;
-                }).join('');
-              })()}
-            </div>
-          </div>
+        <h2>Grade Master — Alloy Specification &amp; Color Codes</h2>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <button class="btn btn-o btn-sm" onclick="window.print()">🖨 Print All Grades</button>
+          <button class="btn btn-p btn-sm" onclick="PQ._gradeModal()">➕ Add Grade</button>
         </div>
       </div>
 
-      <!-- Revision History Table (printed) -->
-      <div style="margin-top:24px">
-        <div style="font-size:9pt;font-weight:bold;margin-bottom:6px;color:#1e3a5f">REVISION HISTORY</div>
-        <table style="width:100%;border-collapse:collapse;font-size:9.5pt">
-          <thead><tr>
-            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Rev</th>
-            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Date</th>
-            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Prepared By</th>
-            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Approved By</th>
-            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Change Summary</th>
-          </tr></thead>
-          <tbody>
-            ${(() => {
-              let entries = allRevs.filter(r => r.docType === 'grademaster').sort((a, b) => a.id - b.id);
-              if (!entries.length) {
-                entries = [{ revision: doc.rev||'A', date: doc.date||'', changedBy: doc.preparedBy||'', approvedBy: doc.approvedBy||'Pending', changeSummary: doc.lastChangeSummary||'Initial revision' }];
-              }
-              return entries.map(r => `<tr>
-                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.revision||'')}</td>
-                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.date||'')}</td>
-                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.changedBy||'')}</td>
-                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.approvedBy||'Pending')}</td>
-                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.changeSummary||'')}</td>
-              </tr>`).join('');
-            })()}
-          </tbody>
-        </table>
+      <div class="print-only" style="display:none">
+        <h2 style="margin-bottom:2px">V R ALUCAST — Grade Master</h2>
+        <div style="font-size:11px;color:#6b7280;margin-bottom:14px">Alloy Specification &amp; Color Codes · Printed ${esc(_fmtDate())}</div>
+      </div>
+      <style>@media print { .print-only { display:block !important; } }</style>
+
+      <div class="gm-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;align-items:start">
+        ${grades.length ? grades.map(g => _buildGradeCard(g)).join('') : `<div class="card"><div class="cb" style="padding:24px;text-align:center;color:#9ca3af">No grades yet — click Add Grade</div></div>`}
       </div>
     `);
   }
 
-  // Each grade gets its own table: element symbols as column headers, one
-  // data row of values — far more legible than cramming all elements into
-  // a single composition cell.
-  function _buildGradeCard(g, locked) {
+  // Elements listed as rows (Element | Value), not columns — far more
+  // legible per-grade, especially on a printed page.
+  function _buildGradeCard(g) {
     const swatchColor = GRADE_COLOR_SWATCH[String(g.colourCode||'').toLowerCase()] || '#e5e7eb';
     const els = g.elements || {};
-
-    const titleRow = locked
-      ? `<h5><span class="gm-swatch" style="background:${swatchColor}"></span>${esc(g.grade||'')} <span style="font-weight:400;color:#6b7280;font-size:11px">${esc(g.colourCode||'Not assigned')}</span></h5>`
-      : `<div style="display:flex;gap:8px;align-items:center;flex:1">
-           <input class="gm-in" style="max-width:120px;font-weight:700" value="${esc(g.grade||'')}" placeholder="Grade name" oninput="PQ._gCell(${g.id},'grade',this.value)">
-           <input class="gm-in" style="max-width:140px" value="${esc(g.colourCode||'')}" placeholder="Color code" oninput="PQ._gCell(${g.id},'colourCode',this.value)">
-         </div>
-         <button onclick="PQ._deleteGrade(${g.id})" title="Delete grade"
-           style="border:1px solid #fca5a5;background:#fee2e2;color:#b91c1c;border-radius:3px;padding:3px 9px;cursor:pointer;font-size:12px">✕</button>`;
-
-    const elCells = locked
-      ? PQ_GRADE_ELEMENTS.map(el => `<td>${esc(els[el] || '—')}</td>`).join('')
-      : '';
-
-    const notes = locked
-      ? (g.notes ? `<div style="padding:6px 12px 10px;font-size:11.5px;color:#6b7280">${esc(g.notes)}</div>` : '')
-      : `<div style="padding:8px 12px 10px">
-           <label style="font-size:9px;color:#6b7280;text-transform:uppercase;font-weight:600;display:block;margin-bottom:2px">Notes</label>
-           <textarea class="gm-in" rows="2" oninput="PQ._gCell(${g.id},'notes',this.value)">${esc(g.notes||'')}</textarea>
-         </div>`;
-
-    const body = locked
-      ? `<div class="cb" style="padding:0;overflow-x:auto">
-           <table class="gm-tbl">
-             <thead><tr>${PQ_GRADE_ELEMENTS.map(el => `<th>${el}</th>`).join('')}</tr></thead>
-             <tbody><tr>${elCells}</tr></tbody>
-           </table>
-         </div>${notes}`
-      : `<div class="cb" style="padding:10px 12px 0">
-           <div class="gm-el-grid">
-             ${PQ_GRADE_ELEMENTS.map(el => `
-               <div>
-                 <label>${el}</label>
-                 <input class="gm-in" value="${esc(els[el]||'')}" placeholder="—" oninput="PQ._gElementCell(${g.id},'${el}',this.value)">
-               </div>`).join('')}
-           </div>
-         </div>${notes}`;
+    const elRows = PQ_GRADE_ELEMENTS
+      .filter(el => els[el])
+      .map(el => `<tr><th>${el}</th><td>${esc(els[el])}</td></tr>`)
+      .join('');
 
     return `
-      <div class="card" style="margin-bottom:12px">
-        <div class="ch" style="display:flex;justify-content:space-between;align-items:center">${titleRow}</div>
-        ${body}
+      <div class="card" style="margin-bottom:0;break-inside:avoid;page-break-inside:avoid">
+        <div class="ch" style="display:flex;justify-content:space-between;align-items:center">
+          <h5><span class="gm-swatch" style="background:${swatchColor}"></span>${esc(g.grade||'')}
+            <span style="font-weight:400;color:#6b7280;font-size:11px">${esc(g.colourCode||'Not assigned')}</span></h5>
+          <div class="no-print">
+            <button onclick="PQ._gradeModal(${g.id})" title="Edit"
+              style="border:1px solid #c7d2fe;background:#eef2ff;color:#3730a3;border-radius:3px;padding:2px 8px;cursor:pointer;font-size:12px">✏️</button>
+            <button onclick="PQ._deleteGrade(${g.id})" title="Delete"
+              style="border:1px solid #fca5a5;background:#fee2e2;color:#b91c1c;border-radius:3px;padding:2px 8px;cursor:pointer;font-size:12px;margin-left:3px">✕</button>
+          </div>
+        </div>
+        <div class="cb" style="padding:0;overflow-x:auto">
+          <table class="gm-tbl">
+            <tbody>${elRows || '<tr><td colspan="2" style="color:#9ca3af;text-align:center">No composition entered</td></tr>'}</tbody>
+          </table>
+        </div>
+        ${g.notes ? `<div style="padding:8px 12px 10px;font-size:11.5px;color:#6b7280">${esc(g.notes)}</div>` : ''}
       </div>`;
   }
 
-  function _gElementCell(id, element, val) {
-    if (!_g.pending[id]) _g.pending[id] = {};
-    if (!_g.pending[id].elements) _g.pending[id].elements = {};
-    _g.pending[id].elements[element] = val;
-  }
-
-  function _gCell(id, field, val) {
-    if (!_g.pending[id]) _g.pending[id] = {};
-    _g.pending[id][field] = val;
-  }
-
-  async function _gFlushPending() {
-    if (!Object.keys(_g.pending).length) return;
-    const allGrades = await getAll('pq_grades');
-    for (const [id, changes] of Object.entries(_g.pending)) {
-      const existing = allGrades.find(r => r.id == id);
-      if (!existing) continue;
-      const merged = Object.assign({}, existing, changes, { id: parseInt(id) });
-      if (changes.elements) merged.elements = Object.assign({}, existing.elements, changes.elements);
-      await save('pq_grades', merged);
+  // Add/Edit both use the same modal, mirroring the Gauge Register pattern —
+  // saves immediately on submit, no draft/approval step.
+  async function _gradeModal(id) {
+    let g = { grade: '', colourCode: '', notes: '', elements: {} };
+    if (id) {
+      const allGrades = await getAll('pq_grades');
+      g = allGrades.find(x => x.id == id) || g;
     }
-    _g.pending = {};
+    const els = g.elements || {};
+
+    const modal = document.createElement('div');
+    modal.id = 'pq-grade-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:#0008;z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;overflow-y:auto';
+    modal.innerHTML = `
+    <div style="background:#fff;border-radius:12px;width:100%;max-width:480px;max-height:92vh;overflow-y:auto;box-shadow:0 20px 60px #0004">
+      <div style="padding:14px 18px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:#fff;z-index:1">
+        <div style="font-weight:700;font-size:14px;color:#0d2f6e">${id ? 'Edit Grade' : 'Add Grade'}</div>
+        <button onclick="document.getElementById('pq-grade-modal').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#6b7280">✕</button>
+      </div>
+      <div style="padding:16px 18px;display:flex;flex-direction:column;gap:12px">
+        <div style="display:flex;gap:10px">
+          <div style="flex:1"><label class="lbl">Grade Name</label><input id="gm-f-grade" class="input fc" value="${esc(g.grade||'')}" placeholder="e.g. ADC12"></div>
+          <div style="flex:1"><label class="lbl">Color Code</label><input id="gm-f-colour" class="input fc" value="${esc(g.colourCode||'')}" placeholder="e.g. Green"></div>
+        </div>
+        <div>
+          <label class="lbl">Chemical Composition</label>
+          <table class="gm-tbl" style="width:100%;margin-top:4px">
+            <tbody>
+              ${PQ_GRADE_ELEMENTS.map(el => `<tr>
+                <th>${el}</th>
+                <td style="padding:3px 6px"><input id="gm-f-el-${el}" class="input fc" style="padding:4px 7px" value="${esc(els[el]||'')}" placeholder="—"></td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+        <div><label class="lbl">Notes</label><textarea id="gm-f-notes" class="input fc" rows="2">${esc(g.notes||'')}</textarea></div>
+      </div>
+      <div style="padding:0 18px 18px;display:flex;gap:8px">
+        <button class="btn btn-p" onclick="PQ._gSaveGrade(${id || 'null'})">💾 Save</button>
+        <button class="btn btn-o" onclick="document.getElementById('pq-grade-modal').remove()">Cancel</button>
+      </div>
+    </div>`;
+    document.body.appendChild(modal);
   }
 
-  function _gStartEdit() { _g.editMode = true; _renderGradeMaster(); }
-  function _gCancelEdit() { _g.editMode = false; _g.pending = {}; _renderGradeMaster(); }
+  async function _gSaveGrade(id) {
+    const gradeName = document.getElementById('gm-f-grade').value.trim();
+    if (!gradeName) { toast('Grade name is required', 'e'); return; }
 
-  async function _addGrade() {
-    await _gFlushPending();
+    const elements = {};
+    PQ_GRADE_ELEMENTS.forEach(el => { elements[el] = document.getElementById(`gm-f-el-${el}`).value.trim(); });
+
+    const data = {
+      grade: gradeName,
+      colourCode: document.getElementById('gm-f-colour').value.trim(),
+      notes: document.getElementById('gm-f-notes').value.trim(),
+      elements,
+    };
+
     const allGrades = await getAll('pq_grades');
-    const maxOrder = allGrades.length ? Math.max(...allGrades.map(g => g.order || 0)) : 0;
-    const blankElements = Object.fromEntries(PQ_GRADE_ELEMENTS.map(el => [el, '']));
-    await save('pq_grades', { grade: '', colourCode: '', elements: blankElements, notes: '', order: maxOrder + 1 });
-    _g.editMode = true;
-    _renderGradeMaster();
+    if (id) {
+      // POST replaces the record wholesale — preserve order (and anything
+      // else not on this form) instead of dropping it.
+      const existing = allGrades.find(g => g.id == id);
+      data.id = id;
+      data.order = existing?.order;
+    } else {
+      data.order = allGrades.length ? Math.max(...allGrades.map(g => g.order || 0)) + 1 : 1;
+    }
+    await save('pq_grades', data);
+    document.getElementById('pq-grade-modal')?.remove();
+    toast(id ? 'Grade updated' : 'Grade added');
+    renderGradeMaster();
   }
 
   async function _deleteGrade(id) {
     if (!confirm('Delete this grade?')) return;
     await remove('pq_grades', id);
-    delete _g.pending[id];
-    _renderGradeMaster();
-  }
-
-  async function _gSaveAll() {
-    const summary = prompt('Change summary (required):');
-    if (summary === null) return;
-    if (!summary.trim()) { toast('Please enter a change summary', 'e'); return; }
-
-    await _gFlushPending();
-
-    const docs = await getAll('pq_grade_doc');
-    const doc  = docs[0];
-    const newRev = nextRev(doc.rev || 'A');
-
-    await save('pq_grade_doc', Object.assign({}, doc, {
-      id: doc.id, rev: newRev, status: 'Pending Approval',
-      lastChangeSummary: summary.trim(), lastChangedAt: new Date().toISOString(),
-    }));
-
-    await save('pq_revisions', {
-      partId: null, docType: 'grademaster', revision: newRev, status: 'Pending Approval',
-      changeSummary: summary.trim(), changedBy: _userName(), date: _fmtDate(),
-    });
-
-    _g.editMode = false;
-    toast(`Submitted for approval — Rev ${newRev}`);
-    _renderGradeMaster();
-  }
-
-  async function _gApprove() {
-    if (!confirm('Approve and release Grade Master?')) return;
-    const docs = await getAll('pq_grade_doc');
-    const doc  = docs[0];
-    const by   = _userName();
-
-    await save('pq_grade_doc', Object.assign({}, doc, {
-      id: doc.id, status: 'Released', approvedBy: by, approvedAt: new Date().toISOString(),
-    }));
-
-    const allRevs = await getAll('pq_revisions');
-    const revEntry = allRevs.find(r => r.docType === 'grademaster' && r.revision === doc.rev);
-    if (revEntry) {
-      await save('pq_revisions', Object.assign({}, revEntry, {
-        id: revEntry.id, status: 'Released', approvedBy: by, approvedAt: _fmtDate(),
-      }));
-    }
-
-    toast('Grade Master Released');
-    _renderGradeMaster();
-  }
-
-  async function _gNewRevision() {
-    if (!confirm('Start a new revision? The current Released version will be superseded.')) return;
-    const docs = await getAll('pq_grade_doc');
-    const doc  = docs[0];
-    await save('pq_grade_doc', Object.assign({}, doc, { id: doc.id, status: 'Draft' }));
-    _g.editMode = true;
-    toast('New revision started — make your changes then Submit for Approval');
-    _renderGradeMaster();
+    toast('Deleted');
+    renderGradeMaster();
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -2518,7 +2348,6 @@ const PQ = (() => {
     _cpStartEdit, _cpCancelEdit, _cpSaveAll, _cpApprove, _cpNewRevision,
     _addCpRow, _deleteCpRow, _cpCell, _cpSpecChange, _setCpPrintFilter,
     renderCsRegistry, openCs, _fillCsModal, _saveCsRecord, _viewCsRecord, _deleteCsRecord,
-    renderGradeMaster, _gStartEdit, _gCancelEdit, _gSaveAll, _gApprove, _gNewRevision,
-    _addGrade, _deleteGrade, _gCell, _gElementCell,
+    renderGradeMaster, _gradeModal, _gSaveGrade, _deleteGrade,
   };
 })();

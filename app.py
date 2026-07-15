@@ -620,7 +620,7 @@ QMS2_MODULES = [
     'qms2_op_order',
     # Process Quality (PQ) modules
     'pq_parts','pq_pfd_steps','pq_pfmea_rows','pq_pfmea_templates','pq_cp_rows','pq_cp_templates','pq_cs_records','pq_revisions',
-    'pq_grades','pq_grade_doc',
+    'pq_grades',
 ]
 
 def qms2_flat(r):
@@ -1292,24 +1292,6 @@ def seed_pq_grades():
     ]
     for g in GRADES:
         db.session.add(GenericRecord(module='pq_grades', data=json.dumps(g)))
-
-    # Singleton controlled-document header (Grade Master isn't per-part).
-    # Seeded as Released since it's a direct digitisation of already-Active
-    # SOPs, not a new draft document.
-    today = __import__('datetime').date.today().isoformat()
-    doc = GenericRecord(module='pq_grade_doc', data=json.dumps({
-        'rev': 'A', 'status': 'Released',
-        'preparedBy': 'Quality Team', 'approvedBy': 'Akshay Dake',
-        'date': today, 'approvedAt': today,
-        'lastChangeSummary': 'Initial import from VRA-SOP-001 (Raw Material Chemical Composition) and VRA-SOP-017 (Alloy Specification and Color Codes)',
-    }))
-    db.session.add(doc)
-    db.session.flush()
-    db.session.add(GenericRecord(module='pq_revisions', data=json.dumps({
-        'partId': None, 'docType': 'grademaster', 'revision': 'A', 'status': 'Released',
-        'changeSummary': 'Initial import from VRA-SOP-001 and VRA-SOP-017',
-        'changedBy': 'Akshay Dake', 'date': today, 'approvedBy': 'Akshay Dake', 'approvedAt': today,
-    })))
     db.session.commit()
     print("Grade Master seeded (8 grades from VRA-SOP-001 / VRA-SOP-017)")
 
