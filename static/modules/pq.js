@@ -1,13 +1,25 @@
 // Process Quality — Phase 1: Process Flow Diagram
 const PQ = (() => {
 
-  const _s = { partId: null, editMode: false, pending: {}, pfmeaEditMode: false, pfmeaPending: {}, cpEditMode: false, cpPending: {} };
+  const _s = { partId: null, editMode: false, pending: {}, pfmeaEditMode: false, pfmeaPending: {}, cpEditMode: false, cpPending: {}, cpPrintFilter: '' };
   const _g = { editMode: false, pending: {} };
 
   const GRADE_COLOR_SWATCH = {
     green:'#16a34a', blue:'#2563eb', yellow:'#ca8a04', black:'#111827',
     brown:'#92400e', white:'#e5e7eb', red:'#dc2626', orange:'#ea580c',
   };
+
+  const PQ_GRADE_ELEMENTS = ['Si','Fe','Cu','Mg','Mn','Ti','Zn','Ni','Pb','Sn','Sr','Al'];
+
+  // Flatten a grade's structured per-element composition into the single
+  // text string used to auto-fill Control Plan Tolerance fields.
+  function _formatComposition(elements) {
+    if (!elements) return '';
+    return PQ_GRADE_ELEMENTS
+      .filter(el => elements[el])
+      .map(el => `${el}:${elements[el]}`)
+      .join(', ');
+  }
 
   // ── PFMEA generic failure-mode library: keyword match per process category ──
   const PFMEA_CATEGORY_KEYWORDS = {
@@ -342,6 +354,8 @@ const PQ = (() => {
           @page { size:A4; margin:14mm 15mm 18mm 15mm; }
           @page { counter-increment: page; }
           .pfd-pgnum::after { content: counter(page); }
+          .pq-doc-grid { display:block !important; }
+          .cb { overflow:visible !important; }
         }
         .pfd-print-hdr { display:none; }
         .pfd-print-ftr { display:none; }
@@ -443,7 +457,7 @@ const PQ = (() => {
       </div>
 
       <!-- Main content + sidebar -->
-      <div style="display:grid;grid-template-columns:1fr 240px;gap:14px;align-items:start">
+      <div class="pq-doc-grid" style="display:grid;grid-template-columns:1fr 240px;gap:14px;align-items:start">
 
         <!-- Flow diagram -->
         <div class="card">
@@ -904,6 +918,8 @@ const PQ = (() => {
           aside, .topbar { display:none !important; }
           .main { margin:0 !important; }
           .content { padding:8px !important; }
+          .pq-doc-grid { display:block !important; }
+          .cb { overflow:visible !important; }
         }
         .btn-g { background:#16a34a;color:#fff;border:none; }
         .btn-g:hover { background:#15803d; }
@@ -991,7 +1007,7 @@ const PQ = (() => {
         </table>
       </div>
 
-      <div style="display:grid;grid-template-columns:1fr 240px;gap:14px;align-items:start">
+      <div class="pq-doc-grid" style="display:grid;grid-template-columns:1fr 240px;gap:14px;align-items:start">
 
         <div>
           ${steps.map(step => _buildPfmeaGroup(step, rows.filter(r => r.opNumber === step.opNumber), locked)).join('')}
@@ -1678,13 +1694,22 @@ const PQ = (() => {
 
     setC(`
       <style>
-        @media print { .no-print { display:none !important; } aside, .topbar { display:none !important; } .main { margin:0 !important; } .content { padding:8px !important; } }
+        @media print {
+          .no-print { display:none !important; }
+          aside, .topbar { display:none !important; }
+          .main { margin:0 !important; }
+          .content { padding:8px !important; }
+          .pq-doc-grid { display:block !important; }
+          .cb { overflow:visible !important; }
+        }
         .btn-g { background:#16a34a;color:#fff;border:none; } .btn-g:hover { background:#15803d; }
         .gm-tbl { width:100%; border-collapse:collapse; font-size:11.5px; }
         .gm-tbl th { background:#1e3a5f; color:#fff; padding:6px 8px; text-align:left; border:1px solid #ccc; font-size:10px; text-transform:uppercase; letter-spacing:.2px; }
         .gm-tbl td { padding:5px 7px; border:1px solid #e5e7eb; vertical-align:top; }
         .gm-in { width:100%; border:1px solid #c7d2fe; border-radius:3px; padding:3px 5px; font-size:11.5px; background:#fff; font-family:inherit; }
         .gm-swatch { display:inline-block; width:11px; height:11px; border-radius:3px; border:1px solid #0002; margin-right:5px; vertical-align:middle; }
+        .gm-el-grid { display:grid; grid-template-columns:repeat(6,1fr); gap:6px; margin-bottom:8px; }
+        .gm-el-grid label { font-size:9px; color:#6b7280; text-transform:uppercase; font-weight:600; display:block; margin-bottom:2px; }
       </style>
 
       <div class="ph no-print">
@@ -1735,22 +1760,10 @@ const PQ = (() => {
         </table>
       </div>
 
-      <div style="display:grid;grid-template-columns:1fr 240px;gap:14px;align-items:start">
-        <div class="card">
-          <div class="cb" style="padding:0;overflow-x:auto">
-            <table class="gm-tbl">
-              <thead><tr>
-                <th style="min-width:80px">Grade</th>
-                <th style="min-width:90px">Color Code</th>
-                <th style="min-width:90px">Standard</th>
-                <th style="min-width:260px">Chemical Composition</th>
-                <th style="min-width:160px">Notes</th>
-                ${locked ? '' : '<th></th>'}
-              </tr></thead>
-              <tbody>${rows.map(g => _buildGradeRow(g, locked)).join('') || `<tr><td colspan="${locked?5:6}" style="text-align:center;color:#9ca3af;padding:10px">No grades yet</td></tr>`}</tbody>
-            </table>
-          </div>
-          ${!locked ? `<div style="padding:8px 12px">
+      <div class="pq-doc-grid" style="display:grid;grid-template-columns:1fr 240px;gap:14px;align-items:start">
+        <div>
+          ${rows.length ? rows.map(g => _buildGradeCard(g, locked)).join('') : `<div class="card"><div class="cb" style="padding:24px;text-align:center;color:#9ca3af">No grades yet</div></div>`}
+          ${!locked ? `<div style="padding:4px 0">
             <button class="btn btn-o btn-xs" onclick="PQ._addGrade()">+ Add Grade</button>
           </div>` : ''}
         </div>
@@ -1817,26 +1830,61 @@ const PQ = (() => {
     `);
   }
 
-  function _buildGradeRow(g, locked) {
+  // Each grade gets its own table: element symbols as column headers, one
+  // data row of values — far more legible than cramming all elements into
+  // a single composition cell.
+  function _buildGradeCard(g, locked) {
     const swatchColor = GRADE_COLOR_SWATCH[String(g.colourCode||'').toLowerCase()] || '#e5e7eb';
-    if (locked) {
-      return `<tr>
-        <td style="font-weight:700">${esc(g.grade||'')}</td>
-        <td><span class="gm-swatch" style="background:${swatchColor}"></span>${esc(g.colourCode||'Not assigned')}</td>
-        <td>${esc(g.standard||'')}</td>
-        <td style="font-size:11px">${esc(g.composition||'')}</td>
-        <td>${esc(g.notes||'')}</td>
-      </tr>`;
-    }
-    return `<tr>
-      <td><textarea class="gm-in" rows="2" oninput="PQ._gCell(${g.id},'grade',this.value)">${esc(g.grade||'')}</textarea></td>
-      <td><textarea class="gm-in" rows="2" oninput="PQ._gCell(${g.id},'colourCode',this.value)">${esc(g.colourCode||'')}</textarea></td>
-      <td><textarea class="gm-in" rows="2" oninput="PQ._gCell(${g.id},'standard',this.value)">${esc(g.standard||'')}</textarea></td>
-      <td><textarea class="gm-in" rows="3" oninput="PQ._gCell(${g.id},'composition',this.value)">${esc(g.composition||'')}</textarea></td>
-      <td><textarea class="gm-in" rows="2" oninput="PQ._gCell(${g.id},'notes',this.value)">${esc(g.notes||'')}</textarea></td>
-      <td><button onclick="PQ._deleteGrade(${g.id})" title="Delete"
-            style="border:1px solid #fca5a5;background:#fee2e2;color:#b91c1c;border-radius:3px;padding:2px 8px;cursor:pointer;font-size:12px">✕</button></td>
-    </tr>`;
+    const els = g.elements || {};
+
+    const titleRow = locked
+      ? `<h5><span class="gm-swatch" style="background:${swatchColor}"></span>${esc(g.grade||'')} <span style="font-weight:400;color:#6b7280;font-size:11px">${esc(g.colourCode||'Not assigned')}</span></h5>`
+      : `<div style="display:flex;gap:8px;align-items:center;flex:1">
+           <input class="gm-in" style="max-width:120px;font-weight:700" value="${esc(g.grade||'')}" placeholder="Grade name" oninput="PQ._gCell(${g.id},'grade',this.value)">
+           <input class="gm-in" style="max-width:140px" value="${esc(g.colourCode||'')}" placeholder="Color code" oninput="PQ._gCell(${g.id},'colourCode',this.value)">
+         </div>
+         <button onclick="PQ._deleteGrade(${g.id})" title="Delete grade"
+           style="border:1px solid #fca5a5;background:#fee2e2;color:#b91c1c;border-radius:3px;padding:3px 9px;cursor:pointer;font-size:12px">✕</button>`;
+
+    const elCells = locked
+      ? PQ_GRADE_ELEMENTS.map(el => `<td>${esc(els[el] || '—')}</td>`).join('')
+      : '';
+
+    const notes = locked
+      ? (g.notes ? `<div style="padding:6px 12px 10px;font-size:11.5px;color:#6b7280">${esc(g.notes)}</div>` : '')
+      : `<div style="padding:8px 12px 10px">
+           <label style="font-size:9px;color:#6b7280;text-transform:uppercase;font-weight:600;display:block;margin-bottom:2px">Notes</label>
+           <textarea class="gm-in" rows="2" oninput="PQ._gCell(${g.id},'notes',this.value)">${esc(g.notes||'')}</textarea>
+         </div>`;
+
+    const body = locked
+      ? `<div class="cb" style="padding:0;overflow-x:auto">
+           <table class="gm-tbl">
+             <thead><tr>${PQ_GRADE_ELEMENTS.map(el => `<th>${el}</th>`).join('')}</tr></thead>
+             <tbody><tr>${elCells}</tr></tbody>
+           </table>
+         </div>${notes}`
+      : `<div class="cb" style="padding:10px 12px 0">
+           <div class="gm-el-grid">
+             ${PQ_GRADE_ELEMENTS.map(el => `
+               <div>
+                 <label>${el}</label>
+                 <input class="gm-in" value="${esc(els[el]||'')}" placeholder="—" oninput="PQ._gElementCell(${g.id},'${el}',this.value)">
+               </div>`).join('')}
+           </div>
+         </div>${notes}`;
+
+    return `
+      <div class="card" style="margin-bottom:12px">
+        <div class="ch" style="display:flex;justify-content:space-between;align-items:center">${titleRow}</div>
+        ${body}
+      </div>`;
+  }
+
+  function _gElementCell(id, element, val) {
+    if (!_g.pending[id]) _g.pending[id] = {};
+    if (!_g.pending[id].elements) _g.pending[id].elements = {};
+    _g.pending[id].elements[element] = val;
   }
 
   function _gCell(id, field, val) {
@@ -1849,7 +1897,10 @@ const PQ = (() => {
     const allGrades = await getAll('pq_grades');
     for (const [id, changes] of Object.entries(_g.pending)) {
       const existing = allGrades.find(r => r.id == id);
-      if (existing) await save('pq_grades', Object.assign({}, existing, changes, { id: parseInt(id) }));
+      if (!existing) continue;
+      const merged = Object.assign({}, existing, changes, { id: parseInt(id) });
+      if (changes.elements) merged.elements = Object.assign({}, existing.elements, changes.elements);
+      await save('pq_grades', merged);
     }
     _g.pending = {};
   }
@@ -1861,7 +1912,8 @@ const PQ = (() => {
     await _gFlushPending();
     const allGrades = await getAll('pq_grades');
     const maxOrder = allGrades.length ? Math.max(...allGrades.map(g => g.order || 0)) : 0;
-    await save('pq_grades', { grade: '', colourCode: '', standard: '', composition: '', notes: '', order: maxOrder + 1 });
+    const blankElements = Object.fromEntries(PQ_GRADE_ELEMENTS.map(el => [el, '']));
+    await save('pq_grades', { grade: '', colourCode: '', elements: blankElements, notes: '', order: maxOrder + 1 });
     _g.editMode = true;
     _renderGradeMaster();
   }
@@ -1942,7 +1994,7 @@ const PQ = (() => {
   const _classFromRpn = rpn => rpn >= 100 ? 'Critical' : rpn >= 50 ? 'Major' : 'Minor';
 
   async function openCp(pid) {
-    _s.partId = pid; _s.cpEditMode = false; _s.cpPending = {};
+    _s.partId = pid; _s.cpEditMode = false; _s.cpPending = {}; _s.cpPrintFilter = '';
     await _renderCp();
   }
 
@@ -2011,7 +2063,7 @@ const PQ = (() => {
           machine: '', charNumber: `${step.opNumber}.${String(seq).padStart(2, '0')}`,
           charName: src.charName || '', classification: src.classification || 'Minor',
           specification: isComposition ? partGrade.grade : '',
-          tolerance: isComposition ? partGrade.composition : '',
+          tolerance: isComposition ? _formatComposition(partGrade.elements) : '',
           frequency: '',
           controlMethod: src.controlMethod || '',
           reactionPlan: src.reactionPlan || '', remarks: '', includeInChecksheet: true, order,
@@ -2054,19 +2106,24 @@ const PQ = (() => {
                            : `<span class="badge bd">Draft</span>`;
 
     const genBtn = `<button class="btn btn-o btn-sm" onclick="PQ._generateCpFromPfd()">⚙️ Generate from Process Flow</button>`;
+    const printFilterSelect = `<select class="input fc no-print" style="width:auto;font-size:12px;padding:5px 8px" onchange="PQ._setCpPrintFilter(this.value)" title="Choose which process step to print">
+      <option value="">🖨 Print: All Steps</option>
+      ${steps.map(s => `<option value="${esc(s.opNumber||'')}" ${_s.cpPrintFilter===s.opNumber?'selected':''}>🖨 Print: ${esc(s.opNumber||'')} ${esc(s.stepName||s.opName||'')}</option>`).join('')}
+    </select>`;
+    const printBtn = `${printFilterSelect}<button class="btn btn-o btn-sm" onclick="window.print()">🖨 Print</button>`;
     const actions = _s.cpEditMode
       ? `${genBtn}
          <button class="btn btn-g btn-sm" onclick="PQ._cpSaveAll()">📤 Submit for Approval</button>
          <button class="btn btn-o btn-sm" onclick="PQ._cpCancelEdit()">Cancel</button>`
       : released
-        ? `<button class="btn btn-o btn-sm" onclick="window.print()">🖨 Print</button>
+        ? `${printBtn}
            <button class="btn btn-o btn-sm" onclick="PQ._cpNewRevision()">🔄 New Revision</button>`
         : pending
-          ? `<button class="btn btn-o btn-sm" onclick="window.print()">🖨 Print</button>
+          ? `${printBtn}
              <button class="btn btn-g btn-sm" onclick="PQ._cpApprove()">✓ Approve</button>
              <button class="btn btn-p btn-sm" onclick="PQ._cpStartEdit()">✏️ Edit</button>`
           : `${genBtn}
-             <button class="btn btn-o btn-sm" onclick="window.print()">🖨 Print</button>
+             ${printBtn}
              <button class="btn btn-p btn-sm" onclick="PQ._cpStartEdit()">✏️ Edit</button>`;
 
     const bands = { Critical:0, Major:0, Special:0, Minor:0 };
@@ -2074,7 +2131,14 @@ const PQ = (() => {
 
     setC(`
       <style>
-        @media print { .no-print { display:none !important; } aside, .topbar { display:none !important; } .main { margin:0 !important; } .content { padding:8px !important; } }
+        @media print {
+          .no-print { display:none !important; }
+          aside, .topbar { display:none !important; }
+          .main { margin:0 !important; }
+          .content { padding:8px !important; }
+          .pq-doc-grid { display:block !important; }
+          .cb { overflow:visible !important; }
+        }
         .btn-g { background:#16a34a;color:#fff;border:none; } .btn-g:hover { background:#15803d; }
         .cp-tbl { width:100%; border-collapse:collapse; font-size:11.5px; }
         .cp-tbl th { background:#1e3a5f; color:#fff; padding:6px 8px; text-align:left; border:1px solid #ccc; font-size:10px; text-transform:uppercase; letter-spacing:.2px; }
@@ -2162,7 +2226,7 @@ const PQ = (() => {
         ${grades.map(g => `<option value="${esc(g.grade)}">`).join('')}
       </datalist>
 
-      <div style="display:grid;grid-template-columns:1fr 240px;gap:14px;align-items:start">
+      <div class="pq-doc-grid" style="display:grid;grid-template-columns:1fr 240px;gap:14px;align-items:start">
         <div>
           ${!locked && grades.length ? `<div class="alert al-d no-print" style="margin-bottom:12px;font-size:12px">
             💡 Typing a grade name (e.g. ${esc(grades[0].grade)}) into <b>Specification</b> auto-fills <b>Tolerance</b> from <a style="cursor:pointer;font-weight:600" onclick="PQ.renderGradeMaster()">Grade Master</a>.
@@ -2251,8 +2315,13 @@ const PQ = (() => {
     const body = rows.length ? rows.map(r => _buildCpRow(r, locked)).join('') :
       `<tr><td colspan="${locked?9:10}" style="text-align:center;color:#9ca3af;padding:10px">No characteristics for this step${locked?'':' — click "+ Add Characteristic" below'}</td></tr>`;
 
+    // Steps not matching the active print filter stay visible on screen but
+    // are excluded from the printed output — that's what "print process-wise"
+    // means: pick a step, everything else drops out only when you print.
+    const hiddenFromPrint = _s.cpPrintFilter && _s.cpPrintFilter !== step.opNumber;
+
     return `
-      <div class="card" style="margin-bottom:14px">
+      <div class="card${hiddenFromPrint ? ' no-print' : ''}" style="margin-bottom:14px">
         <div class="ch" style="display:flex;justify-content:space-between;align-items:center">
           <h5><span class="mono" style="color:#0d2f6e">${esc(step.opNumber||'')}</span> ${esc(stepName)}</h5>
         </div>
@@ -2326,9 +2395,10 @@ const PQ = (() => {
     const grades = _s.cpGrades || [];
     const match = grades.find(g => String(g.grade||'').toLowerCase() === String(val||'').trim().toLowerCase());
     if (!match) return;
-    _cpCell(id, 'tolerance', match.composition || '');
+    const composition = _formatComposition(match.elements);
+    _cpCell(id, 'tolerance', composition);
     const el = document.getElementById(`cp-tol-${id}`);
-    if (el) el.value = match.composition || '';
+    if (el) el.value = composition;
     toast(`Tolerance auto-filled from ${match.grade} (Grade Master)`);
   }
 
@@ -2349,6 +2419,7 @@ const PQ = (() => {
 
   function _cpStartEdit() { _s.cpEditMode = true; _renderCp(); }
   function _cpCancelEdit() { _s.cpEditMode = false; _s.cpPending = {}; _renderCp(); }
+  function _setCpPrintFilter(opNumber) { _s.cpPrintFilter = opNumber; _renderCp(); }
 
   async function _addCpRow(opNumber, processStep) {
     await _cpFlushPending();
@@ -2445,9 +2516,9 @@ const PQ = (() => {
     renderPfdRegistry, renderPfmeaRegistry, renderCpRegistry,
     openCp, _generateCpFromPfd,
     _cpStartEdit, _cpCancelEdit, _cpSaveAll, _cpApprove, _cpNewRevision,
-    _addCpRow, _deleteCpRow, _cpCell, _cpSpecChange,
+    _addCpRow, _deleteCpRow, _cpCell, _cpSpecChange, _setCpPrintFilter,
     renderCsRegistry, openCs, _fillCsModal, _saveCsRecord, _viewCsRecord, _deleteCsRecord,
     renderGradeMaster, _gStartEdit, _gCancelEdit, _gSaveAll, _gApprove, _gNewRevision,
-    _addGrade, _deleteGrade, _gCell,
+    _addGrade, _deleteGrade, _gCell, _gElementCell,
   };
 })();
