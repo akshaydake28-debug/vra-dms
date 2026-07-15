@@ -229,6 +229,7 @@ select.fc{cursor:pointer}
     <a class="sl-item" data-view="pq-pfd" onclick="nav('pq-pfd')"><span class="ic">📐</span>Process Flow Diagrams</a>
     <a class="sl-item" data-view="pq-pfmea" onclick="nav('pq-pfmea')"><span class="ic">⚠️</span>PFMEA</a>
     <a class="sl-item" data-view="pq-cp" onclick="nav('pq-cp')"><span class="ic">🛡️</span>Control Plans</a>
+    <a class="sl-item" data-view="pq-grades" onclick="nav('pq-grades')"><span class="ic">🎨</span>Grade Master</a>
     <a class="sl-item" data-view="pq-cs" onclick="nav('pq-cs')"><span class="ic">📝</span>Check Sheets</a>
     <div class="sl-sec">Admin</div>
     <a class="sl-item" id="nav-users" data-view="users" onclick="nav('users')"><span class="ic">👥</span>Users</a>
@@ -840,6 +841,7 @@ function nav(view,params=''){
   'pq-pfmea':'Process Quality — PFMEA',
   'pq-cp':'Process Quality — Control Plans',
   'pq-cs':'Process Quality — Check Sheets',
+  'pq-grades':'Process Quality — Grade Master',
   };
   document.getElementById('topbar-title').textContent=titles[view]||'VRA DMS';
   const p=Object.fromEntries((params||'').split('&').filter(Boolean).map(s=>s.split('=')));
@@ -874,6 +876,7 @@ function nav(view,params=''){
 'pq-pfmea': ()=>PQ.renderPfmeaRegistry(),
 'pq-cp':    ()=>PQ.renderCpRegistry(),
 'pq-cs':    ()=>PQ.renderCsRegistry(),
+'pq-grades':()=>PQ.renderGradeMaster(),
   };
   if(views[view]) views[view](p);
   if(!['create','edit'].includes(view) && typeof setChatVisible !== 'undefined') setChatVisible(false);

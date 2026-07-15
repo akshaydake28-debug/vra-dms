@@ -2,6 +2,12 @@
 const PQ = (() => {
 
   const _s = { partId: null, editMode: false, pending: {}, pfmeaEditMode: false, pfmeaPending: {}, cpEditMode: false, cpPending: {} };
+  const _g = { editMode: false, pending: {} };
+
+  const GRADE_COLOR_SWATCH = {
+    green:'#16a34a', blue:'#2563eb', yellow:'#ca8a04', black:'#111827',
+    brown:'#92400e', white:'#e5e7eb', red:'#dc2626', orange:'#ea580c',
+  };
 
   // ── PFMEA generic failure-mode library: keyword match per process category ──
   const PFMEA_CATEGORY_KEYWORDS = {
@@ -1037,6 +1043,35 @@ const PQ = (() => {
           </div>
         </div>
       </div>
+
+      <!-- Revision History Table (printed) -->
+      <div style="margin-top:24px">
+        <div style="font-size:9pt;font-weight:bold;margin-bottom:6px;color:#1e3a5f">REVISION HISTORY</div>
+        <table style="width:100%;border-collapse:collapse;font-size:9.5pt">
+          <thead><tr>
+            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Rev</th>
+            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Date</th>
+            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Prepared By</th>
+            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Approved By</th>
+            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Change Summary</th>
+          </tr></thead>
+          <tbody>
+            ${(() => {
+              let entries = allRevs.filter(r => r.partId == pid && r.docType === 'pfmea').sort((a, b) => a.id - b.id);
+              if (!entries.length) {
+                entries = [{ revision: part.pfmeaRev||'A', date: part.date||'', changedBy: part.preparedBy||'', approvedBy: part.pfmeaApprovedBy||'Pending', changeSummary: 'Initial revision' }];
+              }
+              return entries.map(r => `<tr>
+                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.revision||'')}</td>
+                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.date||'')}</td>
+                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.changedBy||'')}</td>
+                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.approvedBy||'Pending')}</td>
+                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.changeSummary||'')}</td>
+              </tr>`).join('');
+            })()}
+          </tbody>
+        </table>
+      </div>
     `);
   }
 
@@ -1587,6 +1622,301 @@ const PQ = (() => {
   }
 
   // ══════════════════════════════════════════════════════════════════════
+  //  GRADE MASTER — shared controlled reference document (not per-part).
+  //  Feeds the Control Plan's Specification → Tolerance auto-fill.
+  // ══════════════════════════════════════════════════════════════════════
+  async function renderGradeMaster() {
+    _g.editMode = false; _g.pending = {};
+    await _renderGradeMaster();
+  }
+
+  async function _renderGradeMaster() {
+    const [docs, grades, allRevs] = await Promise.all([
+      getAll('pq_grade_doc'), getAll('pq_grades'), getAll('pq_revisions')
+    ]);
+    let doc = docs[0];
+    if (!doc) doc = await save('pq_grade_doc', { rev: 'A', status: 'Draft', date: _fmtDate() });
+    const rows = grades.slice().sort((a, b) => (a.order ?? a.id) - (b.order ?? b.id));
+
+    const locked   = !_g.editMode;
+    const status   = doc.status || 'Draft';
+    const released = status === 'Released';
+    const pending  = status === 'Pending Approval';
+    const docNo    = `VRA-GRADEMASTER-REV-${doc.rev||'A'}`;
+
+    const badge = released ? `<span class="badge ba">Released</span>`
+                : pending  ? `<span class="badge bp">⏳ Pending Approval</span>`
+                           : `<span class="badge bd">Draft</span>`;
+
+    const actions = _g.editMode
+      ? `<button class="btn btn-g btn-sm" onclick="PQ._gSaveAll()">📤 Submit for Approval</button>
+         <button class="btn btn-o btn-sm" onclick="PQ._gCancelEdit()">Cancel</button>`
+      : released
+        ? `<button class="btn btn-o btn-sm" onclick="window.print()">🖨 Print</button>
+           <button class="btn btn-o btn-sm" onclick="PQ._gNewRevision()">🔄 New Revision</button>`
+        : pending
+          ? `<button class="btn btn-o btn-sm" onclick="window.print()">🖨 Print</button>
+             <button class="btn btn-g btn-sm" onclick="PQ._gApprove()">✓ Approve</button>
+             <button class="btn btn-p btn-sm" onclick="PQ._gStartEdit()">✏️ Edit</button>`
+          : `<button class="btn btn-o btn-sm" onclick="window.print()">🖨 Print</button>
+             <button class="btn btn-p btn-sm" onclick="PQ._gStartEdit()">✏️ Edit</button>`;
+
+    setC(`
+      <style>
+        @media print { .no-print { display:none !important; } aside, .topbar { display:none !important; } .main { margin:0 !important; } .content { padding:8px !important; } }
+        .btn-g { background:#16a34a;color:#fff;border:none; } .btn-g:hover { background:#15803d; }
+        .gm-tbl { width:100%; border-collapse:collapse; font-size:11.5px; }
+        .gm-tbl th { background:#1e3a5f; color:#fff; padding:6px 8px; text-align:left; border:1px solid #ccc; font-size:10px; text-transform:uppercase; letter-spacing:.2px; }
+        .gm-tbl td { padding:5px 7px; border:1px solid #e5e7eb; vertical-align:top; }
+        .gm-in { width:100%; border:1px solid #c7d2fe; border-radius:3px; padding:3px 5px; font-size:11.5px; background:#fff; font-family:inherit; }
+        .gm-swatch { display:inline-block; width:11px; height:11px; border-radius:3px; border:1px solid #0002; margin-right:5px; vertical-align:middle; }
+      </style>
+
+      <div class="ph no-print">
+        <div>
+          <div style="display:flex;align-items:center;gap:7px;margin-bottom:3px">
+            <span class="tp" style="background:#166534">GM</span>
+            ${badge}
+            <span class="mono" style="color:#0d2f6e;font-weight:700">${esc(docNo)}</span>
+            <span style="color:#9ca3af">Rev ${esc(doc.rev||'A')}</span>
+          </div>
+          <h2>Grade Master — Alloy Specification &amp; Color Codes</h2>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">${actions}</div>
+      </div>
+
+      ${_g.editMode ? `<div class="alert al-d no-print" style="margin-bottom:12px">
+        ✏️ Editing — rows can be freely added, edited or deleted while in Draft; nothing is logged until you click <b>Submit for Approval</b>.
+      </div>` : ''}
+      ${pending && !_g.editMode ? `<div class="alert al-w no-print" style="margin-bottom:12px">
+        ⏳ Pending approval. Click <b>Approve</b> to release it, or <b>Edit</b> to revise.
+      </div>` : ''}
+
+      <div style="border:2px solid #0d2f6e;margin-bottom:16px;font-size:12px">
+        <table style="width:100%;border-collapse:collapse">
+          <tr>
+            <td rowspan="2" style="padding:10px 16px;border-right:1px solid #0d2f6e;width:180px;vertical-align:middle;text-align:center">
+              <div style="font-weight:800;font-size:15px;color:#0d2f6e;letter-spacing:.5px">V R ALUCAST</div>
+              <div style="font-size:9px;color:#6b7280;letter-spacing:.3px;margin-top:2px">QUALITY MANAGEMENT SYSTEM</div>
+            </td>
+            <td colspan="3" style="padding:8px 14px;border-bottom:1px solid #0d2f6e;font-weight:700;font-size:13px;color:#0d2f6e;text-align:center;letter-spacing:.5px">
+              GRADE MASTER — ALLOY SPECIFICATION &amp; COLOR CODES
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:6px 12px;border-right:1px solid #d1d5db">
+              <div style="font-size:9px;color:#6b7280;font-weight:600;text-transform:uppercase">Controlled Document Number</div>
+              <div style="font-weight:700;color:#0d2f6e;font-family:monospace;margin-top:2px">${esc(docNo)}</div>
+            </td>
+            <td style="padding:6px 12px;border-right:1px solid #d1d5db">
+              <div style="font-size:9px;color:#6b7280;font-weight:600;text-transform:uppercase">Revision</div>
+              <div style="font-weight:800;font-size:16px;color:#0d2f6e;margin-top:2px">${esc(doc.rev||'A')}</div>
+            </td>
+            <td style="padding:6px 12px">
+              <div style="font-size:9px;color:#6b7280;font-weight:600;text-transform:uppercase">Status</div>
+              <div style="font-weight:700;margin-top:2px;color:${released?'#16a34a':pending?'#d97706':'#6b7280'}">${esc(status)}</div>
+            </td>
+          </tr>
+        </table>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 240px;gap:14px;align-items:start">
+        <div class="card">
+          <div class="cb" style="padding:0;overflow-x:auto">
+            <table class="gm-tbl">
+              <thead><tr>
+                <th style="min-width:80px">Grade</th>
+                <th style="min-width:90px">Color Code</th>
+                <th style="min-width:90px">Standard</th>
+                <th style="min-width:260px">Chemical Composition</th>
+                <th style="min-width:160px">Notes</th>
+                ${locked ? '' : '<th></th>'}
+              </tr></thead>
+              <tbody>${rows.map(g => _buildGradeRow(g, locked)).join('') || `<tr><td colspan="${locked?5:6}" style="text-align:center;color:#9ca3af;padding:10px">No grades yet</td></tr>`}</tbody>
+            </table>
+          </div>
+          ${!locked ? `<div style="padding:8px 12px">
+            <button class="btn btn-o btn-xs" onclick="PQ._addGrade()">+ Add Grade</button>
+          </div>` : ''}
+        </div>
+
+        <div class="no-print">
+          <div class="card">
+            <div class="ch"><h5>Revisions</h5></div>
+            <div class="cb" style="padding:8px">
+              ${(() => {
+                let entries = allRevs.filter(r => r.docType === 'grademaster').sort((a, b) => b.id - a.id);
+                if (!entries.length) {
+                  entries = [{ revision: doc.rev||'A', status: doc.status||'Draft', date: doc.date||'', changedBy: doc.approvedBy||'', changeSummary: 'Initial revision', _fallback: true }];
+                }
+                return entries.map(r => {
+                  const isCurrent = r._fallback || r.revision === doc.rev;
+                  const stBadge = r.status === 'Released'
+                    ? `<span class="badge ba" style="font-size:10px">Released</span>`
+                    : r.status === 'Pending Approval'
+                      ? `<span class="badge bp" style="font-size:10px">Pending</span>`
+                      : `<span class="badge bd" style="font-size:10px">Draft</span>`;
+                  return `<div style="padding:6px 7px;background:${isCurrent?'#edf1fb':'#f9fafc'};border-radius:6px;margin-bottom:3px;border:1px solid ${isCurrent?'#c5d0f0':'#e5e7eb'}">
+                    <div style="display:flex;justify-content:space-between;align-items:center">
+                      <span class="mono" style="font-weight:700;color:#0d2f6e">Rev ${esc(r.revision)}</span>
+                      ${stBadge}
+                    </div>
+                    <div class="muted" style="font-size:11px;margin-top:2px">${esc(r.date||'')} · ${esc(r.changedBy||'')}</div>
+                    ${r.changeSummary ? `<div style="font-size:11px;color:#374151;margin-top:2px">${esc(r.changeSummary)}</div>` : ''}
+                  </div>`;
+                }).join('');
+              })()}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Revision History Table (printed) -->
+      <div style="margin-top:24px">
+        <div style="font-size:9pt;font-weight:bold;margin-bottom:6px;color:#1e3a5f">REVISION HISTORY</div>
+        <table style="width:100%;border-collapse:collapse;font-size:9.5pt">
+          <thead><tr>
+            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Rev</th>
+            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Date</th>
+            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Prepared By</th>
+            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Approved By</th>
+            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Change Summary</th>
+          </tr></thead>
+          <tbody>
+            ${(() => {
+              let entries = allRevs.filter(r => r.docType === 'grademaster').sort((a, b) => a.id - b.id);
+              if (!entries.length) {
+                entries = [{ revision: doc.rev||'A', date: doc.date||'', changedBy: doc.preparedBy||'', approvedBy: doc.approvedBy||'Pending', changeSummary: doc.lastChangeSummary||'Initial revision' }];
+              }
+              return entries.map(r => `<tr>
+                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.revision||'')}</td>
+                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.date||'')}</td>
+                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.changedBy||'')}</td>
+                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.approvedBy||'Pending')}</td>
+                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.changeSummary||'')}</td>
+              </tr>`).join('');
+            })()}
+          </tbody>
+        </table>
+      </div>
+    `);
+  }
+
+  function _buildGradeRow(g, locked) {
+    const swatchColor = GRADE_COLOR_SWATCH[String(g.colourCode||'').toLowerCase()] || '#e5e7eb';
+    if (locked) {
+      return `<tr>
+        <td style="font-weight:700">${esc(g.grade||'')}</td>
+        <td><span class="gm-swatch" style="background:${swatchColor}"></span>${esc(g.colourCode||'Not assigned')}</td>
+        <td>${esc(g.standard||'')}</td>
+        <td style="font-size:11px">${esc(g.composition||'')}</td>
+        <td>${esc(g.notes||'')}</td>
+      </tr>`;
+    }
+    return `<tr>
+      <td><textarea class="gm-in" rows="2" oninput="PQ._gCell(${g.id},'grade',this.value)">${esc(g.grade||'')}</textarea></td>
+      <td><textarea class="gm-in" rows="2" oninput="PQ._gCell(${g.id},'colourCode',this.value)">${esc(g.colourCode||'')}</textarea></td>
+      <td><textarea class="gm-in" rows="2" oninput="PQ._gCell(${g.id},'standard',this.value)">${esc(g.standard||'')}</textarea></td>
+      <td><textarea class="gm-in" rows="3" oninput="PQ._gCell(${g.id},'composition',this.value)">${esc(g.composition||'')}</textarea></td>
+      <td><textarea class="gm-in" rows="2" oninput="PQ._gCell(${g.id},'notes',this.value)">${esc(g.notes||'')}</textarea></td>
+      <td><button onclick="PQ._deleteGrade(${g.id})" title="Delete"
+            style="border:1px solid #fca5a5;background:#fee2e2;color:#b91c1c;border-radius:3px;padding:2px 8px;cursor:pointer;font-size:12px">✕</button></td>
+    </tr>`;
+  }
+
+  function _gCell(id, field, val) {
+    if (!_g.pending[id]) _g.pending[id] = {};
+    _g.pending[id][field] = val;
+  }
+
+  async function _gFlushPending() {
+    if (!Object.keys(_g.pending).length) return;
+    const allGrades = await getAll('pq_grades');
+    for (const [id, changes] of Object.entries(_g.pending)) {
+      const existing = allGrades.find(r => r.id == id);
+      if (existing) await save('pq_grades', Object.assign({}, existing, changes, { id: parseInt(id) }));
+    }
+    _g.pending = {};
+  }
+
+  function _gStartEdit() { _g.editMode = true; _renderGradeMaster(); }
+  function _gCancelEdit() { _g.editMode = false; _g.pending = {}; _renderGradeMaster(); }
+
+  async function _addGrade() {
+    await _gFlushPending();
+    const allGrades = await getAll('pq_grades');
+    const maxOrder = allGrades.length ? Math.max(...allGrades.map(g => g.order || 0)) : 0;
+    await save('pq_grades', { grade: '', colourCode: '', standard: '', composition: '', notes: '', order: maxOrder + 1 });
+    _g.editMode = true;
+    _renderGradeMaster();
+  }
+
+  async function _deleteGrade(id) {
+    if (!confirm('Delete this grade?')) return;
+    await remove('pq_grades', id);
+    delete _g.pending[id];
+    _renderGradeMaster();
+  }
+
+  async function _gSaveAll() {
+    const summary = prompt('Change summary (required):');
+    if (summary === null) return;
+    if (!summary.trim()) { toast('Please enter a change summary', 'e'); return; }
+
+    await _gFlushPending();
+
+    const docs = await getAll('pq_grade_doc');
+    const doc  = docs[0];
+    const newRev = nextRev(doc.rev || 'A');
+
+    await save('pq_grade_doc', Object.assign({}, doc, {
+      id: doc.id, rev: newRev, status: 'Pending Approval',
+      lastChangeSummary: summary.trim(), lastChangedAt: new Date().toISOString(),
+    }));
+
+    await save('pq_revisions', {
+      partId: null, docType: 'grademaster', revision: newRev, status: 'Pending Approval',
+      changeSummary: summary.trim(), changedBy: _userName(), date: _fmtDate(),
+    });
+
+    _g.editMode = false;
+    toast(`Submitted for approval — Rev ${newRev}`);
+    _renderGradeMaster();
+  }
+
+  async function _gApprove() {
+    if (!confirm('Approve and release Grade Master?')) return;
+    const docs = await getAll('pq_grade_doc');
+    const doc  = docs[0];
+    const by   = _userName();
+
+    await save('pq_grade_doc', Object.assign({}, doc, {
+      id: doc.id, status: 'Released', approvedBy: by, approvedAt: new Date().toISOString(),
+    }));
+
+    const allRevs = await getAll('pq_revisions');
+    const revEntry = allRevs.find(r => r.docType === 'grademaster' && r.revision === doc.rev);
+    if (revEntry) {
+      await save('pq_revisions', Object.assign({}, revEntry, {
+        id: revEntry.id, status: 'Released', approvedBy: by, approvedAt: _fmtDate(),
+      }));
+    }
+
+    toast('Grade Master Released');
+    _renderGradeMaster();
+  }
+
+  async function _gNewRevision() {
+    if (!confirm('Start a new revision? The current Released version will be superseded.')) return;
+    const docs = await getAll('pq_grade_doc');
+    const doc  = docs[0];
+    await save('pq_grade_doc', Object.assign({}, doc, { id: doc.id, status: 'Draft' }));
+    _g.editMode = true;
+    toast('New revision started — make your changes then Submit for Approval');
+    _renderGradeMaster();
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
   //  CONTROL PLAN
   // ══════════════════════════════════════════════════════════════════════
   const cpClassColor = cls => cls === 'Critical' ? { bg:'#fee2e2', fg:'#991b1b' }
@@ -1637,11 +1967,16 @@ const PQ = (() => {
       const sourceRows = pfmeaForStep.length
         ? pfmeaForStep.map(pf => ({
             charName: pf.function, classification: _classFromRpn(pf.rpn || 0),
-            method: pf.detectionControls, controlMethod: pf.preventionControls, reactionPlan: pf.recommendedAction,
+            controlMethod: _mergeControlMethod(pf.preventionControls, pf.detectionControls),
+            reactionPlan: pf.recommendedAction,
           }))
         : (_matchCpTemplates(stepName, allCpTemplates).length
-            ? _matchCpTemplates(stepName, allCpTemplates)
-            : [{ charName: '', classification: 'Minor', method: '', controlMethod: '', reactionPlan: '' }]);
+            ? _matchCpTemplates(stepName, allCpTemplates).map(t => ({
+                charName: t.charName, classification: t.classification,
+                controlMethod: _mergeControlMethod(t.controlMethod, t.method),
+                reactionPlan: t.reactionPlan,
+              }))
+            : [{ charName: '', classification: 'Minor', controlMethod: '', reactionPlan: '' }]);
 
       let seq = 0;
       for (const src of sourceRows) {
@@ -1650,8 +1985,8 @@ const PQ = (() => {
           partId: _s.partId, opNumber: step.opNumber, processStep: stepName,
           machine: '', charNumber: `${step.opNumber}.${String(seq).padStart(2, '0')}`,
           charName: src.charName || '', classification: src.classification || 'Minor',
-          specification: '', tolerance: '', method: src.method || '', gauge: '',
-          sampleSize: '', frequency: '', controlMethod: src.controlMethod || '',
+          specification: '', tolerance: '', frequency: '',
+          controlMethod: src.controlMethod || '',
           reactionPlan: src.reactionPlan || '', remarks: '', includeInChecksheet: true, order,
         });
         added++;
@@ -1661,11 +1996,17 @@ const PQ = (() => {
     _renderCp();
   }
 
+  function _mergeControlMethod(prevention, detection) {
+    const parts = [prevention, detection].map(s => String(s||'').trim()).filter(Boolean);
+    return parts.join(' | ');
+  }
+
   async function _renderCp() {
     const pid = _s.partId;
-    const [parts, allSteps, allRows, allRevs] = await Promise.all([
-      getAll('pq_parts'), getAll('pq_pfd_steps'), getAll('pq_cp_rows'), getAll('pq_revisions')
+    const [parts, allSteps, allRows, allRevs, grades] = await Promise.all([
+      getAll('pq_parts'), getAll('pq_pfd_steps'), getAll('pq_cp_rows'), getAll('pq_revisions'), getAll('pq_grades')
     ]);
+    _s.cpGrades = grades;
     const part = parts.find(p => p.id == pid);
     if (!part) { toast('Part not found', 'e'); renderCpRegistry(); return; }
 
@@ -1784,8 +2125,15 @@ const PQ = (() => {
         </table>
       </div>
 
+      <datalist id="cp-grade-datalist">
+        ${grades.map(g => `<option value="${esc(g.grade)}">`).join('')}
+      </datalist>
+
       <div style="display:grid;grid-template-columns:1fr 240px;gap:14px;align-items:start">
         <div>
+          ${!locked && grades.length ? `<div class="alert al-d no-print" style="margin-bottom:12px;font-size:12px">
+            💡 Typing a grade name (e.g. ${esc(grades[0].grade)}) into <b>Specification</b> auto-fills <b>Tolerance</b> from <a style="cursor:pointer;font-weight:600" onclick="PQ.renderGradeMaster()">Grade Master</a>.
+          </div>` : ''}
           ${steps.map(step => _buildCpGroup(step, rows.filter(r => r.opNumber === step.opNumber), locked)).join('')}
           ${!steps.length ? `<div class="card"><div class="cb" style="padding:24px;text-align:center;color:#9ca3af">No PFD steps — build the Process Flow Diagram first</div></div>` : ''}
         </div>
@@ -1833,13 +2181,42 @@ const PQ = (() => {
           </div>
         </div>
       </div>
+
+      <!-- Revision History Table (printed) -->
+      <div style="margin-top:24px">
+        <div style="font-size:9pt;font-weight:bold;margin-bottom:6px;color:#1e3a5f">REVISION HISTORY</div>
+        <table style="width:100%;border-collapse:collapse;font-size:9.5pt">
+          <thead><tr>
+            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Rev</th>
+            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Date</th>
+            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Prepared By</th>
+            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Approved By</th>
+            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Change Summary</th>
+          </tr></thead>
+          <tbody>
+            ${(() => {
+              let entries = allRevs.filter(r => r.partId == pid && r.docType === 'cp').sort((a, b) => a.id - b.id);
+              if (!entries.length) {
+                entries = [{ revision: part.cpRev||'A', date: part.date||'', changedBy: part.preparedBy||'', approvedBy: part.cpApprovedBy||'Pending', changeSummary: 'Initial revision' }];
+              }
+              return entries.map(r => `<tr>
+                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.revision||'')}</td>
+                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.date||'')}</td>
+                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.changedBy||'')}</td>
+                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.approvedBy||'Pending')}</td>
+                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.changeSummary||'')}</td>
+              </tr>`).join('');
+            })()}
+          </tbody>
+        </table>
+      </div>
     `);
   }
 
   function _buildCpGroup(step, rows, locked) {
     const stepName = step.stepName || step.opName || '';
     const body = rows.length ? rows.map(r => _buildCpRow(r, locked)).join('') :
-      `<tr><td colspan="${locked?11:12}" style="text-align:center;color:#9ca3af;padding:10px">No characteristics for this step${locked?'':' — click "+ Add Characteristic" below'}</td></tr>`;
+      `<tr><td colspan="${locked?9:10}" style="text-align:center;color:#9ca3af;padding:10px">No characteristics for this step${locked?'':' — click "+ Add Characteristic" below'}</td></tr>`;
 
     return `
       <div class="card" style="margin-bottom:14px">
@@ -1854,12 +2231,9 @@ const PQ = (() => {
               <th>Class</th>
               <th style="min-width:100px">Machine</th>
               <th style="min-width:110px">Specification</th>
-              <th style="min-width:90px">Tolerance</th>
-              <th style="min-width:140px">Method</th>
-              <th style="min-width:100px">Gauge</th>
-              <th style="min-width:90px">Sample Size</th>
+              <th style="min-width:110px">Tolerance</th>
               <th style="min-width:100px">Frequency</th>
-              <th style="min-width:140px">Control Method</th>
+              <th style="min-width:160px">Control Method</th>
               <th style="min-width:140px">Reaction Plan</th>
               ${locked ? '' : '<th></th>'}
             </tr></thead>
@@ -1882,34 +2256,47 @@ const PQ = (() => {
         <td>${esc(r.machine||'')}</td>
         <td>${esc(r.specification||'')}</td>
         <td>${esc(r.tolerance||'')}</td>
-        <td>${esc(r.method||'')}</td>
-        <td>${esc(r.gauge||'')}</td>
-        <td>${esc(r.sampleSize||'')}</td>
         <td>${esc(r.frequency||'')}</td>
         <td>${esc(r.controlMethod||'')}</td>
         <td>${esc(r.reactionPlan||'')}</td>
       </tr>`;
     }
     return `<tr>
-      <td><input class="cp-in" value="${esc(r.charNumber||'')}" oninput="PQ._cpCell(${r.id},'charNumber',this.value)"></td>
+      <td><textarea class="cp-in" rows="2" oninput="PQ._cpCell(${r.id},'charNumber',this.value)">${esc(r.charNumber||'')}</textarea></td>
       <td><textarea class="cp-in" rows="2" oninput="PQ._cpCell(${r.id},'charName',this.value)">${esc(r.charName||'')}</textarea></td>
       <td>
         <select class="cp-in" onchange="PQ._cpCell(${r.id},'classification',this.value)">
           ${['Critical','Major','Special','Minor'].map(c => `<option value="${c}" ${((r.classification||'Minor')===c)?'selected':''}>${c}</option>`).join('')}
         </select>
       </td>
-      <td><input class="cp-in" value="${esc(r.machine||'')}" oninput="PQ._cpCell(${r.id},'machine',this.value)"></td>
-      <td><input class="cp-in" value="${esc(r.specification||'')}" oninput="PQ._cpCell(${r.id},'specification',this.value)"></td>
-      <td><input class="cp-in" value="${esc(r.tolerance||'')}" oninput="PQ._cpCell(${r.id},'tolerance',this.value)"></td>
-      <td><textarea class="cp-in" rows="2" oninput="PQ._cpCell(${r.id},'method',this.value)">${esc(r.method||'')}</textarea></td>
-      <td><input class="cp-in" value="${esc(r.gauge||'')}" oninput="PQ._cpCell(${r.id},'gauge',this.value)"></td>
-      <td><input class="cp-in" value="${esc(r.sampleSize||'')}" oninput="PQ._cpCell(${r.id},'sampleSize',this.value)"></td>
-      <td><input class="cp-in" value="${esc(r.frequency||'')}" oninput="PQ._cpCell(${r.id},'frequency',this.value)"></td>
+      <td><textarea class="cp-in" rows="2" oninput="PQ._cpCell(${r.id},'machine',this.value)">${esc(r.machine||'')}</textarea></td>
+      <td>${_buildCpSpecCell(r)}</td>
+      <td><textarea class="cp-in" id="cp-tol-${r.id}" rows="2" oninput="PQ._cpCell(${r.id},'tolerance',this.value)">${esc(r.tolerance||'')}</textarea></td>
+      <td><textarea class="cp-in" rows="2" oninput="PQ._cpCell(${r.id},'frequency',this.value)">${esc(r.frequency||'')}</textarea></td>
       <td><textarea class="cp-in" rows="2" oninput="PQ._cpCell(${r.id},'controlMethod',this.value)">${esc(r.controlMethod||'')}</textarea></td>
       <td><textarea class="cp-in" rows="2" oninput="PQ._cpCell(${r.id},'reactionPlan',this.value)">${esc(r.reactionPlan||'')}</textarea></td>
       <td><button onclick="PQ._deleteCpRow(${r.id})" title="Delete"
             style="border:1px solid #fca5a5;background:#fee2e2;color:#b91c1c;border-radius:3px;padding:2px 8px;cursor:pointer;font-size:12px">✕</button></td>
     </tr>`;
+  }
+
+  // Specification field: plain input (not a textarea — <textarea> can't use
+  // a <datalist>) wired to the shared #cp-grade-datalist so typing/picking a
+  // known grade name offers autocomplete and triggers the tolerance auto-fill.
+  function _buildCpSpecCell(r) {
+    return `<input class="cp-in" list="cp-grade-datalist" value="${esc(r.specification||'')}"
+      oninput="PQ._cpCell(${r.id},'specification',this.value)"
+      onchange="PQ._cpSpecChange(${r.id},this.value)">`;
+  }
+
+  function _cpSpecChange(id, val) {
+    const grades = _s.cpGrades || [];
+    const match = grades.find(g => String(g.grade||'').toLowerCase() === String(val||'').trim().toLowerCase());
+    if (!match) return;
+    _cpCell(id, 'tolerance', match.composition || '');
+    const el = document.getElementById(`cp-tol-${id}`);
+    if (el) el.value = match.composition || '';
+    toast(`Tolerance auto-filled from ${match.grade} (Grade Master)`);
   }
 
   function _cpCell(id, field, val) {
@@ -1938,7 +2325,7 @@ const PQ = (() => {
     await save('pq_cp_rows', {
       partId: _s.partId, opNumber, processStep,
       machine: '', charNumber: '', charName: '', classification: 'Minor',
-      specification: '', tolerance: '', method: '', gauge: '', sampleSize: '', frequency: '',
+      specification: '', tolerance: '', frequency: '',
       controlMethod: '', reactionPlan: '', remarks: '', includeInChecksheet: true,
       order: maxOrder + 1,
     });
@@ -2025,7 +2412,9 @@ const PQ = (() => {
     renderPfdRegistry, renderPfmeaRegistry, renderCpRegistry,
     openCp, _generateCpFromPfd,
     _cpStartEdit, _cpCancelEdit, _cpSaveAll, _cpApprove, _cpNewRevision,
-    _addCpRow, _deleteCpRow, _cpCell,
+    _addCpRow, _deleteCpRow, _cpCell, _cpSpecChange,
     renderCsRegistry, openCs, _fillCsModal, _saveCsRecord, _viewCsRecord, _deleteCsRecord,
+    renderGradeMaster, _gStartEdit, _gCancelEdit, _gSaveAll, _gApprove, _gNewRevision,
+    _addGrade, _deleteGrade, _gCell,
   };
 })();
