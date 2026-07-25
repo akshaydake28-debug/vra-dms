@@ -48,6 +48,32 @@ const PQ = (() => {
 
   const setC  = html => { document.getElementById('content').innerHTML = html; };
   const esc   = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+  // ── Repeating print header ──────────────────────────────────────────
+  // Chromium only auto-repeats *real* <table><thead> content across page
+  // breaks in print — a div styled with display:table-header-group does
+  // NOT repeat, only genuine table markup does. So the whole document is
+  // wrapped in one <table class="pq-page-wrap"> with the header in a real
+  // <thead> (hidden on screen, shown only in print) and everything else in
+  // <tbody>, so the header reprints on every page just like a normal
+  // multi-page table header would.
+  const PQ_PRINT_PAGE_CSS = `
+    .pq-page-wrap { width:100%; border-collapse:collapse; }
+    .pq-page-wrap > thead { display:none; }
+    .pq-page-wrap > thead > tr > td, .pq-page-wrap > tbody > tr > td { padding:0; border:none; }
+    @media print {
+      .pq-page-wrap > thead { display:table-header-group !important; }
+    }`;
+  function _printHeader(docTitle, part, docNo, rev, status) {
+    return `
+      <table style="width:100%;border-collapse:collapse;border-bottom:2px solid #000;padding-bottom:6px;margin-bottom:8px">
+        <tr>
+          <td style="width:30%;font-weight:bold;font-size:12pt">V R ALUCAST<br><span style="font-size:7.5pt;font-weight:normal;color:#555">High Pressure Die Casting | ISO 9001</span></td>
+          <td style="width:40%;text-align:center;font-weight:bold;font-size:11pt">${esc(docTitle)}<br><span style="font-size:8pt;font-weight:normal;color:#555">${esc(part.partName||'')}</span></td>
+          <td style="width:30%;text-align:right;font-size:8.5pt;line-height:1.7"><b>Doc No:</b> ${esc(docNo)}<br><b>Rev:</b> ${esc(rev)}<br><b>Status:</b> ${esc(status)}</td>
+        </tr>
+      </table>`;
+  }
   const toast = (msg, t='s') => {
     const el = document.createElement('div');
     el.className = `alert al-${t}`;
@@ -356,41 +382,20 @@ const PQ = (() => {
           aside, .topbar { display:none !important; }
           .main { margin:0 !important; }
           .content { padding:8px !important; }
-          .pfd-print-hdr { display:table-header-group !important; }
-          .pfd-print-ftr { display:table-footer-group !important; }
           @page { size:A4; margin:14mm 15mm 18mm 15mm; }
-          @page { counter-increment: page; }
-          .pfd-pgnum::after { content: counter(page); }
           .pq-doc-grid { display:block !important; }
           .cb { overflow:visible !important; }
         }
-        .pfd-print-hdr { display:none; }
-        .pfd-print-ftr { display:none; }
-        .pfd-page-wrap { display:table; width:100%; }
-        .pfd-page-body { display:table-row-group; }
+        ${PQ_PRINT_PAGE_CSS}
         .btn-g { background:#16a34a;color:#fff;border:none; }
         .btn-g:hover { background:#15803d; }
       </style>
-      <!-- Print-only repeating header -->
-      <div class="pfd-print-hdr">
-        <table style="width:100%;border-collapse:collapse;border-bottom:2px solid #000;padding-bottom:6px;margin-bottom:8px">
-          <tr>
-            <td style="width:30%;font-weight:bold;font-size:12pt">V R ALUCAST<br><span style="font-size:7.5pt;font-weight:normal;color:#555">High Pressure Die Casting | ISO 9001</span></td>
-            <td style="width:40%;text-align:center;font-weight:bold;font-size:11pt">PROCESS FLOW DIAGRAM<br><span style="font-size:8pt;font-weight:normal;color:#555">${esc(part.partName||'')}</span></td>
-            <td style="width:30%;text-align:right;font-size:8.5pt;line-height:1.7"><b>Doc No:</b> ${esc(docNo)}<br><b>Rev:</b> ${esc(part.pfdRev||'A')}<br><b>Status:</b> ${esc(status)}</td>
-          </tr>
-        </table>
-      </div>
-      <!-- Print-only repeating footer -->
-      <div class="pfd-print-ftr">
-        <table style="width:100%;border-collapse:collapse;border-top:1px solid #000;padding-top:4px;margin-top:6px">
-          <tr>
-            <td style="font-size:7.5pt;color:#444">${esc(docNo)} Rev ${esc(part.pfdRev||'A')}</td>
-            <td style="text-align:center;font-size:7.5pt;color:#444">V R ALUCAST — CONFIDENTIAL</td>
-            <td style="text-align:right;font-size:7.5pt;color:#444">Page <span class="pfd-pgnum"></span></td>
-          </tr>
-        </table>
-      </div>
+
+      <table class="pq-page-wrap">
+      <thead><tr><td>
+      ${_printHeader('PROCESS FLOW DIAGRAM', part, docNo, part.pfdRev||'A', status)}
+      </td></tr></thead>
+      <tbody><tr><td>
 
       <!-- Page header (hidden on print) -->
       <div class="ph no-print">
@@ -560,6 +565,9 @@ const PQ = (() => {
           </tbody>
         </table>
       </div>
+
+      </td></tr></tbody>
+      </table>
     `);
   }
 
@@ -930,9 +938,11 @@ const PQ = (() => {
           aside, .topbar { display:none !important; }
           .main { margin:0 !important; }
           .content { padding:8px !important; }
+          @page { size:A4; margin:14mm 15mm 18mm 15mm; }
           .pq-doc-grid { display:block !important; }
           .cb { overflow:visible !important; }
         }
+        ${PQ_PRINT_PAGE_CSS}
         .btn-g { background:#16a34a;color:#fff;border:none; }
         .btn-g:hover { background:#15803d; }
         .pf-tbl { width:100%; border-collapse:collapse; font-size:11.5px; }
@@ -942,6 +952,12 @@ const PQ = (() => {
         .pf-num { width:44px; text-align:center; border:1px solid #c7d2fe; border-radius:3px; padding:3px 2px; font-size:11.5px; }
         .pf-rpn { display:inline-block; min-width:38px; text-align:center; font-weight:800; padding:3px 6px; border-radius:4px; font-size:12px; }
       </style>
+
+      <table class="pq-page-wrap">
+      <thead><tr><td>
+      ${_printHeader('PROCESS FAILURE MODE & EFFECTS ANALYSIS (PFMEA)', part, docNo, part.pfmeaRev||'A', status)}
+      </td></tr></thead>
+      <tbody><tr><td>
 
       <div class="ph no-print">
         <div>
@@ -1113,6 +1129,9 @@ const PQ = (() => {
           </tbody>
         </table>
       </div>
+
+      </td></tr></tbody>
+      </table>
     `);
   }
 
@@ -2068,9 +2087,11 @@ const PQ = (() => {
           aside, .topbar { display:none !important; }
           .main { margin:0 !important; }
           .content { padding:8px !important; }
+          @page { size:A4; margin:14mm 15mm 18mm 15mm; }
           .pq-doc-grid { display:block !important; }
           .cb { overflow:visible !important; }
         }
+        ${PQ_PRINT_PAGE_CSS}
         .btn-g { background:#16a34a;color:#fff;border:none; } .btn-g:hover { background:#15803d; }
         .cp-tbl { width:100%; border-collapse:collapse; font-size:11.5px; }
         .cp-tbl th { background:#1e3a5f; color:#fff; padding:6px 8px; text-align:left; border:1px solid #ccc; font-size:10px; text-transform:uppercase; letter-spacing:.2px; }
@@ -2078,6 +2099,12 @@ const PQ = (() => {
         .cp-in { width:100%; border:1px solid #c7d2fe; border-radius:3px; padding:3px 5px; font-size:11.5px; background:#fff; font-family:inherit; }
         .cp-cls { display:inline-block; min-width:52px; text-align:center; font-weight:700; padding:3px 6px; border-radius:4px; font-size:11px; }
       </style>
+
+      <table class="pq-page-wrap">
+      <thead><tr><td>
+      ${_printHeader('CONTROL PLAN', part, docNo, part.cpRev||'A', status)}
+      </td></tr></thead>
+      <tbody><tr><td>
 
       <div class="ph no-print">
         <div>
@@ -2239,6 +2266,9 @@ const PQ = (() => {
           </tbody>
         </table>
       </div>
+
+      </td></tr></tbody>
+      </table>
     `);
   }
 
