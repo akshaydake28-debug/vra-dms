@@ -2,7 +2,6 @@
 const PQ = (() => {
 
   const _s = { partId: null, editMode: false, pending: {}, pfmeaEditMode: false, pfmeaPending: {}, cpEditMode: false, cpPending: {}, cpPrintFilter: '' };
-  const _g = { editMode: false, pending: {} };
 
   const GRADE_COLOR_SWATCH = {
     green:'#16a34a', blue:'#2563eb', yellow:'#ca8a04', black:'#111827',
@@ -241,19 +240,23 @@ const PQ = (() => {
     const newPid  = newPart.id;
 
     if (tmplId) {
-      // Copy PFD steps from template part
+      // Copy PFD steps from template part. Each cloned step gets a brand
+      // new id — track old→new so PFMEA/CP rows below can be re-pointed at
+      // the *new* steps instead of carrying over the template's step ids.
       const allSteps = await getAll('pq_pfd_steps');
       const srcSteps = allSteps
         .filter(s => s.partId == tmplId)
         .sort((a, b) => (a.sortOrder ?? a.id) - (b.sortOrder ?? b.id));
 
+      const stepIdMap = {}; // old pfd_step id -> new pfd_step id
       for (const s of srcSteps) {
-        await save('pq_pfd_steps', {
+        const newStep = await save('pq_pfd_steps', {
           partId:    newPid,
           opNumber:  s.opNumber,
           opName:    s.opName,
           sortOrder: s.sortOrder ?? s.id,
         });
+        stepIdMap[s.id] = newStep.id;
       }
 
       // Copy PFMEA rows from template part too, so the new part starts
@@ -265,6 +268,7 @@ const PQ = (() => {
       for (const r of srcRows) {
         await save('pq_pfmea_rows', Object.assign({}, r, {
           id: undefined, partId: newPid, status: 'Open', targetDate: '',
+          pfdStepId: r.pfdStepId ? stepIdMap[r.pfdStepId] : undefined,
         }));
       }
 
@@ -274,7 +278,10 @@ const PQ = (() => {
         .filter(r => r.partId == tmplId)
         .sort((a, b) => (a.order ?? a.id) - (b.order ?? b.id));
       for (const r of srcCpRows) {
-        await save('pq_cp_rows', Object.assign({}, r, { id: undefined, partId: newPid }));
+        await save('pq_cp_rows', Object.assign({}, r, {
+          id: undefined, partId: newPid,
+          pfdStepId: r.pfdStepId ? stepIdMap[r.pfdStepId] : undefined,
+        }));
       }
 
       toast(`Part created with ${srcSteps.length} steps, ${srcRows.length} PFMEA rows and ${srcCpRows.length} Control Plan rows copied from template`);
@@ -837,12 +844,17 @@ const PQ = (() => {
     if (!steps.length) { toast('No PFD steps yet — build the Process Flow Diagram first', 'e'); return; }
 
     const existingRows = allRows.filter(r => r.partId == _s.partId);
-    const coveredOps = new Set(existingRows.map(r => r.opNumber));
+    // Match by the step's stable id, not opNumber — opNumber gets
+    // reassigned by _renumberAll() whenever steps are added/reordered, so a
+    // row created against "OP20" can silently stop matching once that label
+    // moves to a different step. Rows saved before this fix have no
+    // pfdStepId; opNumber is used as a one-time fallback only for those.
+    const coveredStepIds = new Set(existingRows.map(r => r.pfdStepId ?? `op:${r.opNumber}`));
     let order = existingRows.length ? Math.max(...existingRows.map(r => r.order || 0)) : 0;
     let added = 0;
 
     for (const step of steps) {
-      if (coveredOps.has(step.opNumber)) continue;
+      if (coveredStepIds.has(step.id) || coveredStepIds.has(`op:${step.opNumber}`)) continue;
       const stepName = step.stepName || step.opName || '';
       const matches = _matchPfmeaTemplates(stepName, allTemplates);
       const toAdd = matches.length ? matches : [{
@@ -852,7 +864,7 @@ const PQ = (() => {
       for (const t of toAdd) {
         order += 1;
         await save('pq_pfmea_rows', {
-          partId: _s.partId, opNumber: step.opNumber, processStep: stepName,
+          partId: _s.partId, pfdStepId: step.id, opNumber: step.opNumber, processStep: stepName,
           function: t.function || '', failureMode: t.failureMode || '', failureEffect: t.failureEffect || '',
           severity: t.severity || 1, failureCause: t.failureCause || '', occurrence: t.occurrence || 1,
           preventionControls: t.preventionControls || '', detectionControls: t.detectionControls || '', detection: t.detection || 1,
@@ -1010,7 +1022,7 @@ const PQ = (() => {
       <div class="pq-doc-grid" style="display:grid;grid-template-columns:1fr 240px;gap:14px;align-items:start">
 
         <div>
-          ${steps.map(step => _buildPfmeaGroup(step, rows.filter(r => r.opNumber === step.opNumber), locked)).join('')}
+          ${steps.map(step => _buildPfmeaGroup(step, rows.filter(r => r.pfdStepId ? r.pfdStepId === step.id : r.opNumber === step.opNumber), locked)).join('')}
           ${!steps.length ? `<div class="card"><div class="cb" style="padding:24px;text-align:center;color:#9ca3af">No PFD steps — build the Process Flow Diagram first</div></div>` : ''}
         </div>
 
@@ -1136,7 +1148,7 @@ const PQ = (() => {
           </table>
         </div>
         ${!locked ? `<div style="padding:8px 12px">
-          <button class="btn btn-o btn-xs" onclick="PQ._addPfmeaRow('${esc(step.opNumber||'')}','${esc(stepName).replace(/'/g,"\\'")}')">+ Add Failure Mode</button>
+          <button class="btn btn-o btn-xs" onclick="PQ._addPfmeaRow(${step.id},'${esc(step.opNumber||'')}','${esc(stepName).replace(/'/g,"\\'")}')">+ Add Failure Mode</button>
         </div>` : ''}
       </div>`;
   }
@@ -1223,13 +1235,13 @@ const PQ = (() => {
   function _pfmeaStartEdit() { _s.pfmeaEditMode = true; _renderPfmea(); }
   function _pfmeaCancelEdit() { _s.pfmeaEditMode = false; _s.pfmeaPending = {}; _renderPfmea(); }
 
-  async function _addPfmeaRow(opNumber, processStep) {
+  async function _addPfmeaRow(pfdStepId, opNumber, processStep) {
     await _pfmeaFlushPending();
     const allRows = await getAll('pq_pfmea_rows');
     const existing = allRows.filter(r => r.partId == _s.partId);
     const maxOrder = existing.length ? Math.max(...existing.map(r => r.order || 0)) : 0;
     await save('pq_pfmea_rows', {
-      partId: _s.partId, opNumber, processStep,
+      partId: _s.partId, pfdStepId, opNumber, processStep,
       function: '', failureMode: '', failureEffect: '', severity: 1,
       failureCause: '', occurrence: 1, preventionControls: '', detectionControls: '', detection: 1, rpn: 1,
       recommendedAction: '', responsibility: '', targetDate: '', status: 'Open',
@@ -1343,7 +1355,10 @@ const PQ = (() => {
 
     setC(`
       <style>.pf-rpn{display:inline-block;min-width:30px;text-align:center;font-weight:800;padding:2px 6px;border-radius:4px;font-size:11px}</style>
-      <div class="ph"><h2>PFMEA</h2></div>
+      <div class="ph">
+        <h2>PFMEA</h2>
+        <button class="btn btn-p" onclick="PQ._pfmeaCreateModal()">➕ Create PFMEA</button>
+      </div>
       <div class="card">
         <div class="tw">
           <table>
@@ -1352,6 +1367,45 @@ const PQ = (() => {
           </table>
         </div>
       </div>`);
+  }
+
+  // "Create PFMEA" picks a part from the PFD register — PFMEA is generated
+  // from the PFD, so only parts that already have one are eligible.
+  async function _pfmeaCreateModal() {
+    const [parts, allSteps] = await Promise.all([getAll('pq_parts'), getAll('pq_pfd_steps')]);
+    const eligible = parts.filter(p => allSteps.some(s => s.partId == p.id));
+    if (!eligible.length) {
+      toast('No parts have a Process Flow Diagram yet — build one first', 'e');
+      return;
+    }
+    const modal = document.createElement('div');
+    modal.id = 'pq-pfmea-create-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:#0008;z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+    modal.innerHTML = `
+    <div style="background:#fff;border-radius:12px;width:100%;max-width:420px;box-shadow:0 20px 60px #0004">
+      <div style="padding:14px 18px;border-bottom:1px solid #e5e7eb;display:flex;justify-content:space-between;align-items:center">
+        <div style="font-weight:700;font-size:14px;color:#0d2f6e">Create PFMEA</div>
+        <button onclick="document.getElementById('pq-pfmea-create-modal').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#6b7280">✕</button>
+      </div>
+      <div style="padding:16px 18px">
+        <label class="lbl">Select Part (from Process Flow Diagrams)</label>
+        <select id="pfmea-create-part-select" class="input fc" style="width:100%;margin-top:6px">
+          ${eligible.map(p => `<option value="${p.id}">${esc(p.partNumber)} — ${esc(p.partName)}</option>`).join('')}
+        </select>
+        <p style="font-size:11px;color:#6b7280;margin-top:8px">Only parts that already have a Process Flow Diagram are listed — PFMEA is generated from the PFD, so it has to exist first.</p>
+      </div>
+      <div style="padding:0 18px 18px;display:flex;gap:8px">
+        <button class="btn btn-p" onclick="PQ._pfmeaCreateGo()">Continue →</button>
+        <button class="btn btn-o" onclick="document.getElementById('pq-pfmea-create-modal').remove()">Cancel</button>
+      </div>
+    </div>`;
+    document.body.appendChild(modal);
+  }
+
+  function _pfmeaCreateGo() {
+    const pid = parseInt(document.getElementById('pfmea-create-part-select').value, 10);
+    document.getElementById('pq-pfmea-create-modal')?.remove();
+    openPfmea(pid);
   }
 
   async function renderCpRegistry() {
@@ -1384,7 +1438,10 @@ const PQ = (() => {
     </td></tr>`;
 
     setC(`
-      <div class="ph"><h2>Control Plans</h2></div>
+      <div class="ph">
+        <h2>Control Plans</h2>
+        <button class="btn btn-p" onclick="PQ._cpCreateModal()">➕ Create Control Plan</button>
+      </div>
       <div class="card">
         <div class="tw">
           <table>
@@ -1393,6 +1450,46 @@ const PQ = (() => {
           </table>
         </div>
       </div>`);
+  }
+
+  // "Create Control Plan" picks a part from PFMEA — CP is derived from PFMEA
+  // (falling back to PFD alone only for steps PFMEA hasn't covered), so a
+  // part needs both a PFD and a PFMEA before it's eligible here.
+  async function _cpCreateModal() {
+    const [parts, allSteps, allPfmeaRows] = await Promise.all([getAll('pq_parts'), getAll('pq_pfd_steps'), getAll('pq_pfmea_rows')]);
+    const eligible = parts.filter(p => allSteps.some(s => s.partId == p.id) && allPfmeaRows.some(r => r.partId == p.id));
+    if (!eligible.length) {
+      toast('No parts have both a PFD and a PFMEA yet — complete those first', 'e');
+      return;
+    }
+    const modal = document.createElement('div');
+    modal.id = 'pq-cp-create-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:#0008;z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+    modal.innerHTML = `
+    <div style="background:#fff;border-radius:12px;width:100%;max-width:420px;box-shadow:0 20px 60px #0004">
+      <div style="padding:14px 18px;border-bottom:1px solid #e5e7eb;display:flex;justify-content:space-between;align-items:center">
+        <div style="font-weight:700;font-size:14px;color:#0d2f6e">Create Control Plan</div>
+        <button onclick="document.getElementById('pq-cp-create-modal').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#6b7280">✕</button>
+      </div>
+      <div style="padding:16px 18px">
+        <label class="lbl">Select Part (from PFMEA)</label>
+        <select id="cp-create-part-select" class="input fc" style="width:100%;margin-top:6px">
+          ${eligible.map(p => `<option value="${p.id}">${esc(p.partNumber)} — ${esc(p.partName)}</option>`).join('')}
+        </select>
+        <p style="font-size:11px;color:#6b7280;margin-top:8px">Only parts with both a PFD and a PFMEA already built are listed — the Control Plan is derived from PFMEA.</p>
+      </div>
+      <div style="padding:0 18px 18px;display:flex;gap:8px">
+        <button class="btn btn-p" onclick="PQ._cpCreateGo()">Continue →</button>
+        <button class="btn btn-o" onclick="document.getElementById('pq-cp-create-modal').remove()">Cancel</button>
+      </div>
+    </div>`;
+    document.body.appendChild(modal);
+  }
+
+  function _cpCreateGo() {
+    const pid = parseInt(document.getElementById('cp-create-part-select').value, 10);
+    document.getElementById('pq-cp-create-modal')?.remove();
+    openCp(pid);
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -1653,44 +1750,12 @@ const PQ = (() => {
   }
 
   // ══════════════════════════════════════════════════════════════════════
-  //  GRADE MASTER — shared controlled reference document (not per-part).
+  //  GRADE MASTER — plain master list (like the Gauge Register: no Draft/
+  //  Approve workflow, no revisions — edit a grade, it saves immediately).
   //  Feeds the Control Plan's Specification → Tolerance auto-fill.
   // ══════════════════════════════════════════════════════════════════════
   async function renderGradeMaster() {
-    _g.editMode = false; _g.pending = {};
-    await _renderGradeMaster();
-  }
-
-  async function _renderGradeMaster() {
-    const [docs, grades, allRevs] = await Promise.all([
-      getAll('pq_grade_doc'), getAll('pq_grades'), getAll('pq_revisions')
-    ]);
-    let doc = docs[0];
-    if (!doc) doc = await save('pq_grade_doc', { rev: 'A', status: 'Draft', date: _fmtDate() });
-    const rows = grades.slice().sort((a, b) => (a.order ?? a.id) - (b.order ?? b.id));
-
-    const locked   = !_g.editMode;
-    const status   = doc.status || 'Draft';
-    const released = status === 'Released';
-    const pending  = status === 'Pending Approval';
-    const docNo    = `VRA-GRADEMASTER-REV-${doc.rev||'A'}`;
-
-    const badge = released ? `<span class="badge ba">Released</span>`
-                : pending  ? `<span class="badge bp">⏳ Pending Approval</span>`
-                           : `<span class="badge bd">Draft</span>`;
-
-    const actions = _g.editMode
-      ? `<button class="btn btn-g btn-sm" onclick="PQ._gSaveAll()">📤 Submit for Approval</button>
-         <button class="btn btn-o btn-sm" onclick="PQ._gCancelEdit()">Cancel</button>`
-      : released
-        ? `<button class="btn btn-o btn-sm" onclick="window.print()">🖨 Print</button>
-           <button class="btn btn-o btn-sm" onclick="PQ._gNewRevision()">🔄 New Revision</button>`
-        : pending
-          ? `<button class="btn btn-o btn-sm" onclick="window.print()">🖨 Print</button>
-             <button class="btn btn-g btn-sm" onclick="PQ._gApprove()">✓ Approve</button>
-             <button class="btn btn-p btn-sm" onclick="PQ._gStartEdit()">✏️ Edit</button>`
-          : `<button class="btn btn-o btn-sm" onclick="window.print()">🖨 Print</button>
-             <button class="btn btn-p btn-sm" onclick="PQ._gStartEdit()">✏️ Edit</button>`;
+    const grades = (await getAll('pq_grades')).sort((a, b) => (a.order ?? a.id) - (b.order ?? b.id));
 
     setC(`
       <style>
@@ -1699,288 +1764,151 @@ const PQ = (() => {
           aside, .topbar { display:none !important; }
           .main { margin:0 !important; }
           .content { padding:8px !important; }
-          .pq-doc-grid { display:block !important; }
           .cb { overflow:visible !important; }
+          /* Multi-column grid layouts can silently reorder items across a
+             print page break in this engine — force a single column for
+             print so every grade prints in the same order it's listed on
+             screen, with no risk of shuffling. */
+          .gm-grid { display:block !important; }
+          .gm-grid .card { margin-bottom:12px !important; }
         }
-        .btn-g { background:#16a34a;color:#fff;border:none; } .btn-g:hover { background:#15803d; }
-        .gm-tbl { width:100%; border-collapse:collapse; font-size:11.5px; }
-        .gm-tbl th { background:#1e3a5f; color:#fff; padding:6px 8px; text-align:left; border:1px solid #ccc; font-size:10px; text-transform:uppercase; letter-spacing:.2px; }
-        .gm-tbl td { padding:5px 7px; border:1px solid #e5e7eb; vertical-align:top; }
-        .gm-in { width:100%; border:1px solid #c7d2fe; border-radius:3px; padding:3px 5px; font-size:11.5px; background:#fff; font-family:inherit; }
+        .gm-tbl { width:auto; min-width:260px; border-collapse:collapse; font-size:12px; }
+        .gm-tbl th, .gm-tbl td { padding:5px 10px; border:1px solid #e5e7eb; text-align:left; }
+        .gm-tbl th { background:#f3f4f6; color:#374151; font-weight:600; width:70px; }
         .gm-swatch { display:inline-block; width:11px; height:11px; border-radius:3px; border:1px solid #0002; margin-right:5px; vertical-align:middle; }
-        .gm-el-grid { display:grid; grid-template-columns:repeat(6,1fr); gap:6px; margin-bottom:8px; }
-        .gm-el-grid label { font-size:9px; color:#6b7280; text-transform:uppercase; font-weight:600; display:block; margin-bottom:2px; }
       </style>
 
       <div class="ph no-print">
-        <div>
-          <div style="display:flex;align-items:center;gap:7px;margin-bottom:3px">
-            <span class="tp" style="background:#166534">GM</span>
-            ${badge}
-            <span class="mono" style="color:#0d2f6e;font-weight:700">${esc(docNo)}</span>
-            <span style="color:#9ca3af">Rev ${esc(doc.rev||'A')}</span>
-          </div>
-          <h2>Grade Master — Alloy Specification &amp; Color Codes</h2>
-        </div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">${actions}</div>
-      </div>
-
-      ${_g.editMode ? `<div class="alert al-d no-print" style="margin-bottom:12px">
-        ✏️ Editing — rows can be freely added, edited or deleted while in Draft; nothing is logged until you click <b>Submit for Approval</b>.
-      </div>` : ''}
-      ${pending && !_g.editMode ? `<div class="alert al-w no-print" style="margin-bottom:12px">
-        ⏳ Pending approval. Click <b>Approve</b> to release it, or <b>Edit</b> to revise.
-      </div>` : ''}
-
-      <div style="border:2px solid #0d2f6e;margin-bottom:16px;font-size:12px">
-        <table style="width:100%;border-collapse:collapse">
-          <tr>
-            <td rowspan="2" style="padding:10px 16px;border-right:1px solid #0d2f6e;width:180px;vertical-align:middle;text-align:center">
-              <div style="font-weight:800;font-size:15px;color:#0d2f6e;letter-spacing:.5px">V R ALUCAST</div>
-              <div style="font-size:9px;color:#6b7280;letter-spacing:.3px;margin-top:2px">QUALITY MANAGEMENT SYSTEM</div>
-            </td>
-            <td colspan="3" style="padding:8px 14px;border-bottom:1px solid #0d2f6e;font-weight:700;font-size:13px;color:#0d2f6e;text-align:center;letter-spacing:.5px">
-              GRADE MASTER — ALLOY SPECIFICATION &amp; COLOR CODES
-            </td>
-          </tr>
-          <tr>
-            <td style="padding:6px 12px;border-right:1px solid #d1d5db">
-              <div style="font-size:9px;color:#6b7280;font-weight:600;text-transform:uppercase">Controlled Document Number</div>
-              <div style="font-weight:700;color:#0d2f6e;font-family:monospace;margin-top:2px">${esc(docNo)}</div>
-            </td>
-            <td style="padding:6px 12px;border-right:1px solid #d1d5db">
-              <div style="font-size:9px;color:#6b7280;font-weight:600;text-transform:uppercase">Revision</div>
-              <div style="font-weight:800;font-size:16px;color:#0d2f6e;margin-top:2px">${esc(doc.rev||'A')}</div>
-            </td>
-            <td style="padding:6px 12px">
-              <div style="font-size:9px;color:#6b7280;font-weight:600;text-transform:uppercase">Status</div>
-              <div style="font-weight:700;margin-top:2px;color:${released?'#16a34a':pending?'#d97706':'#6b7280'}">${esc(status)}</div>
-            </td>
-          </tr>
-        </table>
-      </div>
-
-      <div class="pq-doc-grid" style="display:grid;grid-template-columns:1fr 240px;gap:14px;align-items:start">
-        <div>
-          ${rows.length ? rows.map(g => _buildGradeCard(g, locked)).join('') : `<div class="card"><div class="cb" style="padding:24px;text-align:center;color:#9ca3af">No grades yet</div></div>`}
-          ${!locked ? `<div style="padding:4px 0">
-            <button class="btn btn-o btn-xs" onclick="PQ._addGrade()">+ Add Grade</button>
-          </div>` : ''}
-        </div>
-
-        <div class="no-print">
-          <div class="card">
-            <div class="ch"><h5>Revisions</h5></div>
-            <div class="cb" style="padding:8px">
-              ${(() => {
-                let entries = allRevs.filter(r => r.docType === 'grademaster').sort((a, b) => b.id - a.id);
-                if (!entries.length) {
-                  entries = [{ revision: doc.rev||'A', status: doc.status||'Draft', date: doc.date||'', changedBy: doc.approvedBy||'', changeSummary: 'Initial revision', _fallback: true }];
-                }
-                return entries.map(r => {
-                  const isCurrent = r._fallback || r.revision === doc.rev;
-                  const stBadge = r.status === 'Released'
-                    ? `<span class="badge ba" style="font-size:10px">Released</span>`
-                    : r.status === 'Pending Approval'
-                      ? `<span class="badge bp" style="font-size:10px">Pending</span>`
-                      : `<span class="badge bd" style="font-size:10px">Draft</span>`;
-                  return `<div style="padding:6px 7px;background:${isCurrent?'#edf1fb':'#f9fafc'};border-radius:6px;margin-bottom:3px;border:1px solid ${isCurrent?'#c5d0f0':'#e5e7eb'}">
-                    <div style="display:flex;justify-content:space-between;align-items:center">
-                      <span class="mono" style="font-weight:700;color:#0d2f6e">Rev ${esc(r.revision)}</span>
-                      ${stBadge}
-                    </div>
-                    <div class="muted" style="font-size:11px;margin-top:2px">${esc(r.date||'')} · ${esc(r.changedBy||'')}</div>
-                    ${r.changeSummary ? `<div style="font-size:11px;color:#374151;margin-top:2px">${esc(r.changeSummary)}</div>` : ''}
-                  </div>`;
-                }).join('');
-              })()}
-            </div>
-          </div>
+        <h2>Grade Master — Alloy Specification &amp; Color Codes</h2>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <button class="btn btn-o btn-sm" onclick="window.print()">🖨 Print All Grades</button>
+          <button class="btn btn-p btn-sm" onclick="PQ._gradeModal()">➕ Add Grade</button>
         </div>
       </div>
 
-      <!-- Revision History Table (printed) -->
-      <div style="margin-top:24px">
-        <div style="font-size:9pt;font-weight:bold;margin-bottom:6px;color:#1e3a5f">REVISION HISTORY</div>
-        <table style="width:100%;border-collapse:collapse;font-size:9.5pt">
-          <thead><tr>
-            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Rev</th>
-            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Date</th>
-            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Prepared By</th>
-            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Approved By</th>
-            <th style="background:#1e3a5f;color:#fff;padding:5px 8px;text-align:left;border:1px solid #ccc">Change Summary</th>
-          </tr></thead>
-          <tbody>
-            ${(() => {
-              let entries = allRevs.filter(r => r.docType === 'grademaster').sort((a, b) => a.id - b.id);
-              if (!entries.length) {
-                entries = [{ revision: doc.rev||'A', date: doc.date||'', changedBy: doc.preparedBy||'', approvedBy: doc.approvedBy||'Pending', changeSummary: doc.lastChangeSummary||'Initial revision' }];
-              }
-              return entries.map(r => `<tr>
-                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.revision||'')}</td>
-                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.date||'')}</td>
-                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.changedBy||'')}</td>
-                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.approvedBy||'Pending')}</td>
-                <td style="border:1px solid #ccc;padding:5px 8px">${esc(r.changeSummary||'')}</td>
-              </tr>`).join('');
-            })()}
-          </tbody>
-        </table>
+      <div class="print-only" style="display:none">
+        <h2 style="margin-bottom:2px">V R ALUCAST — Grade Master</h2>
+        <div style="font-size:11px;color:#6b7280;margin-bottom:14px">Alloy Specification &amp; Color Codes · Printed ${esc(_fmtDate())}</div>
+      </div>
+      <style>@media print { .print-only { display:block !important; } }</style>
+
+      <div class="gm-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;align-items:start">
+        ${grades.length ? grades.map(g => _buildGradeCard(g)).join('') : `<div class="card"><div class="cb" style="padding:24px;text-align:center;color:#9ca3af">No grades yet — click Add Grade</div></div>`}
       </div>
     `);
   }
 
-  // Each grade gets its own table: element symbols as column headers, one
-  // data row of values — far more legible than cramming all elements into
-  // a single composition cell.
-  function _buildGradeCard(g, locked) {
+  // Elements listed as rows (Element | Value), not columns — far more
+  // legible per-grade, especially on a printed page.
+  function _buildGradeCard(g) {
     const swatchColor = GRADE_COLOR_SWATCH[String(g.colourCode||'').toLowerCase()] || '#e5e7eb';
     const els = g.elements || {};
-
-    const titleRow = locked
-      ? `<h5><span class="gm-swatch" style="background:${swatchColor}"></span>${esc(g.grade||'')} <span style="font-weight:400;color:#6b7280;font-size:11px">${esc(g.colourCode||'Not assigned')}</span></h5>`
-      : `<div style="display:flex;gap:8px;align-items:center;flex:1">
-           <input class="gm-in" style="max-width:120px;font-weight:700" value="${esc(g.grade||'')}" placeholder="Grade name" oninput="PQ._gCell(${g.id},'grade',this.value)">
-           <input class="gm-in" style="max-width:140px" value="${esc(g.colourCode||'')}" placeholder="Color code" oninput="PQ._gCell(${g.id},'colourCode',this.value)">
-         </div>
-         <button onclick="PQ._deleteGrade(${g.id})" title="Delete grade"
-           style="border:1px solid #fca5a5;background:#fee2e2;color:#b91c1c;border-radius:3px;padding:3px 9px;cursor:pointer;font-size:12px">✕</button>`;
-
-    const elCells = locked
-      ? PQ_GRADE_ELEMENTS.map(el => `<td>${esc(els[el] || '—')}</td>`).join('')
-      : '';
-
-    const notes = locked
-      ? (g.notes ? `<div style="padding:6px 12px 10px;font-size:11.5px;color:#6b7280">${esc(g.notes)}</div>` : '')
-      : `<div style="padding:8px 12px 10px">
-           <label style="font-size:9px;color:#6b7280;text-transform:uppercase;font-weight:600;display:block;margin-bottom:2px">Notes</label>
-           <textarea class="gm-in" rows="2" oninput="PQ._gCell(${g.id},'notes',this.value)">${esc(g.notes||'')}</textarea>
-         </div>`;
-
-    const body = locked
-      ? `<div class="cb" style="padding:0;overflow-x:auto">
-           <table class="gm-tbl">
-             <thead><tr>${PQ_GRADE_ELEMENTS.map(el => `<th>${el}</th>`).join('')}</tr></thead>
-             <tbody><tr>${elCells}</tr></tbody>
-           </table>
-         </div>${notes}`
-      : `<div class="cb" style="padding:10px 12px 0">
-           <div class="gm-el-grid">
-             ${PQ_GRADE_ELEMENTS.map(el => `
-               <div>
-                 <label>${el}</label>
-                 <input class="gm-in" value="${esc(els[el]||'')}" placeholder="—" oninput="PQ._gElementCell(${g.id},'${el}',this.value)">
-               </div>`).join('')}
-           </div>
-         </div>${notes}`;
+    const elRows = PQ_GRADE_ELEMENTS
+      .filter(el => els[el])
+      .map(el => `<tr><th>${el}</th><td>${esc(els[el])}</td></tr>`)
+      .join('');
 
     return `
-      <div class="card" style="margin-bottom:12px">
-        <div class="ch" style="display:flex;justify-content:space-between;align-items:center">${titleRow}</div>
-        ${body}
+      <div class="card" style="margin-bottom:0;break-inside:avoid;page-break-inside:avoid">
+        <div class="ch" style="display:flex;justify-content:space-between;align-items:center">
+          <h5><span class="gm-swatch" style="background:${swatchColor}"></span>${esc(g.grade||'')}
+            <span style="font-weight:400;color:#6b7280;font-size:11px">${esc(g.colourCode||'Not assigned')}</span></h5>
+          <div class="no-print">
+            <button onclick="PQ._gradeModal(${g.id})" title="Edit"
+              style="border:1px solid #c7d2fe;background:#eef2ff;color:#3730a3;border-radius:3px;padding:2px 8px;cursor:pointer;font-size:12px">✏️</button>
+            <button onclick="PQ._deleteGrade(${g.id})" title="Delete"
+              style="border:1px solid #fca5a5;background:#fee2e2;color:#b91c1c;border-radius:3px;padding:2px 8px;cursor:pointer;font-size:12px;margin-left:3px">✕</button>
+          </div>
+        </div>
+        <div class="cb" style="padding:0;overflow-x:auto">
+          <table class="gm-tbl">
+            <tbody>${elRows || '<tr><td colspan="2" style="color:#9ca3af;text-align:center">No composition entered</td></tr>'}</tbody>
+          </table>
+        </div>
+        ${g.notes ? `<div style="padding:8px 12px 10px;font-size:11.5px;color:#6b7280">${esc(g.notes)}</div>` : ''}
       </div>`;
   }
 
-  function _gElementCell(id, element, val) {
-    if (!_g.pending[id]) _g.pending[id] = {};
-    if (!_g.pending[id].elements) _g.pending[id].elements = {};
-    _g.pending[id].elements[element] = val;
-  }
-
-  function _gCell(id, field, val) {
-    if (!_g.pending[id]) _g.pending[id] = {};
-    _g.pending[id][field] = val;
-  }
-
-  async function _gFlushPending() {
-    if (!Object.keys(_g.pending).length) return;
-    const allGrades = await getAll('pq_grades');
-    for (const [id, changes] of Object.entries(_g.pending)) {
-      const existing = allGrades.find(r => r.id == id);
-      if (!existing) continue;
-      const merged = Object.assign({}, existing, changes, { id: parseInt(id) });
-      if (changes.elements) merged.elements = Object.assign({}, existing.elements, changes.elements);
-      await save('pq_grades', merged);
+  // Add/Edit both use the same modal, mirroring the Gauge Register pattern —
+  // saves immediately on submit, no draft/approval step.
+  async function _gradeModal(id) {
+    let g = { grade: '', colourCode: '', notes: '', elements: {} };
+    if (id) {
+      const allGrades = await getAll('pq_grades');
+      g = allGrades.find(x => x.id == id) || g;
     }
-    _g.pending = {};
+    const els = g.elements || {};
+
+    const modal = document.createElement('div');
+    modal.id = 'pq-grade-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:#0008;z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;overflow-y:auto';
+    modal.innerHTML = `
+    <div style="background:#fff;border-radius:12px;width:100%;max-width:480px;max-height:92vh;overflow-y:auto;box-shadow:0 20px 60px #0004">
+      <div style="padding:14px 18px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:#fff;z-index:1">
+        <div style="font-weight:700;font-size:14px;color:#0d2f6e">${id ? 'Edit Grade' : 'Add Grade'}</div>
+        <button onclick="document.getElementById('pq-grade-modal').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#6b7280">✕</button>
+      </div>
+      <div style="padding:16px 18px;display:flex;flex-direction:column;gap:12px">
+        <div style="display:flex;gap:10px">
+          <div style="flex:1"><label class="lbl">Grade Name</label><input id="gm-f-grade" class="input fc" value="${esc(g.grade||'')}" placeholder="e.g. ADC12"></div>
+          <div style="flex:1"><label class="lbl">Color Code</label><input id="gm-f-colour" class="input fc" value="${esc(g.colourCode||'')}" placeholder="e.g. Green"></div>
+        </div>
+        <div>
+          <label class="lbl">Chemical Composition</label>
+          <table class="gm-tbl" style="width:100%;margin-top:4px">
+            <tbody>
+              ${PQ_GRADE_ELEMENTS.map(el => `<tr>
+                <th>${el}</th>
+                <td style="padding:3px 6px"><input id="gm-f-el-${el}" class="input fc" style="padding:4px 7px" value="${esc(els[el]||'')}" placeholder="—"></td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+        <div><label class="lbl">Notes</label><textarea id="gm-f-notes" class="input fc" rows="2">${esc(g.notes||'')}</textarea></div>
+      </div>
+      <div style="padding:0 18px 18px;display:flex;gap:8px">
+        <button class="btn btn-p" onclick="PQ._gSaveGrade(${id || 'null'})">💾 Save</button>
+        <button class="btn btn-o" onclick="document.getElementById('pq-grade-modal').remove()">Cancel</button>
+      </div>
+    </div>`;
+    document.body.appendChild(modal);
   }
 
-  function _gStartEdit() { _g.editMode = true; _renderGradeMaster(); }
-  function _gCancelEdit() { _g.editMode = false; _g.pending = {}; _renderGradeMaster(); }
+  async function _gSaveGrade(id) {
+    const gradeName = document.getElementById('gm-f-grade').value.trim();
+    if (!gradeName) { toast('Grade name is required', 'e'); return; }
 
-  async function _addGrade() {
-    await _gFlushPending();
+    const elements = {};
+    PQ_GRADE_ELEMENTS.forEach(el => { elements[el] = document.getElementById(`gm-f-el-${el}`).value.trim(); });
+
+    const data = {
+      grade: gradeName,
+      colourCode: document.getElementById('gm-f-colour').value.trim(),
+      notes: document.getElementById('gm-f-notes').value.trim(),
+      elements,
+    };
+
     const allGrades = await getAll('pq_grades');
-    const maxOrder = allGrades.length ? Math.max(...allGrades.map(g => g.order || 0)) : 0;
-    const blankElements = Object.fromEntries(PQ_GRADE_ELEMENTS.map(el => [el, '']));
-    await save('pq_grades', { grade: '', colourCode: '', elements: blankElements, notes: '', order: maxOrder + 1 });
-    _g.editMode = true;
-    _renderGradeMaster();
+    if (id) {
+      // POST replaces the record wholesale — preserve order (and anything
+      // else not on this form) instead of dropping it.
+      const existing = allGrades.find(g => g.id == id);
+      data.id = id;
+      data.order = existing?.order;
+    } else {
+      data.order = allGrades.length ? Math.max(...allGrades.map(g => g.order || 0)) + 1 : 1;
+    }
+    await save('pq_grades', data);
+    document.getElementById('pq-grade-modal')?.remove();
+    toast(id ? 'Grade updated' : 'Grade added');
+    renderGradeMaster();
   }
 
   async function _deleteGrade(id) {
     if (!confirm('Delete this grade?')) return;
     await remove('pq_grades', id);
-    delete _g.pending[id];
-    _renderGradeMaster();
-  }
-
-  async function _gSaveAll() {
-    const summary = prompt('Change summary (required):');
-    if (summary === null) return;
-    if (!summary.trim()) { toast('Please enter a change summary', 'e'); return; }
-
-    await _gFlushPending();
-
-    const docs = await getAll('pq_grade_doc');
-    const doc  = docs[0];
-    const newRev = nextRev(doc.rev || 'A');
-
-    await save('pq_grade_doc', Object.assign({}, doc, {
-      id: doc.id, rev: newRev, status: 'Pending Approval',
-      lastChangeSummary: summary.trim(), lastChangedAt: new Date().toISOString(),
-    }));
-
-    await save('pq_revisions', {
-      partId: null, docType: 'grademaster', revision: newRev, status: 'Pending Approval',
-      changeSummary: summary.trim(), changedBy: _userName(), date: _fmtDate(),
-    });
-
-    _g.editMode = false;
-    toast(`Submitted for approval — Rev ${newRev}`);
-    _renderGradeMaster();
-  }
-
-  async function _gApprove() {
-    if (!confirm('Approve and release Grade Master?')) return;
-    const docs = await getAll('pq_grade_doc');
-    const doc  = docs[0];
-    const by   = _userName();
-
-    await save('pq_grade_doc', Object.assign({}, doc, {
-      id: doc.id, status: 'Released', approvedBy: by, approvedAt: new Date().toISOString(),
-    }));
-
-    const allRevs = await getAll('pq_revisions');
-    const revEntry = allRevs.find(r => r.docType === 'grademaster' && r.revision === doc.rev);
-    if (revEntry) {
-      await save('pq_revisions', Object.assign({}, revEntry, {
-        id: revEntry.id, status: 'Released', approvedBy: by, approvedAt: _fmtDate(),
-      }));
-    }
-
-    toast('Grade Master Released');
-    _renderGradeMaster();
-  }
-
-  async function _gNewRevision() {
-    if (!confirm('Start a new revision? The current Released version will be superseded.')) return;
-    const docs = await getAll('pq_grade_doc');
-    const doc  = docs[0];
-    await save('pq_grade_doc', Object.assign({}, doc, { id: doc.id, status: 'Draft' }));
-    _g.editMode = true;
-    toast('New revision started — make your changes then Submit for Approval');
-    _renderGradeMaster();
+    toast('Deleted');
+    renderGradeMaster();
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -2030,14 +1958,18 @@ const PQ = (() => {
     const partGrade = allGrades.find(g => String(g.grade||'').toLowerCase() === String(part?.material||'').toLowerCase());
 
     const existingRows = allCpRows.filter(r => r.partId == _s.partId);
-    const coveredOps = new Set(existingRows.map(r => r.opNumber));
+    // Match by the step's stable id, not opNumber — see _generatePfmeaFromPfd
+    // for why opNumber alone isn't safe to key off (it gets reassigned by
+    // _renumberAll whenever PFD steps are added/reordered).
+    const coveredStepIds = new Set(existingRows.map(r => r.pfdStepId ?? `op:${r.opNumber}`));
     let order = existingRows.length ? Math.max(...existingRows.map(r => r.order || 0)) : 0;
     let added = 0, gradeFilled = 0;
 
     for (const step of steps) {
-      if (coveredOps.has(step.opNumber)) continue;
+      if (coveredStepIds.has(step.id) || coveredStepIds.has(`op:${step.opNumber}`)) continue;
       const stepName = step.stepName || step.opName || '';
-      const pfmeaForStep = allPfmeaRows.filter(r => r.partId == _s.partId && r.opNumber === step.opNumber);
+      const pfmeaForStep = allPfmeaRows.filter(r => r.partId == _s.partId &&
+        (r.pfdStepId ? r.pfdStepId === step.id : r.opNumber === step.opNumber));
 
       const sourceRows = pfmeaForStep.length
         ? pfmeaForStep.map(pf => ({
@@ -2059,7 +1991,7 @@ const PQ = (() => {
         const isComposition = partGrade && _COMPOSITION_HINT.test(src.charName || '');
         if (isComposition) gradeFilled++;
         await save('pq_cp_rows', {
-          partId: _s.partId, opNumber: step.opNumber, processStep: stepName,
+          partId: _s.partId, pfdStepId: step.id, opNumber: step.opNumber, processStep: stepName,
           machine: '', charNumber: `${step.opNumber}.${String(seq).padStart(2, '0')}`,
           charName: src.charName || '', classification: src.classification || 'Minor',
           specification: isComposition ? partGrade.grade : '',
@@ -2231,7 +2163,7 @@ const PQ = (() => {
           ${!locked && grades.length ? `<div class="alert al-d no-print" style="margin-bottom:12px;font-size:12px">
             💡 Typing a grade name (e.g. ${esc(grades[0].grade)}) into <b>Specification</b> auto-fills <b>Tolerance</b> from <a style="cursor:pointer;font-weight:600" onclick="PQ.renderGradeMaster()">Grade Master</a>.
           </div>` : ''}
-          ${steps.map(step => _buildCpGroup(step, rows.filter(r => r.opNumber === step.opNumber), locked)).join('')}
+          ${steps.map(step => _buildCpGroup(step, rows.filter(r => r.pfdStepId ? r.pfdStepId === step.id : r.opNumber === step.opNumber), locked)).join('')}
           ${!steps.length ? `<div class="card"><div class="cb" style="padding:24px;text-align:center;color:#9ca3af">No PFD steps — build the Process Flow Diagram first</div></div>` : ''}
         </div>
 
@@ -2343,7 +2275,7 @@ const PQ = (() => {
           </table>
         </div>
         ${!locked ? `<div style="padding:8px 12px">
-          <button class="btn btn-o btn-xs" onclick="PQ._addCpRow('${esc(step.opNumber||'')}','${esc(stepName).replace(/'/g,"\\'")}')">+ Add Characteristic</button>
+          <button class="btn btn-o btn-xs" onclick="PQ._addCpRow(${step.id},'${esc(step.opNumber||'')}','${esc(stepName).replace(/'/g,"\\'")}')">+ Add Characteristic</button>
         </div>` : ''}
       </div>`;
   }
@@ -2421,13 +2353,13 @@ const PQ = (() => {
   function _cpCancelEdit() { _s.cpEditMode = false; _s.cpPending = {}; _renderCp(); }
   function _setCpPrintFilter(opNumber) { _s.cpPrintFilter = opNumber; _renderCp(); }
 
-  async function _addCpRow(opNumber, processStep) {
+  async function _addCpRow(pfdStepId, opNumber, processStep) {
     await _cpFlushPending();
     const allRows = await getAll('pq_cp_rows');
     const existing = allRows.filter(r => r.partId == _s.partId);
     const maxOrder = existing.length ? Math.max(...existing.map(r => r.order || 0)) : 0;
     await save('pq_cp_rows', {
-      partId: _s.partId, opNumber, processStep,
+      partId: _s.partId, pfdStepId, opNumber, processStep,
       machine: '', charNumber: '', charName: '', classification: 'Minor',
       specification: '', tolerance: '', frequency: '',
       controlMethod: '', reactionPlan: '', remarks: '', includeInChecksheet: true,
@@ -2514,11 +2446,11 @@ const PQ = (() => {
     _pfmeaStartEdit, _pfmeaCancelEdit, _pfmeaSaveAll, _pfmeaApprove, _pfmeaNewRevision,
     _addPfmeaRow, _deletePfmeaRow, _pfmeaCell, _pfmeaRatingChange,
     renderPfdRegistry, renderPfmeaRegistry, renderCpRegistry,
+    _pfmeaCreateModal, _pfmeaCreateGo, _cpCreateModal, _cpCreateGo,
     openCp, _generateCpFromPfd,
     _cpStartEdit, _cpCancelEdit, _cpSaveAll, _cpApprove, _cpNewRevision,
     _addCpRow, _deleteCpRow, _cpCell, _cpSpecChange, _setCpPrintFilter,
     renderCsRegistry, openCs, _fillCsModal, _saveCsRecord, _viewCsRecord, _deleteCsRecord,
-    renderGradeMaster, _gStartEdit, _gCancelEdit, _gSaveAll, _gApprove, _gNewRevision,
-    _addGrade, _deleteGrade, _gCell, _gElementCell,
+    renderGradeMaster, _gradeModal, _gSaveGrade, _deleteGrade,
   };
 })();
