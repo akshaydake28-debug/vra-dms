@@ -240,19 +240,23 @@ const PQ = (() => {
     const newPid  = newPart.id;
 
     if (tmplId) {
-      // Copy PFD steps from template part
+      // Copy PFD steps from template part. Each cloned step gets a brand
+      // new id — track old→new so PFMEA/CP rows below can be re-pointed at
+      // the *new* steps instead of carrying over the template's step ids.
       const allSteps = await getAll('pq_pfd_steps');
       const srcSteps = allSteps
         .filter(s => s.partId == tmplId)
         .sort((a, b) => (a.sortOrder ?? a.id) - (b.sortOrder ?? b.id));
 
+      const stepIdMap = {}; // old pfd_step id -> new pfd_step id
       for (const s of srcSteps) {
-        await save('pq_pfd_steps', {
+        const newStep = await save('pq_pfd_steps', {
           partId:    newPid,
           opNumber:  s.opNumber,
           opName:    s.opName,
           sortOrder: s.sortOrder ?? s.id,
         });
+        stepIdMap[s.id] = newStep.id;
       }
 
       // Copy PFMEA rows from template part too, so the new part starts
@@ -264,6 +268,7 @@ const PQ = (() => {
       for (const r of srcRows) {
         await save('pq_pfmea_rows', Object.assign({}, r, {
           id: undefined, partId: newPid, status: 'Open', targetDate: '',
+          pfdStepId: r.pfdStepId ? stepIdMap[r.pfdStepId] : undefined,
         }));
       }
 
@@ -273,7 +278,10 @@ const PQ = (() => {
         .filter(r => r.partId == tmplId)
         .sort((a, b) => (a.order ?? a.id) - (b.order ?? b.id));
       for (const r of srcCpRows) {
-        await save('pq_cp_rows', Object.assign({}, r, { id: undefined, partId: newPid }));
+        await save('pq_cp_rows', Object.assign({}, r, {
+          id: undefined, partId: newPid,
+          pfdStepId: r.pfdStepId ? stepIdMap[r.pfdStepId] : undefined,
+        }));
       }
 
       toast(`Part created with ${srcSteps.length} steps, ${srcRows.length} PFMEA rows and ${srcCpRows.length} Control Plan rows copied from template`);
