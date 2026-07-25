@@ -836,12 +836,17 @@ const PQ = (() => {
     if (!steps.length) { toast('No PFD steps yet — build the Process Flow Diagram first', 'e'); return; }
 
     const existingRows = allRows.filter(r => r.partId == _s.partId);
-    const coveredOps = new Set(existingRows.map(r => r.opNumber));
+    // Match by the step's stable id, not opNumber — opNumber gets
+    // reassigned by _renumberAll() whenever steps are added/reordered, so a
+    // row created against "OP20" can silently stop matching once that label
+    // moves to a different step. Rows saved before this fix have no
+    // pfdStepId; opNumber is used as a one-time fallback only for those.
+    const coveredStepIds = new Set(existingRows.map(r => r.pfdStepId ?? `op:${r.opNumber}`));
     let order = existingRows.length ? Math.max(...existingRows.map(r => r.order || 0)) : 0;
     let added = 0;
 
     for (const step of steps) {
-      if (coveredOps.has(step.opNumber)) continue;
+      if (coveredStepIds.has(step.id) || coveredStepIds.has(`op:${step.opNumber}`)) continue;
       const stepName = step.stepName || step.opName || '';
       const matches = _matchPfmeaTemplates(stepName, allTemplates);
       const toAdd = matches.length ? matches : [{
@@ -851,7 +856,7 @@ const PQ = (() => {
       for (const t of toAdd) {
         order += 1;
         await save('pq_pfmea_rows', {
-          partId: _s.partId, opNumber: step.opNumber, processStep: stepName,
+          partId: _s.partId, pfdStepId: step.id, opNumber: step.opNumber, processStep: stepName,
           function: t.function || '', failureMode: t.failureMode || '', failureEffect: t.failureEffect || '',
           severity: t.severity || 1, failureCause: t.failureCause || '', occurrence: t.occurrence || 1,
           preventionControls: t.preventionControls || '', detectionControls: t.detectionControls || '', detection: t.detection || 1,
@@ -1009,7 +1014,7 @@ const PQ = (() => {
       <div class="pq-doc-grid" style="display:grid;grid-template-columns:1fr 240px;gap:14px;align-items:start">
 
         <div>
-          ${steps.map(step => _buildPfmeaGroup(step, rows.filter(r => r.opNumber === step.opNumber), locked)).join('')}
+          ${steps.map(step => _buildPfmeaGroup(step, rows.filter(r => r.pfdStepId ? r.pfdStepId === step.id : r.opNumber === step.opNumber), locked)).join('')}
           ${!steps.length ? `<div class="card"><div class="cb" style="padding:24px;text-align:center;color:#9ca3af">No PFD steps — build the Process Flow Diagram first</div></div>` : ''}
         </div>
 
@@ -1135,7 +1140,7 @@ const PQ = (() => {
           </table>
         </div>
         ${!locked ? `<div style="padding:8px 12px">
-          <button class="btn btn-o btn-xs" onclick="PQ._addPfmeaRow('${esc(step.opNumber||'')}','${esc(stepName).replace(/'/g,"\\'")}')">+ Add Failure Mode</button>
+          <button class="btn btn-o btn-xs" onclick="PQ._addPfmeaRow(${step.id},'${esc(step.opNumber||'')}','${esc(stepName).replace(/'/g,"\\'")}')">+ Add Failure Mode</button>
         </div>` : ''}
       </div>`;
   }
@@ -1222,13 +1227,13 @@ const PQ = (() => {
   function _pfmeaStartEdit() { _s.pfmeaEditMode = true; _renderPfmea(); }
   function _pfmeaCancelEdit() { _s.pfmeaEditMode = false; _s.pfmeaPending = {}; _renderPfmea(); }
 
-  async function _addPfmeaRow(opNumber, processStep) {
+  async function _addPfmeaRow(pfdStepId, opNumber, processStep) {
     await _pfmeaFlushPending();
     const allRows = await getAll('pq_pfmea_rows');
     const existing = allRows.filter(r => r.partId == _s.partId);
     const maxOrder = existing.length ? Math.max(...existing.map(r => r.order || 0)) : 0;
     await save('pq_pfmea_rows', {
-      partId: _s.partId, opNumber, processStep,
+      partId: _s.partId, pfdStepId, opNumber, processStep,
       function: '', failureMode: '', failureEffect: '', severity: 1,
       failureCause: '', occurrence: 1, preventionControls: '', detectionControls: '', detection: 1, rpn: 1,
       recommendedAction: '', responsibility: '', targetDate: '', status: 'Open',
@@ -1342,7 +1347,10 @@ const PQ = (() => {
 
     setC(`
       <style>.pf-rpn{display:inline-block;min-width:30px;text-align:center;font-weight:800;padding:2px 6px;border-radius:4px;font-size:11px}</style>
-      <div class="ph"><h2>PFMEA</h2></div>
+      <div class="ph">
+        <h2>PFMEA</h2>
+        <button class="btn btn-p" onclick="PQ._pfmeaCreateModal()">➕ Create PFMEA</button>
+      </div>
       <div class="card">
         <div class="tw">
           <table>
@@ -1351,6 +1359,45 @@ const PQ = (() => {
           </table>
         </div>
       </div>`);
+  }
+
+  // "Create PFMEA" picks a part from the PFD register — PFMEA is generated
+  // from the PFD, so only parts that already have one are eligible.
+  async function _pfmeaCreateModal() {
+    const [parts, allSteps] = await Promise.all([getAll('pq_parts'), getAll('pq_pfd_steps')]);
+    const eligible = parts.filter(p => allSteps.some(s => s.partId == p.id));
+    if (!eligible.length) {
+      toast('No parts have a Process Flow Diagram yet — build one first', 'e');
+      return;
+    }
+    const modal = document.createElement('div');
+    modal.id = 'pq-pfmea-create-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:#0008;z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+    modal.innerHTML = `
+    <div style="background:#fff;border-radius:12px;width:100%;max-width:420px;box-shadow:0 20px 60px #0004">
+      <div style="padding:14px 18px;border-bottom:1px solid #e5e7eb;display:flex;justify-content:space-between;align-items:center">
+        <div style="font-weight:700;font-size:14px;color:#0d2f6e">Create PFMEA</div>
+        <button onclick="document.getElementById('pq-pfmea-create-modal').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#6b7280">✕</button>
+      </div>
+      <div style="padding:16px 18px">
+        <label class="lbl">Select Part (from Process Flow Diagrams)</label>
+        <select id="pfmea-create-part-select" class="input fc" style="width:100%;margin-top:6px">
+          ${eligible.map(p => `<option value="${p.id}">${esc(p.partNumber)} — ${esc(p.partName)}</option>`).join('')}
+        </select>
+        <p style="font-size:11px;color:#6b7280;margin-top:8px">Only parts that already have a Process Flow Diagram are listed — PFMEA is generated from the PFD, so it has to exist first.</p>
+      </div>
+      <div style="padding:0 18px 18px;display:flex;gap:8px">
+        <button class="btn btn-p" onclick="PQ._pfmeaCreateGo()">Continue →</button>
+        <button class="btn btn-o" onclick="document.getElementById('pq-pfmea-create-modal').remove()">Cancel</button>
+      </div>
+    </div>`;
+    document.body.appendChild(modal);
+  }
+
+  function _pfmeaCreateGo() {
+    const pid = parseInt(document.getElementById('pfmea-create-part-select').value, 10);
+    document.getElementById('pq-pfmea-create-modal')?.remove();
+    openPfmea(pid);
   }
 
   async function renderCpRegistry() {
@@ -1383,7 +1430,10 @@ const PQ = (() => {
     </td></tr>`;
 
     setC(`
-      <div class="ph"><h2>Control Plans</h2></div>
+      <div class="ph">
+        <h2>Control Plans</h2>
+        <button class="btn btn-p" onclick="PQ._cpCreateModal()">➕ Create Control Plan</button>
+      </div>
       <div class="card">
         <div class="tw">
           <table>
@@ -1392,6 +1442,46 @@ const PQ = (() => {
           </table>
         </div>
       </div>`);
+  }
+
+  // "Create Control Plan" picks a part from PFMEA — CP is derived from PFMEA
+  // (falling back to PFD alone only for steps PFMEA hasn't covered), so a
+  // part needs both a PFD and a PFMEA before it's eligible here.
+  async function _cpCreateModal() {
+    const [parts, allSteps, allPfmeaRows] = await Promise.all([getAll('pq_parts'), getAll('pq_pfd_steps'), getAll('pq_pfmea_rows')]);
+    const eligible = parts.filter(p => allSteps.some(s => s.partId == p.id) && allPfmeaRows.some(r => r.partId == p.id));
+    if (!eligible.length) {
+      toast('No parts have both a PFD and a PFMEA yet — complete those first', 'e');
+      return;
+    }
+    const modal = document.createElement('div');
+    modal.id = 'pq-cp-create-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:#0008;z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+    modal.innerHTML = `
+    <div style="background:#fff;border-radius:12px;width:100%;max-width:420px;box-shadow:0 20px 60px #0004">
+      <div style="padding:14px 18px;border-bottom:1px solid #e5e7eb;display:flex;justify-content:space-between;align-items:center">
+        <div style="font-weight:700;font-size:14px;color:#0d2f6e">Create Control Plan</div>
+        <button onclick="document.getElementById('pq-cp-create-modal').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#6b7280">✕</button>
+      </div>
+      <div style="padding:16px 18px">
+        <label class="lbl">Select Part (from PFMEA)</label>
+        <select id="cp-create-part-select" class="input fc" style="width:100%;margin-top:6px">
+          ${eligible.map(p => `<option value="${p.id}">${esc(p.partNumber)} — ${esc(p.partName)}</option>`).join('')}
+        </select>
+        <p style="font-size:11px;color:#6b7280;margin-top:8px">Only parts with both a PFD and a PFMEA already built are listed — the Control Plan is derived from PFMEA.</p>
+      </div>
+      <div style="padding:0 18px 18px;display:flex;gap:8px">
+        <button class="btn btn-p" onclick="PQ._cpCreateGo()">Continue →</button>
+        <button class="btn btn-o" onclick="document.getElementById('pq-cp-create-modal').remove()">Cancel</button>
+      </div>
+    </div>`;
+    document.body.appendChild(modal);
+  }
+
+  function _cpCreateGo() {
+    const pid = parseInt(document.getElementById('cp-create-part-select').value, 10);
+    document.getElementById('pq-cp-create-modal')?.remove();
+    openCp(pid);
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -1860,14 +1950,18 @@ const PQ = (() => {
     const partGrade = allGrades.find(g => String(g.grade||'').toLowerCase() === String(part?.material||'').toLowerCase());
 
     const existingRows = allCpRows.filter(r => r.partId == _s.partId);
-    const coveredOps = new Set(existingRows.map(r => r.opNumber));
+    // Match by the step's stable id, not opNumber — see _generatePfmeaFromPfd
+    // for why opNumber alone isn't safe to key off (it gets reassigned by
+    // _renumberAll whenever PFD steps are added/reordered).
+    const coveredStepIds = new Set(existingRows.map(r => r.pfdStepId ?? `op:${r.opNumber}`));
     let order = existingRows.length ? Math.max(...existingRows.map(r => r.order || 0)) : 0;
     let added = 0, gradeFilled = 0;
 
     for (const step of steps) {
-      if (coveredOps.has(step.opNumber)) continue;
+      if (coveredStepIds.has(step.id) || coveredStepIds.has(`op:${step.opNumber}`)) continue;
       const stepName = step.stepName || step.opName || '';
-      const pfmeaForStep = allPfmeaRows.filter(r => r.partId == _s.partId && r.opNumber === step.opNumber);
+      const pfmeaForStep = allPfmeaRows.filter(r => r.partId == _s.partId &&
+        (r.pfdStepId ? r.pfdStepId === step.id : r.opNumber === step.opNumber));
 
       const sourceRows = pfmeaForStep.length
         ? pfmeaForStep.map(pf => ({
@@ -1889,7 +1983,7 @@ const PQ = (() => {
         const isComposition = partGrade && _COMPOSITION_HINT.test(src.charName || '');
         if (isComposition) gradeFilled++;
         await save('pq_cp_rows', {
-          partId: _s.partId, opNumber: step.opNumber, processStep: stepName,
+          partId: _s.partId, pfdStepId: step.id, opNumber: step.opNumber, processStep: stepName,
           machine: '', charNumber: `${step.opNumber}.${String(seq).padStart(2, '0')}`,
           charName: src.charName || '', classification: src.classification || 'Minor',
           specification: isComposition ? partGrade.grade : '',
@@ -2061,7 +2155,7 @@ const PQ = (() => {
           ${!locked && grades.length ? `<div class="alert al-d no-print" style="margin-bottom:12px;font-size:12px">
             💡 Typing a grade name (e.g. ${esc(grades[0].grade)}) into <b>Specification</b> auto-fills <b>Tolerance</b> from <a style="cursor:pointer;font-weight:600" onclick="PQ.renderGradeMaster()">Grade Master</a>.
           </div>` : ''}
-          ${steps.map(step => _buildCpGroup(step, rows.filter(r => r.opNumber === step.opNumber), locked)).join('')}
+          ${steps.map(step => _buildCpGroup(step, rows.filter(r => r.pfdStepId ? r.pfdStepId === step.id : r.opNumber === step.opNumber), locked)).join('')}
           ${!steps.length ? `<div class="card"><div class="cb" style="padding:24px;text-align:center;color:#9ca3af">No PFD steps — build the Process Flow Diagram first</div></div>` : ''}
         </div>
 
@@ -2173,7 +2267,7 @@ const PQ = (() => {
           </table>
         </div>
         ${!locked ? `<div style="padding:8px 12px">
-          <button class="btn btn-o btn-xs" onclick="PQ._addCpRow('${esc(step.opNumber||'')}','${esc(stepName).replace(/'/g,"\\'")}')">+ Add Characteristic</button>
+          <button class="btn btn-o btn-xs" onclick="PQ._addCpRow(${step.id},'${esc(step.opNumber||'')}','${esc(stepName).replace(/'/g,"\\'")}')">+ Add Characteristic</button>
         </div>` : ''}
       </div>`;
   }
@@ -2251,13 +2345,13 @@ const PQ = (() => {
   function _cpCancelEdit() { _s.cpEditMode = false; _s.cpPending = {}; _renderCp(); }
   function _setCpPrintFilter(opNumber) { _s.cpPrintFilter = opNumber; _renderCp(); }
 
-  async function _addCpRow(opNumber, processStep) {
+  async function _addCpRow(pfdStepId, opNumber, processStep) {
     await _cpFlushPending();
     const allRows = await getAll('pq_cp_rows');
     const existing = allRows.filter(r => r.partId == _s.partId);
     const maxOrder = existing.length ? Math.max(...existing.map(r => r.order || 0)) : 0;
     await save('pq_cp_rows', {
-      partId: _s.partId, opNumber, processStep,
+      partId: _s.partId, pfdStepId, opNumber, processStep,
       machine: '', charNumber: '', charName: '', classification: 'Minor',
       specification: '', tolerance: '', frequency: '',
       controlMethod: '', reactionPlan: '', remarks: '', includeInChecksheet: true,
@@ -2344,6 +2438,7 @@ const PQ = (() => {
     _pfmeaStartEdit, _pfmeaCancelEdit, _pfmeaSaveAll, _pfmeaApprove, _pfmeaNewRevision,
     _addPfmeaRow, _deletePfmeaRow, _pfmeaCell, _pfmeaRatingChange,
     renderPfdRegistry, renderPfmeaRegistry, renderCpRegistry,
+    _pfmeaCreateModal, _pfmeaCreateGo, _cpCreateModal, _cpCreateGo,
     openCp, _generateCpFromPfd,
     _cpStartEdit, _cpCancelEdit, _cpSaveAll, _cpApprove, _cpNewRevision,
     _addCpRow, _deleteCpRow, _cpCell, _cpSpecChange, _setCpPrintFilter,
