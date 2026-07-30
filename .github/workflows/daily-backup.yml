@@ -1,0 +1,73 @@
+name: Daily VRA DMS Backup
+
+# Pulls a full data export from the live app every day and stores it on the
+# dedicated "backups" branch, independent of Railway. This does not touch
+# the live database — it only reads from the existing /api/backup endpoint.
+
+on:
+  schedule:
+    - cron: '30 20 * * *'  # 20:30 UTC = 02:00 IST
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+env:
+  APP_URL: https://web-production-52c8f.up.railway.app
+  RETENTION_COUNT: 60  # how many most-recent daily backups to keep
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout backups branch
+        run: |
+          git config --global user.name "vra-dms-backup-bot"
+          git config --global user.email "actions@users.noreply.github.com"
+          git clone --branch backups --single-branch "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo 2>/dev/null || {
+            git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
+            cd repo
+            git checkout --orphan backups
+            git rm -rf . >/dev/null 2>&1 || true
+            mkdir -p backups
+            echo "# VRA DMS Backups" > README.md
+            echo "" >> README.md
+            echo "Automated daily exports from the live app, written here by .github/workflows/daily-backup.yml on the main branch. Do not edit by hand." >> README.md
+            git add README.md
+            git commit -m "Initialize backups branch"
+            cd ..
+          }
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch backup from live app
+        run: |
+          set -e
+          DATE=$(date -u +%F)
+          mkdir -p repo/backups
+          OUT="repo/backups/VRA_DMS_Backup_${DATE}.json"
+          curl -fsS --max-time 60 "${APP_URL}/api/backup" -o "$OUT"
+          # Sanity check: must be valid, non-trivial JSON
+          jq empty "$OUT"
+          SIZE=$(stat -c%s "$OUT")
+          if [ "$SIZE" -lt 500 ]; then
+            echo "Backup file suspiciously small ($SIZE bytes) — aborting without committing." >&2
+            exit 1
+          fi
+          echo "Backup OK: $OUT ($SIZE bytes)"
+
+      - name: Prune old backups
+        run: |
+          cd repo/backups
+          ls -1 VRA_DMS_Backup_*.json 2>/dev/null | sort | head -n -"${RETENTION_COUNT}" | xargs -r rm -v --
+
+      - name: Commit and push
+        run: |
+          cd repo
+          git add backups/
+          if git diff --cached --quiet; then
+            echo "Nothing changed, skipping commit."
+          else
+            git commit -m "Automated backup $(date -u +%F)"
+            git push origin backups
+          fi
