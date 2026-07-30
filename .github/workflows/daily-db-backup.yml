@@ -52,7 +52,7 @@ jobs:
           DATE=$(date -u +%F)
           mkdir -p repo/backups/db
           OUT="repo/backups/db/VRA_DMS_DB_${DATE}.sql.gz"
-          docker run --rm postgres:16-alpine pg_dump --no-owner --no-privileges --dbname="${DATABASE_URL}" | gzip > "$OUT"
+          docker run --rm postgres:18-alpine pg_dump --no-owner --no-privileges --dbname="${DATABASE_URL}" | gzip > "$OUT"
           SIZE=$(stat -c%s "$OUT")
           if [ "$SIZE" -lt 200 ]; then
             echo "Dump suspiciously small ($SIZE bytes) — aborting without committing." >&2
