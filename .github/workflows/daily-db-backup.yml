@@ -1,0 +1,77 @@
+name: Daily VRA DMS Database Backup (pg_dump)
+
+# Takes a full raw Postgres dump every day and stores it on the dedicated
+# "backups" branch. Unlike the JSON export (daily-backup.yml), this is a
+# mechanical dump of the entire database — every table, column and row —
+# so it can never miss data that the app's own export code forgot to
+# include. Requires the RAILWAY_DATABASE_URL repo secret (the Postgres
+# service's public connection string from Railway).
+
+on:
+  schedule:
+    - cron: '45 20 * * *'  # 20:45 UTC = 02:15 IST (offset from the JSON export)
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+env:
+  RETENTION_COUNT: 30  # dumps are larger than the JSON export, keep fewer
+
+jobs:
+  db-backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout backups branch
+        run: |
+          git config --global user.name "vra-dms-backup-bot"
+          git config --global user.email "actions@users.noreply.github.com"
+          git clone --branch backups --single-branch "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo 2>/dev/null || {
+            git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
+            cd repo
+            git checkout --orphan backups
+            git rm -rf . >/dev/null 2>&1 || true
+            mkdir -p backups
+            echo "# VRA DMS Backups" > README.md
+            git add README.md
+            git commit -m "Initialize backups branch"
+            cd ..
+          }
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Dump database
+        env:
+          DATABASE_URL: ${{ secrets.RAILWAY_DATABASE_URL }}
+        run: |
+          set -e
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "RAILWAY_DATABASE_URL secret is not set — add it in repo Settings > Secrets and variables > Actions." >&2
+            exit 1
+          fi
+          DATE=$(date -u +%F)
+          mkdir -p repo/backups/db
+          OUT="repo/backups/db/VRA_DMS_DB_${DATE}.sql.gz"
+          docker run --rm postgres:16-alpine pg_dump --no-owner --no-privileges --dbname="${DATABASE_URL}" | gzip > "$OUT"
+          SIZE=$(stat -c%s "$OUT")
+          if [ "$SIZE" -lt 200 ]; then
+            echo "Dump suspiciously small ($SIZE bytes) — aborting without committing." >&2
+            exit 1
+          fi
+          echo "Dump OK: $OUT ($SIZE bytes)"
+
+      - name: Prune old dumps
+        run: |
+          cd repo/backups/db
+          ls -1 VRA_DMS_DB_*.sql.gz 2>/dev/null | sort | head -n -"${RETENTION_COUNT}" | xargs -r rm -v --
+
+      - name: Commit and push
+        run: |
+          cd repo
+          git add backups/db/
+          if git diff --cached --quiet; then
+            echo "Nothing changed, skipping commit."
+          else
+            git commit -m "Automated DB backup $(date -u +%F)"
+            git push origin backups
+          fi
