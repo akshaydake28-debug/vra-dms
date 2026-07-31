@@ -1,0 +1,107 @@
+name: Monthly Offsite Email Backup
+
+# Emails the latest backups to the owner's Gmail once a month, so a copy
+# exists somewhere entirely independent of both Railway and GitHub — if
+# either of those accounts were ever lost, this copy still survives.
+
+on:
+  schedule:
+    - cron: '15 21 1 * *'  # 21:15 UTC on the 1st of each month = 02:45 IST on the 2nd
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  OWNER_EMAIL: akshaydake28@gmail.com
+
+jobs:
+  offsite-backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout backups branch
+        run: |
+          git clone --branch backups --single-branch --depth 1 "https://github.com/${GITHUB_REPOSITORY}.git" repo
+
+      - name: Find latest backup files
+        id: files
+        run: |
+          set -e
+          JSON_FILE=$(ls -1 repo/backups/VRA_DMS_Backup_*.json | sort | tail -1)
+          DB_FILE=$(ls -1 repo/backups/db/VRA_DMS_DB_*.sql.gz | sort | tail -1)
+          if [ -z "$JSON_FILE" ] || [ -z "$DB_FILE" ]; then
+            echo "Could not find backup files to send." >&2
+            exit 1
+          fi
+          echo "json_file=$JSON_FILE" >> "$GITHUB_OUTPUT"
+          echo "db_file=$DB_FILE" >> "$GITHUB_OUTPUT"
+          echo "Found: $JSON_FILE and $DB_FILE"
+
+      - name: Email backups
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ env.OWNER_EMAIL }}
+          password: ${{ secrets.GMAIL_APP_PASSWORD }}
+          subject: "VRA DMS Offsite Backup — ${{ steps.files.outputs.json_file }}"
+          to: ${{ env.OWNER_EMAIL }}
+          from: VRA DMS Backup Bot <${{ env.OWNER_EMAIL }}>
+          body: |
+            Monthly offsite backup attached — a copy independent of both Railway and GitHub.
+
+            - JSON export: ${{ steps.files.outputs.json_file }}
+            - Database dump: ${{ steps.files.outputs.db_file }}
+
+            No action needed unless you're restoring from a disaster. Keep this
+            email (or save the attachments somewhere durable) as your offline copy.
+          attachments: ${{ steps.files.outputs.json_file }},${{ steps.files.outputs.db_file }}
+
+      - name: Open/update issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = "🔴 Monthly offsite email backup is failing";
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `The monthly offsite email backup (\`monthly-offsite-backup.yml\`) failed.\n\nSee the failed run: ${runUrl}\n\nThis means no offsite copy was emailed this month. Common causes: the GMAIL_APP_PASSWORD secret expired/was revoked, or Gmail blocked the send.`;
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'backup-failure'
+            });
+            const mine = existing.data.find(i => i.title === title);
+            if (mine) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: mine.number, body: `Failed again: ${runUrl}`
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, body, labels: ['backup-failure']
+              });
+            }
+
+      - name: Close failure issue on success
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = "🔴 Monthly offsite email backup is failing";
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'backup-failure'
+            });
+            const mine = existing.data.find(i => i.title === title);
+            if (mine) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: mine.number,
+                body: `Succeeded again: https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: mine.number, state: 'closed'
+              });
+            }
