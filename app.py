@@ -1,13 +1,26 @@
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, session
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import json
+import secrets
 
 app = Flask(__name__, static_folder='static')
 CORS(app)
 app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024  # 32MB
+
+secret_key = os.environ.get('SECRET_KEY')
+if not secret_key:
+    secret_key = secrets.token_hex(32)
+    print('WARNING: SECRET_KEY env var not set — using a random key that will '
+          'change on every restart, logging everyone out each time the app '
+          'redeploys. Set SECRET_KEY in Railway to fix this.', flush=True)
+app.secret_key = secret_key
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_SECURE'] = True
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=30)
 
 db_url = os.environ.get('DATABASE_URL', 'sqlite:///vra_dms.db')
 if db_url.startswith('postgres://'):
@@ -93,6 +106,16 @@ def serve_core(filename):
 #  AUTH
 # ══════════════════════════════════════════════════════
 
+PUBLIC_PATHS = {'/api/auth/login'}
+
+@app.before_request
+def require_login():
+    path = request.path
+    if not path.startswith('/api/') or path in PUBLIC_PATHS:
+        return None
+    if 'user_id' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
+
 @app.route('/api/auth/login', methods=['POST'])
 def login():
     d = request.json
@@ -103,7 +126,16 @@ def login():
     pwd = d.get('password','')
     if user.password != pwd:
         return jsonify({'error': 'Invalid credentials'}), 401
+    session.clear()
+    session['user_id'] = user.id
+    session['username'] = user.username
+    session.permanent = True
     return jsonify({'id': user.id, 'username': user.username, 'role': user.role, 'name': user.name})
+
+@app.route('/api/auth/logout', methods=['POST'])
+def logout():
+    session.clear()
+    return jsonify({'ok': True})
 
 @app.route('/api/auth/users', methods=['GET'])
 def get_users():

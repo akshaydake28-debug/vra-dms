@@ -1,6 +1,26 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<script>
+// Global 401 handler: if the backend says we're not logged in (session
+// missing/expired), drop back to the login screen instead of leaving the
+// UI in a broken half-loaded state.
+(function(){
+  const nativeFetch = window.fetch;
+  window.fetch = async function(...args){
+    const res = await nativeFetch(...args);
+    if (res.status === 401) {
+      const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url) || '';
+      if (!url.includes('/api/auth/login')) {
+        sessionStorage.removeItem('vra_u');
+        if (typeof showLogin === 'function') showLogin();
+        else location.reload();
+      }
+    }
+    return res;
+  };
+})();
+</script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>VRA DMS</title>
@@ -738,7 +758,7 @@ const Auth = {
       showApp();
     }catch(e){loginErr('Connection error');}
   },
-  logout(){sessionStorage.removeItem('vra_u');showLogin();}
+  logout(){fetch(window.location.origin+'/api/auth/logout',{method:'POST'}).catch(()=>{});sessionStorage.removeItem('vra_u');showLogin();}
 };
 document.addEventListener('keydown',e=>{
   if(e.key==='Enter'&&document.getElementById('login-page').style.display!=='none') Auth.login();
