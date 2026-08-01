@@ -1,0 +1,83 @@
+name: Daily LinkedIn Post
+
+# Generates a short LinkedIn post (AI-written caption + AI-generated image)
+# from content/topics.txt and publishes it to LinkedIn via LinkedIn's API.
+# See docs/LINKEDIN_AUTOMATION_SETUP.md for the required one-time setup
+# (LinkedIn app + access token, free Gemini API key, GitHub secrets).
+
+on:
+  schedule:
+    - cron: '30 3 * * *'  # 03:30 UTC = 09:00 IST
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Post to LinkedIn
+        env:
+          LINKEDIN_ACCESS_TOKEN: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python scripts/linkedin_daily_post.py
+
+      - name: Open/update issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = "LinkedIn daily post is failing";
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `The daily LinkedIn post workflow (\`linkedin-daily-post.yml\`) failed on ${new Date().toISOString().slice(0,10)}.\n\nSee the failed run: ${runUrl}\n\nMost common cause: the LinkedIn access token expired (they last ~60 days). Regenerate it following docs/LINKEDIN_AUTOMATION_SETUP.md and update the LINKEDIN_ACCESS_TOKEN secret.`;
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'linkedin-post-failure'
+            });
+            const mine = existing.data.find(i => i.title === title);
+            if (mine) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: mine.number,
+                body: `Failed again: ${runUrl}`
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, body, labels: ['linkedin-post-failure']
+              });
+            }
+
+      - name: Close failure issue on success
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = "LinkedIn daily post is failing";
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'linkedin-post-failure'
+            });
+            const mine = existing.data.find(i => i.title === title);
+            if (mine) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: mine.number,
+                body: `Posting succeeded again: https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: mine.number, state: 'closed'
+              });
+            }
