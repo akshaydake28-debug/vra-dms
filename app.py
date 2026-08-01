@@ -107,14 +107,20 @@ def serve_core(filename):
 # ══════════════════════════════════════════════════════
 
 PUBLIC_PATHS = {'/api/auth/login'}
+BACKUP_API_TOKEN = os.environ.get('BACKUP_API_TOKEN')
 
 @app.before_request
 def require_login():
     path = request.path
     if not path.startswith('/api/') or path in PUBLIC_PATHS:
         return None
-    if 'user_id' not in session:
-        return jsonify({'error': 'Not authenticated'}), 401
+    if 'user_id' in session:
+        return None
+    # Dedicated token for the automated backup workflow only — lets the
+    # nightly export run unattended without needing a real user's login.
+    if path == '/api/backup' and BACKUP_API_TOKEN and request.headers.get('X-Backup-Token') == BACKUP_API_TOKEN:
+        return None
+    return jsonify({'error': 'Not authenticated'}), 401
 
 @app.route('/api/auth/login', methods=['POST'])
 def login():
