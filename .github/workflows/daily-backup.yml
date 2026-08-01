@@ -42,12 +42,18 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Fetch backup from live app
+        env:
+          BACKUP_API_TOKEN: ${{ secrets.BACKUP_API_TOKEN }}
         run: |
           set -e
+          if [ -z "${BACKUP_API_TOKEN:-}" ]; then
+            echo "BACKUP_API_TOKEN secret is not set — add it in repo Settings > Secrets and variables > Actions (and as an env var on the Railway app)." >&2
+            exit 1
+          fi
           DATE=$(date -u +%F)
           mkdir -p repo/backups
           OUT="repo/backups/VRA_DMS_Backup_${DATE}.json"
-          curl -fsS --max-time 60 "${APP_URL}/api/backup" -o "$OUT"
+          curl -fsS --max-time 60 -H "X-Backup-Token: ${BACKUP_API_TOKEN}" "${APP_URL}/api/backup" -o "$OUT"
           # Sanity check: must be valid, non-trivial JSON
           jq empty "$OUT"
           SIZE=$(stat -c%s "$OUT")
