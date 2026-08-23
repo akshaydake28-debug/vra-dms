@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify, send_from_directory, session
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
+from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime, timedelta
 import os
 import json
@@ -108,6 +109,13 @@ def serve_core(filename):
 
 PUBLIC_PATHS = {'/api/auth/login'}
 BACKUP_API_TOKEN = os.environ.get('BACKUP_API_TOKEN')
+HASH_PREFIXES = ('pbkdf2:', 'scrypt:', 'argon2:')
+# APPROVER is this app's admin-equivalent role — it's what the frontend
+# already gates the Users management screen on (see nav-users in index.html).
+ADMIN_ROLE = 'APPROVER'
+
+def is_hashed(pw):
+    return bool(pw) and pw.startswith(HASH_PREFIXES)
 
 @app.before_request
 def require_login():
@@ -122,19 +130,32 @@ def require_login():
         return None
     return jsonify({'error': 'Not authenticated'}), 401
 
+def require_admin():
+    if session.get('role') != ADMIN_ROLE:
+        return jsonify({'error': 'Admin access required'}), 403
+    return None
+
 @app.route('/api/auth/login', methods=['POST'])
 def login():
     d = request.json
     user = User.query.filter_by(username=d.get('username')).first()
     if not user:
         return jsonify({'error': 'Invalid credentials'}), 401
-    # Accept plain text password (legacy) or direct match
     pwd = d.get('password','')
-    if user.password != pwd:
-        return jsonify({'error': 'Invalid credentials'}), 401
+    if is_hashed(user.password):
+        if not check_password_hash(user.password, pwd):
+            return jsonify({'error': 'Invalid credentials'}), 401
+    else:
+        # Legacy plaintext account — verify directly, then upgrade to a
+        # proper hash transparently so it's never stored in the clear again.
+        if user.password != pwd:
+            return jsonify({'error': 'Invalid credentials'}), 401
+        user.password = generate_password_hash(pwd)
+        db.session.commit()
     session.clear()
     session['user_id'] = user.id
     session['username'] = user.username
+    session['role'] = user.role
     session.permanent = True
     return jsonify({'id': user.id, 'username': user.username, 'role': user.role, 'name': user.name})
 
@@ -149,19 +170,25 @@ def get_users():
 
 @app.route('/api/auth/users/all', methods=['GET'])
 def get_users_with_passwords():
-    # Returns passwords — admin only endpoint
+    err = require_admin()
+    if err: return err
+    # Passwords are hashed at rest, but this still only goes to admins.
     return jsonify([{'id':u.id,'username':u.username,'role':u.role,'name':u.name,'password':u.password} for u in User.query.all()])
 
 @app.route('/api/auth/users', methods=['POST'])
 def create_user():
+    err = require_admin()
+    if err: return err
     d = request.json
-    u = User(username=d['username'], password=d['password'], role=d['role'], name=d['name'])
+    u = User(username=d['username'], password=generate_password_hash(d['password']), role=d['role'], name=d['name'])
     db.session.add(u)
     db.session.commit()
     return jsonify({'id': u.id})
 
 @app.route('/api/auth/users/<int:uid>', methods=['DELETE'])
 def delete_user(uid):
+    err = require_admin()
+    if err: return err
     u = User.query.get_or_404(uid)
     db.session.delete(u)
     db.session.commit()
@@ -176,19 +203,24 @@ def change_password():
         return jsonify({'error': 'Missing fields'}), 400
     if len(new_password) < 6:
         return jsonify({'error': 'Password too short'}), 400
+    # Only change your own password, unless you're an admin.
+    if username != session.get('username') and session.get('role') != ADMIN_ROLE:
+        return jsonify({'error': 'Not authorized'}), 403
     u = User.query.filter_by(username=username).first()
     if not u:
         return jsonify({'error': 'User not found'}), 404
-    u.password = new_password
+    u.password = generate_password_hash(new_password)
     db.session.commit()
     return jsonify({'ok': True})
 
 @app.route('/api/auth/users/<int:uid>/reset', methods=['POST'])
 def reset_user_password(uid):
+    err = require_admin()
+    if err: return err
     d = request.json
     new_password = d.get('newPassword','vra@2025')
     u = User.query.get_or_404(uid)
-    u.password = new_password
+    u.password = generate_password_hash(new_password)
     db.session.commit()
     return jsonify({'ok': True})
 
