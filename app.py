@@ -379,13 +379,19 @@ def backup():
         'audit': [],
         'users': [],
     }
+    backup_errors = []
     for d in Document.query.all():
+        try:
+            extra = json.loads(d.extra) if d.extra else {}
+        except (TypeError, ValueError):
+            backup_errors.append(f'document {d.id} ({d.doc_number}): unreadable extra data, skipped')
+            extra = {}
         data['documents'].append({
             'id':d.id,'docNumber':d.doc_number,'title':d.title,'docType':d.doc_type,
             'revision':d.revision,'status':d.status,'content':d.content,
             'createdBy':d.created_by,'approvedBy':d.approved_by,
             'createdDate':d.created_date,'approvedDate':d.approved_date,
-            'extra':json.loads(d.extra) if d.extra else {}
+            'extra':extra
         })
     for l in AuditLog.query.all():
         data['audit'].append({'id':l.id,'docId':l.doc_id,'action':l.action,
@@ -398,16 +404,22 @@ def backup():
     # All generic modules
     modules = {}
     for r in GenericRecord.query.all():
+        try:
+            parsed = json.loads(r.data)
+        except (TypeError, ValueError):
+            backup_errors.append(f'{r.module} record {r.id}: unreadable data, skipped')
+            continue
         if r.module.startswith('setting_'):
             key = r.module.replace('setting_','')
             if 'settings' not in data: data['settings'] = {}
-            data['settings'][key] = json.loads(r.data)
+            data['settings'][key] = parsed
         else:
             if r.module not in modules: modules[r.module] = []
-            rec = json.loads(r.data)
-            rec['id'] = r.id
-            modules[r.module].append(rec)
+            parsed['id'] = r.id
+            modules[r.module].append(parsed)
     data.update(modules)
+    if backup_errors:
+        data['backupErrors'] = backup_errors
     return jsonify(data)
 
 @app.route('/api/restore', methods=['POST'])
