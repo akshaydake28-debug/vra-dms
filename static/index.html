@@ -233,7 +233,7 @@ select.fc{cursor:pointer}
     <div class="sl-sec">Calibration</div>
     <a class="sl-item" data-view="cal-gauges" onclick="nav('cal-gauges')"><span class="ic">🔧</span>Gauge Register</a>
     <a class="sl-item" data-view="cal-records" onclick="nav('cal-records')"><span class="ic">📅</span>Calibration Records</a>
-    <a class="sl-item" data-view="cal-due" onclick="nav('cal-due')"><span class="ic">⚠️</span>Due / Overdue</a>
+    <a class="sl-item" data-view="cal-due" onclick="nav('cal-due')"><span class="ic">⚠️</span>Due / Overdue<span class="pc" id="calcount" style="display:none">0</span></a>
     <div class="sl-sec">Marketing</div>
     <a class="sl-item" data-view="mkt-enquiries" onclick="nav('mkt-enquiries')"><span class="ic">📋</span>Enquiry Register</a>
     <a class="sl-item" data-view="mkt-feasibility" onclick="nav('mkt-feasibility')"><span class="ic">🔍</span>Feasibility Reviews</a>
@@ -783,6 +783,7 @@ function showApp(){
   loadAllTypes().then(()=>{
     nav('dashboard'); updatePcount(); startAutoBackup();
     if(typeof updateQcount!=='undefined') updateQcount();
+    if(typeof updateCalCount!=='undefined') updateCalCount();
   });
 }
 
@@ -931,7 +932,9 @@ async function renderDashboard(){
   const all=await DB.listDocs({});
   const s={total:all.length,active:0,draft:0,pending:0};
   all.forEach(d=>{if(d.status==='ACTIVE')s.active++;if(d.status==='DRAFT')s.draft++;if(d.status==='PENDING_APPROVAL')s.pending++;});
+  const calDueCount=typeof calGetDueSoonCount==='function'?await calGetDueSoonCount(30):0;
   setC(`
+  ${calDueCount>0?`<div class="alert al-w" style="cursor:pointer" onclick="nav('cal-due')">🔧 ${calDueCount} gauge(s)/instrument(s) are due for calibration within 30 days (or overdue). <b>Click to view →</b></div>`:''}
   <div class="sg">
     <div class="sc"><div class="si" style="background:#edf1fb">📄</div><div><div class="sv">${s.total}</div><div class="sl2">Total</div></div></div>
     <div class="sc"><div class="si" style="background:#dcfce7">✅</div><div><div class="sv" style="color:#16a34a">${s.active}</div><div class="sl2">Active</div></div></div>

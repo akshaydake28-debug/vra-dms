@@ -62,6 +62,29 @@ table.dt tr:nth-child(even) td{background:#f7f7f7}
 @media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}`;
 }
 
+// ── Due-soon count (used by dashboard banner + sidebar badge) ──
+async function calGetDueSoonCount(days=30){
+  try{
+    const gauges=await db.calGauges.where('status').equals('Active').toArray();
+    const today=new Date(); today.setHours(0,0,0,0);
+    let count=0;
+    for(const g of gauges){
+      const lat=await calGetLatest(g.id);
+      const nextDue=lat?.nextDue||'';
+      if(!nextDue){count++;continue;}
+      const daysLeft=Math.ceil((new Date(nextDue)-today)/(1000*60*60*24));
+      if(daysLeft<=days) count++;
+    }
+    return count;
+  }catch(e){return 0;}
+}
+async function updateCalCount(){
+  const n=await calGetDueSoonCount(30);
+  const el=document.getElementById('calcount');
+  if(!el) return;
+  el.style.display=n?'inline':'none'; if(n) el.textContent=n;
+}
+
 // ── Compute latest calibration per gauge ──────────────
 async function calGetLatest(gaugeId){
   const recs=await db.calRecords.where('gaugeId').equals(gaugeId).toArray().catch(()=>[]);
