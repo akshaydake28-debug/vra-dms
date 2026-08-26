@@ -701,7 +701,6 @@ async function viewAlert(id){
     </div>
     <div style="display:flex;gap:7px">
       ${capa?`<button class="btn btn-o btn-sm" onclick="viewCapa(${capa.id})">CAPA: ${capa.capaNumber}</button>`:''}
-      ${a.status!=='CLOSED'?`<button class="btn btn-o btn-sm" onclick="editAlert(${id})">✏️ Edit Alert</button>`:''}
       <button class="btn btn-p btn-sm" onclick="printAlert(${id})">🖨 Print Alert</button>
     </div>
   </div>
@@ -710,7 +709,11 @@ async function viewAlert(id){
     <div>
       <div class="card" style="margin-bottom:14px">
         <div class="ch"><h5>Problem Statement</h5></div>
-        <div class="cb" style="font-size:13.5px;line-height:1.75;white-space:pre-wrap">${esc(a.problem)}</div>
+        <div class="cb">
+          ${a.status!=='CLOSED'
+            ?`<textarea class="fc" rows="4" id="al-problem" onblur="saveAlertDetails(${id})">${esc(a.problem||'')}</textarea>`
+            :`<div style="font-size:13.5px;line-height:1.75;white-space:pre-wrap">${esc(a.problem)}</div>`}
+        </div>
       </div>
       ${a.images&&a.images.length?`<div class="card" style="margin-bottom:14px">
         <div class="ch"><h5>Evidence Images</h5></div>
@@ -725,22 +728,51 @@ async function viewAlert(id){
       </div>`:''}
       <div class="card" style="margin-bottom:14px">
         <div class="ch"><h5>Containment Action</h5></div>
-        <div class="cb" style="font-size:13.5px;line-height:1.75;white-space:pre-wrap">${esc(a.containment)}</div>
+        <div class="cb">
+          ${a.status!=='CLOSED'
+            ?`<textarea class="fc" rows="4" id="al-containment" onblur="saveAlertDetails(${id})">${esc(a.containment||'')}</textarea>`
+            :`<div style="font-size:13.5px;line-height:1.75;white-space:pre-wrap">${esc(a.containment)}</div>`}
+        </div>
       </div>
-      ${a.instructions?`<div class="card">
+      <div class="card">
         <div class="ch"><h5>Instructions to Team</h5></div>
-        <div class="cb" style="font-size:13.5px;line-height:1.75;white-space:pre-wrap">${esc(a.instructions)}</div>
-      </div>`:''}
+        <div class="cb">
+          ${a.status!=='CLOSED'
+            ?`<textarea class="fc" rows="3" id="al-instructions" placeholder="Specific instructions for shop floor / team…" onblur="saveAlertDetails(${id})">${esc(a.instructions||'')}</textarea>`
+            :(a.instructions?`<div style="font-size:13.5px;line-height:1.75;white-space:pre-wrap">${esc(a.instructions)}</div>`:`<div class="muted" style="font-size:12px">No instructions added</div>`)}
+        </div>
+      </div>
     </div>
     <div>
       <div class="card" style="margin-bottom:14px">
         <div class="ch"><h5>Alert Info</h5></div>
         <div class="cb">
-          ${[['QA Number',a.qaNumber],['Linked CR',a.crNumber||'—'],['Date',fmtD(a.date)],['Issued By',a.createdBy||'']].map(([l,v])=>`
           <div style="padding:5px 0;border-bottom:1px solid #f0f3f9">
-            <div style="font-size:10.5px;color:#9ca3af;font-weight:600;text-transform:uppercase">${l}</div>
-            <div class="mono" style="font-weight:600;font-size:12.5px;color:#0d2f6e">${esc(String(v))}</div>
-          </div>`).join('')}
+            <div style="font-size:10.5px;color:#9ca3af;font-weight:600;text-transform:uppercase">QA Number</div>
+            <div class="mono" style="font-weight:600;font-size:12.5px;color:#0d2f6e">${esc(a.qaNumber)}</div>
+          </div>
+          <div style="padding:5px 0;border-bottom:1px solid #f0f3f9">
+            <div style="font-size:10.5px;color:#9ca3af;font-weight:600;text-transform:uppercase">Linked CR</div>
+            <div class="mono" style="font-weight:600;font-size:12.5px;color:#0d2f6e">${esc(a.crNumber||'—')}</div>
+          </div>
+          <div style="padding:5px 0;border-bottom:1px solid #f0f3f9">
+            <div style="font-size:10.5px;color:#9ca3af;font-weight:600;text-transform:uppercase">Date</div>
+            ${a.status!=='CLOSED'
+              ?`<input class="fc" type="date" id="al-date" value="${a.date||''}" style="margin-top:3px" onblur="saveAlertDetails(${id})">`
+              :`<div class="mono" style="font-weight:600;font-size:12.5px;color:#0d2f6e">${fmtD(a.date)}</div>`}
+          </div>
+          <div style="padding:5px 0;border-bottom:1px solid #f0f3f9">
+            <div style="font-size:10.5px;color:#9ca3af;font-weight:600;text-transform:uppercase">Issued By</div>
+            <div class="mono" style="font-weight:600;font-size:12.5px;color:#0d2f6e">${esc(a.createdBy||'')}</div>
+          </div>
+          <div style="padding:5px 0">
+            <div style="font-size:10.5px;color:#9ca3af;font-weight:600;text-transform:uppercase">Status</div>
+            ${a.status!=='CLOSED'
+              ?`<select class="fc" id="al-status" style="margin-top:3px" onchange="saveAlertStatus(${id})">
+                  ${['ISSUED','UNDER_REVIEW','RESOLVED','CLOSED'].map(s=>`<option value="${s}" ${a.status===s?'selected':''}>${s.replace(/_/g,' ')}</option>`).join('')}
+                </select>`
+              :qBadge(a.status)}
+          </div>
         </div>
       </div>
       <div class="card">
@@ -1247,50 +1279,22 @@ async function closeCapa(capaId){
 }
 
 // ══════════════════════════════════════════════════════
-//  EDIT — Quality Alert
+//  EDIT — Quality Alert (inline on the alert page itself — no popup)
 // ══════════════════════════════════════════════════════
-async function editAlert(id){
-  const a=await DB.getAlert(id);
-  const ov=document.createElement('div');ov.className='overlay';ov.id='edit-alert-ov';
-  ov.innerHTML=`<div class="modal" style="width:580px;max-height:92vh;overflow-y:auto">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <h3>✏️ Edit Quality Alert — <span class="mono" style="color:var(--navy)">${esc(a.qaNumber)}</span></h3>
-      <button class="btn btn-o btn-sm" onclick="document.getElementById('edit-alert-ov').remove()">✕</button>
-    </div>
-    <div class="fg"><label class="lbl">Date</label>
-      <input class="fc" type="date" id="ea-date" value="${a.date||''}"></div>
-    <div class="fg"><label class="lbl">Problem Statement *</label>
-      <textarea class="fc" id="ea-problem" rows="4">${esc(a.problem||'')}</textarea></div>
-    <div class="fg"><label class="lbl">Containment Action *</label>
-      <textarea class="fc" id="ea-containment" rows="4">${esc(a.containment||'')}</textarea></div>
-    <div class="fg"><label class="lbl">Instructions to Team</label>
-      <textarea class="fc" id="ea-instructions" rows="3">${esc(a.instructions||'')}</textarea></div>
-    <div class="fg"><label class="lbl">Status</label>
-      <select class="fc" id="ea-status">
-        ${['ISSUED','UNDER_REVIEW','RESOLVED','CLOSED'].map(s=>`<option value="${s}" ${a.status===s?'selected':''}>${s.replace(/_/g,' ')}</option>`).join('')}
-      </select></div>
-    <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
-      <button class="btn btn-o" onclick="document.getElementById('edit-alert-ov').remove()">Cancel</button>
-      <button class="btn btn-p" onclick="saveEditAlert(${id})">💾 Save Alert</button>
-    </div>
-  </div>`;
-  document.body.appendChild(ov);
-}
-
-async function saveEditAlert(id){
-  const problem=document.getElementById('ea-problem').value.trim();
-  const containment=document.getElementById('ea-containment').value.trim();
-  if(!problem||!containment){toast('Problem statement and containment are required','d');return;}
-  await DB.updateAlert(id,{
-    date:document.getElementById('ea-date').value,
-    problem, containment,
-    instructions:document.getElementById('ea-instructions').value.trim(),
-    status:document.getElementById('ea-status').value,
+async function saveAlertDetails(alertId){
+  await DB.updateAlert(alertId,{
+    date:document.getElementById('al-date')?.value,
+    problem:document.getElementById('al-problem')?.value.trim(),
+    containment:document.getElementById('al-containment')?.value.trim(),
+    instructions:document.getElementById('al-instructions')?.value.trim(),
     updatedAt:new Date().toISOString()
   });
-  document.getElementById('edit-alert-ov').remove();
-  toast('✅ Alert updated');
-  viewAlert(id);
+}
+async function saveAlertStatus(alertId){
+  const status=document.getElementById('al-status')?.value;
+  await DB.updateAlert(alertId,{status,updatedAt:new Date().toISOString()});
+  toast('✅ Alert status updated');
+  viewAlert(alertId);
 }
 
 // ══════════════════════════════════════════════════════
