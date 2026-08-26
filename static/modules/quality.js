@@ -850,7 +850,6 @@ async function viewCapa(id){
     </div>
     <div style="display:flex;gap:7px;flex-wrap:wrap">
       ${alert?`<button class="btn btn-o btn-sm" onclick="viewAlert(${alert.id})">Alert: ${alert.qaNumber}</button>`:''}
-      ${ca.status!=='CLOSED'?`<button class="btn btn-o btn-sm" onclick="editCapa(${id})">✏️ Edit CAPA</button>`:''}
       <button class="btn btn-p btn-sm" onclick="printFullReport(${ca.complaintId||0})">🖨 Full Report</button>
       ${ca.status!=='CLOSED'?`<button class="btn btn-g btn-sm" onclick="closeCapa(${id})" ${!allDone||!ca.effectivenessVerified?'disabled title="Complete all actions and verify effectiveness first"':''}>✓ Close CAPA</button>`:''}
     </div>
@@ -861,8 +860,22 @@ async function viewCapa(id){
     <div class="card">
       <div class="ch"><h5>Problem Statement</h5></div>
       <div class="cb">
-        <div style="font-size:13.5px;line-height:1.75;white-space:pre-wrap;margin-bottom:10px">${esc(ca.problem)}</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <textarea class="fc" rows="3" id="ca-problem" placeholder="Describe the problem…"
+          onblur="saveCapaDetails(${id})">${esc(ca.problem||'')}</textarea>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-top:10px">
+          <div class="fg" style="margin:0"><label class="lbl">Defect Type</label>
+            <input class="fc" id="ca-defectType" value="${esc(ca.defectType||'')}" onblur="saveCapaDetails(${id})"></div>
+          <div class="fg" style="margin:0"><label class="lbl">Defect Qty</label>
+            <input class="fc" type="number" id="ca-defectQty" value="${ca.defectQty||''}" onblur="saveCapaDetails(${id})"></div>
+          <div class="fg" style="margin:0"><label class="lbl">Batch / Lot No.</label>
+            <input class="fc" id="ca-batchNo" value="${esc(ca.batchNo||'')}" onblur="saveCapaDetails(${id})"></div>
+          <div class="fg" style="margin:0"><label class="lbl">Detection Stage</label>
+            <input class="fc" id="ca-detectionStage" value="${esc(ca.detectionStage||'')}" onblur="saveCapaDetails(${id})"></div>
+        </div>
+        <div class="fg" style="margin-top:10px;margin-bottom:0"><label class="lbl">Immediate Containment</label>
+          <textarea class="fc" rows="2" id="ca-containment" placeholder="What immediate action was taken to contain the issue?"
+            onblur="saveCapaDetails(${id})">${esc(ca.containment||'')}</textarea></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">
           <div><div style="font-size:10.5px;color:#9ca3af;font-weight:600;text-transform:uppercase">Part Number</div>
             <div class="mono" style="font-weight:700;color:#0d2f6e">${esc(ca.partNumber)}</div></div>
           <div><div style="font-size:10.5px;color:#9ca3af;font-weight:600;text-transform:uppercase">Opened</div>
@@ -1281,76 +1294,18 @@ async function saveEditAlert(id){
 }
 
 // ══════════════════════════════════════════════════════
-//  EDIT — CAPA
+//  EDIT — CAPA (inline on the CAPA page itself — no popup)
 // ══════════════════════════════════════════════════════
-async function editCapa(id){
-  const ca=await DB.getCapa(id);
-  const ov=document.createElement('div');ov.className='overlay';ov.id='edit-capa-ov';
-  ov.innerHTML=`<div class="modal" style="width:600px;max-height:92vh;overflow-y:auto">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <h3>✏️ Edit CAPA — <span class="mono" style="color:var(--navy)">${esc(ca.capaNumber)}</span></h3>
-      <button class="btn btn-o btn-sm" onclick="document.getElementById('edit-capa-ov').remove()">✕</button>
-    </div>
-    <div class="fg"><label class="lbl">Problem Statement</label>
-      <textarea class="fc" id="ec-problem" rows="3">${esc(ca.problem||'')}</textarea></div>
-
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-      <div class="fg"><label class="lbl">Defect Type</label>
-        <input class="fc" id="ec-defectType" value="${esc(ca.defectType||'')}"></div>
-      <div class="fg"><label class="lbl">Defect Qty</label>
-        <input class="fc" type="number" id="ec-defectQty" value="${ca.defectQty||''}"></div>
-      <div class="fg"><label class="lbl">Batch / Lot No.</label>
-        <input class="fc" id="ec-batchNo" value="${esc(ca.batchNo||'')}"></div>
-      <div class="fg"><label class="lbl">Detection Stage</label>
-        <input class="fc" id="ec-detectionStage" value="${esc(ca.detectionStage||'')}"></div>
-    </div>
-
-    <div class="fg"><label class="lbl">Immediate Containment</label>
-      <textarea class="fc" id="ec-containment" rows="2">${esc(ca.containment||'')}</textarea></div>
-
-    <div class="fg"><label class="lbl">Root Cause Analysis (Why-Why / Ishikawa summary)</label>
-      <textarea class="fc" id="ec-rootCause" rows="3">${esc(ca.rootCause||'')}</textarea></div>
-
-    <div class="fg"><label class="lbl">Why 1</label><input class="fc" id="ec-why1" value="${esc(ca.why1||'')}"></div>
-    <div class="fg"><label class="lbl">Why 2</label><input class="fc" id="ec-why2" value="${esc(ca.why2||'')}"></div>
-    <div class="fg"><label class="lbl">Why 3</label><input class="fc" id="ec-why3" value="${esc(ca.why3||'')}"></div>
-    <div class="fg"><label class="lbl">Why 4</label><input class="fc" id="ec-why4" value="${esc(ca.why4||'')}"></div>
-    <div class="fg"><label class="lbl">Why 5</label><input class="fc" id="ec-why5" value="${esc(ca.why5||'')}"></div>
-
-    <div class="fg"><label class="lbl">Permanent Corrective Action Plan</label>
-      <textarea class="fc" id="ec-correctiveAction" rows="3">${esc(ca.correctiveAction||'')}</textarea></div>
-    <div class="fg"><label class="lbl">Preventive Action (Horizontal Deployment)</label>
-      <textarea class="fc" id="ec-preventiveAction" rows="2">${esc(ca.preventiveAction||'')}</textarea></div>
-
-    <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
-      <button class="btn btn-o" onclick="document.getElementById('edit-capa-ov').remove()">Cancel</button>
-      <button class="btn btn-p" onclick="saveEditCapa(${id})">💾 Save CAPA</button>
-    </div>
-  </div>`;
-  document.body.appendChild(ov);
-}
-
-async function saveEditCapa(id){
-  await DB.updateCapa(id,{
-    problem:document.getElementById('ec-problem').value.trim(),
-    defectType:document.getElementById('ec-defectType').value.trim(),
-    defectQty:document.getElementById('ec-defectQty').value,
-    batchNo:document.getElementById('ec-batchNo').value.trim(),
-    detectionStage:document.getElementById('ec-detectionStage').value.trim(),
-    containment:document.getElementById('ec-containment').value.trim(),
-    rootCause:document.getElementById('ec-rootCause').value.trim(),
-    why1:document.getElementById('ec-why1').value.trim(),
-    why2:document.getElementById('ec-why2').value.trim(),
-    why3:document.getElementById('ec-why3').value.trim(),
-    why4:document.getElementById('ec-why4').value.trim(),
-    why5:document.getElementById('ec-why5').value.trim(),
-    correctiveAction:document.getElementById('ec-correctiveAction').value.trim(),
-    preventiveAction:document.getElementById('ec-preventiveAction').value.trim(),
+async function saveCapaDetails(capaId){
+  await DB.updateCapa(capaId,{
+    problem:document.getElementById('ca-problem')?.value.trim(),
+    defectType:document.getElementById('ca-defectType')?.value.trim(),
+    defectQty:document.getElementById('ca-defectQty')?.value,
+    batchNo:document.getElementById('ca-batchNo')?.value.trim(),
+    detectionStage:document.getElementById('ca-detectionStage')?.value.trim(),
+    containment:document.getElementById('ca-containment')?.value.trim(),
     updatedAt:new Date().toISOString()
   });
-  document.getElementById('edit-capa-ov').remove();
-  toast('✅ CAPA updated');
-  viewCapa(id);
 }
 
 // ══════════════════════════════════════════════════════
