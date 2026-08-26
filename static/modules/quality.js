@@ -362,6 +362,7 @@ async function renderNewAlert(complaintId){
           <div style="display:flex;gap:5px;margin-top:6px;flex-wrap:wrap" id="ann-toolbar-${i}" style="display:none">
             <button class="btn btn-xs btn-o" onclick="setAnnTool(${i},'circle')" id="t-circle-${i}" title="Draw circle around issue">○ Circle</button>
             <button class="btn btn-xs btn-o" onclick="setAnnTool(${i},'highlight')" id="t-highlight-${i}" title="Highlight area">▭ Highlight</button>
+            <button class="btn btn-xs btn-o" onclick="setAnnTool(${i},'arrow')" id="t-arrow-${i}" title="Draw an arrow pointing to a feature">↗ Arrow</button>
             <button class="btn btn-xs btn-o" onclick="setAnnTool(${i},'text')" id="t-text-${i}" title="Add text label">T Text</button>
             <button class="btn btn-xs btn-o" onclick="undoAnn(${i})" title="Undo last">↩</button>
             <button class="btn btn-xs" onclick="clearAnn(${i})" style="color:#dc3545;background:#fee2e2;border:none" title="Clear all">✕</button>
@@ -371,7 +372,7 @@ async function renderNewAlert(complaintId){
         </div>`).join('')}
       </div>
       <div class="alert al-w" style="margin-top:10px;font-size:12px">
-        💡 Upload images → use Circle to highlight the defect area → use Text to add notes directly on the image
+        💡 Upload images → drag with Circle / Highlight / Arrow to mark the defect (you'll see it grow live as you drag) → use Text to add notes → drag any shape to reposition it.
       </div>
     </div>
   </div>
@@ -391,14 +392,13 @@ async function renderNewAlert(complaintId){
   </div>
 
   <div class="card" style="margin-bottom:14px">
-    <div class="ch"><h5>Sign-Off Panel (for printed notice board copy)</h5></div>
+    <div class="ch"><h5>Sign-Off Panel (for printed notice board copy)</h5>
+      <button class="btn btn-o btn-sm" onclick="addSignoffRow()">+ Add Person</button>
+    </div>
     <div class="cb">
-      <div style="font-size:12px;color:#6b7280;margin-bottom:10px">Enter the names and designations of people who need to be notified. Physical signatures collected on printed copy.</div>
+      <div style="font-size:12px;color:#6b7280;margin-bottom:10px">Add everyone associated with this process who needs to sign off — there is no limit on the number of people. Physical signatures collected on printed copy.</div>
       <div id="signoff-rows">
-        ${[1,2,3,4].map(i=>`<div style="display:grid;grid-template-columns:2fr 1fr;gap:8px;margin-bottom:7px">
-          <input class="fc" placeholder="Name ${i}" id="sig-name-${i}">
-          <input class="fc" placeholder="Designation" id="sig-desig-${i}">
-        </div>`).join('')}
+        ${[1,2,3,4].map(()=>signoffRowHTML()).join('')}
       </div>
     </div>
   </div>
@@ -407,6 +407,19 @@ async function renderNewAlert(complaintId){
     <button class="btn btn-o" onclick="viewComplaint(${complaintId})">Cancel</button>
     <button class="btn btn-p" onclick="saveAlert(${complaintId})">⚠️ Issue Alert & Open CAPA</button>
   </div>`);
+}
+
+// ── Sign-off rows (unlimited — anyone associated with the process) ──
+function signoffRowHTML(name='',designation=''){
+  return`<div class="signoff-row" style="display:grid;grid-template-columns:2fr 1fr auto;gap:8px;margin-bottom:7px;align-items:center">
+    <input class="fc sig-name" placeholder="Name" value="${esc(name)}">
+    <input class="fc sig-desig" placeholder="Designation" value="${esc(designation)}">
+    <button class="btn btn-xs" style="color:#dc3545;background:#fee2e2;border:none" onclick="this.closest('.signoff-row').remove()" title="Remove">✕</button>
+  </div>`;
+}
+function addSignoffRow(){
+  const wrap=document.getElementById('signoff-rows');
+  if(wrap) wrap.insertAdjacentHTML('beforeend',signoffRowHTML());
 }
 
 // ── Image Annotator ───────────────────────────────────
@@ -429,7 +442,8 @@ function loadAnnotatorImage(idx, input){
     wrap.innerHTML=''; wrap.style.border='1px solid #d4daf0';
     wrap.appendChild(canvas);
 
-    const ann={canvas,ctx:canvas.getContext('2d'),img:new Image(),annotations:[],tool:'circle',drawing:false,sx:0,sy:0};
+    const ann={canvas,ctx:canvas.getContext('2d'),img:new Image(),annotations:[],tool:'circle',
+      action:null,sx:0,sy:0,dragIdx:-1,dragOrig:null};
     _annotators[idx]=ann;
 
     ann.img.onload=()=>{
@@ -442,34 +456,140 @@ function loadAnnotatorImage(idx, input){
     };
     ann.img.src=ev.target.result;
 
-    canvas.addEventListener('mousedown',e=>{
-      const r=canvas.getBoundingClientRect();
-      ann.sx=e.clientX-r.left; ann.sy=e.clientY-r.top;
-      ann.drawing=true;
-      if(ann.tool==='text'){
-        const txt=prompt('Enter label text:');
-        if(txt){ann.annotations.push({type:'text',x:ann.sx,y:ann.sy,text:txt});redrawCanvas(idx);}
-        ann.drawing=false;
-      }
-    });
-    canvas.addEventListener('mouseup',e=>{
-      if(!ann.drawing)return;
-      const r=canvas.getBoundingClientRect();
-      const ex=e.clientX-r.left,ey=e.clientY-r.top;
-      if(ann.tool==='circle'){
-        const cx=(ann.sx+ex)/2,cy=(ann.sy+ey)/2,rx=Math.abs(ex-ann.sx)/2,ry=Math.abs(ey-ann.sy)/2;
-        if(rx>5||ry>5) ann.annotations.push({type:'circle',cx,cy,rx:Math.max(rx,10),ry:Math.max(ry,10)});
-      } else if(ann.tool==='highlight'){
-        const x=Math.min(ann.sx,ex),y=Math.min(ann.sy,ey),w=Math.abs(ex-ann.sx),h=Math.abs(ey-ann.sy);
-        if(w>5&&h>5) ann.annotations.push({type:'highlight',x,y,w,h});
-      }
-      ann.drawing=false; redrawCanvas(idx);
-    });
+    const pos=e=>{const r=canvas.getBoundingClientRect();return{x:e.clientX-r.left,y:e.clientY-r.top};};
+
+    canvas.addEventListener('mousedown',e=>{annPointerDown(idx,pos(e).x,pos(e).y);});
+    canvas.addEventListener('mousemove',e=>{annPointerMove(idx,pos(e).x,pos(e).y);});
+    canvas.addEventListener('mouseup',e=>{annPointerUp(idx,pos(e).x,pos(e).y);});
+    canvas.addEventListener('mouseleave',()=>{annPointerCancel(idx);});
+
     // Touch support
-    canvas.addEventListener('touchstart',e=>{e.preventDefault();const t=e.touches[0];const r=canvas.getBoundingClientRect();ann.sx=t.clientX-r.left;ann.sy=t.clientY-r.top;ann.drawing=true;},{passive:false});
-    canvas.addEventListener('touchend',e=>{e.preventDefault();if(!ann.drawing)return;const t=e.changedTouches[0];const r=canvas.getBoundingClientRect();const ex=t.clientX-r.left,ey=t.clientY-r.top;if(ann.tool==='circle'){const cx=(ann.sx+ex)/2,cy=(ann.sy+ey)/2,rx=Math.abs(ex-ann.sx)/2,ry=Math.abs(ey-ann.sy)/2;if(rx>5||ry>5)ann.annotations.push({type:'circle',cx,cy,rx:Math.max(rx,10),ry:Math.max(ry,10)});}else if(ann.tool==='highlight'){const x=Math.min(ann.sx,ex),y=Math.min(ann.sy,ey),w=Math.abs(ex-ann.sx),h=Math.abs(ey-ann.sy);if(w>5&&h>5)ann.annotations.push({type:'highlight',x,y,w,h});}ann.drawing=false;redrawCanvas(idx);},{passive:false});
+    canvas.addEventListener('touchstart',e=>{e.preventDefault();const t=e.touches[0];const r=canvas.getBoundingClientRect();annPointerDown(idx,t.clientX-r.left,t.clientY-r.top);},{passive:false});
+    canvas.addEventListener('touchmove',e=>{e.preventDefault();const t=e.touches[0];const r=canvas.getBoundingClientRect();annPointerMove(idx,t.clientX-r.left,t.clientY-r.top);},{passive:false});
+    canvas.addEventListener('touchend',e=>{e.preventDefault();const t=e.changedTouches[0];const r=canvas.getBoundingClientRect();annPointerUp(idx,t.clientX-r.left,t.clientY-r.top);},{passive:false});
   };
   reader.readAsDataURL(file);
+}
+
+// ── Pointer state machine: create OR drag-to-move an existing shape ──
+function annPointerDown(idx,x,y){
+  const ann=_annotators[idx]; if(!ann) return;
+  ann.sx=x; ann.sy=y;
+  if(ann.tool==='text'){
+    const txt=prompt('Enter label text:');
+    if(txt){ann.annotations.push({type:'text',x,y,text:txt});redrawCanvas(idx);}
+    return;
+  }
+  const hitIdx=annHitTest(ann,x,y);
+  if(hitIdx!==-1){
+    ann.action='move'; ann.dragIdx=hitIdx; ann.dragOrig={...ann.annotations[hitIdx]};
+    ann.canvas.style.cursor='grabbing';
+  } else {
+    ann.action='draw';
+  }
+}
+function annPointerMove(idx,x,y){
+  const ann=_annotators[idx]; if(!ann) return;
+  if(!ann.action){
+    ann.canvas.style.cursor=annHitTest(ann,x,y)!==-1?'move':(ann.tool==='text'?'text':'crosshair');
+    return;
+  }
+  if(ann.action==='move'){
+    annApplyMoveDelta(ann.annotations[ann.dragIdx],x-ann.sx,y-ann.sy,ann.dragOrig);
+    redrawCanvas(idx);
+  } else if(ann.action==='draw'){
+    redrawCanvas(idx);
+    annDrawPreview(ann,ann.sx,ann.sy,x,y);
+  }
+}
+function annPointerUp(idx,x,y){
+  const ann=_annotators[idx]; if(!ann||!ann.action) return;
+  if(ann.action==='draw') annCommitShape(ann,ann.sx,ann.sy,x,y);
+  ann.action=null; ann.dragIdx=-1; ann.dragOrig=null;
+  ann.canvas.style.cursor='crosshair';
+  redrawCanvas(idx);
+}
+function annPointerCancel(idx){
+  const ann=_annotators[idx]; if(!ann) return;
+  if(ann.action==='draw') redrawCanvas(idx);
+  ann.action=null; ann.dragIdx=-1; ann.dragOrig=null;
+}
+
+function annCommitShape(ann,sx,sy,ex,ey){
+  if(ann.tool==='circle'){
+    const cx=(sx+ex)/2,cy=(sy+ey)/2,rx=Math.abs(ex-sx)/2,ry=Math.abs(ey-sy)/2;
+    if(rx>5||ry>5) ann.annotations.push({type:'circle',cx,cy,rx:Math.max(rx,10),ry:Math.max(ry,10)});
+  } else if(ann.tool==='highlight'){
+    const x=Math.min(sx,ex),y=Math.min(sy,ey),w=Math.abs(ex-sx),h=Math.abs(ey-sy);
+    if(w>5&&h>5) ann.annotations.push({type:'highlight',x,y,w,h});
+  } else if(ann.tool==='arrow'){
+    if(Math.hypot(ex-sx,ey-sy)>8) ann.annotations.push({type:'arrow',x1:sx,y1:sy,x2:ex,y2:ey});
+  }
+}
+
+// Live preview of the shape while the user is still dragging (not yet committed)
+function annDrawPreview(ann,sx,sy,ex,ey){
+  const ctx=ann.ctx;
+  ctx.save();
+  if(ann.tool==='circle'){
+    const cx=(sx+ex)/2,cy=(sy+ey)/2,rx=Math.max(Math.abs(ex-sx)/2,1),ry=Math.max(Math.abs(ey-sy)/2,1);
+    ctx.setLineDash([5,3]);ctx.strokeStyle='#ff0000';ctx.lineWidth=2;
+    ctx.beginPath();ctx.ellipse(cx,cy,rx,ry,0,0,Math.PI*2);ctx.stroke();
+  } else if(ann.tool==='highlight'){
+    const x=Math.min(sx,ex),y=Math.min(sy,ey),w=Math.abs(ex-sx),h=Math.abs(ey-sy);
+    ctx.setLineDash([5,3]);ctx.strokeStyle='rgba(200,150,0,0.9)';ctx.lineWidth=2;ctx.strokeRect(x,y,w,h);
+    ctx.fillStyle='rgba(255,230,0,0.25)';ctx.fillRect(x,y,w,h);
+  } else if(ann.tool==='arrow'){
+    annDrawArrow(ctx,sx,sy,ex,ey,'rgba(220,53,69,0.75)');
+  }
+  ctx.restore();
+}
+
+function annDrawArrow(ctx,x1,y1,x2,y2,color){
+  const headlen=12,angle=Math.atan2(y2-y1,x2-x1);
+  ctx.save();
+  ctx.strokeStyle=color; ctx.fillStyle=color; ctx.lineWidth=3; ctx.setLineDash([]);
+  ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(x2,y2);
+  ctx.lineTo(x2-headlen*Math.cos(angle-Math.PI/6),y2-headlen*Math.sin(angle-Math.PI/6));
+  ctx.lineTo(x2-headlen*Math.cos(angle+Math.PI/6),y2-headlen*Math.sin(angle+Math.PI/6));
+  ctx.closePath();ctx.fill();
+  ctx.restore();
+}
+
+// Hit-testing so a click/drag on an existing shape moves it instead of drawing a new one
+function annHitTest(ann,x,y){
+  for(let i=ann.annotations.length-1;i>=0;i--){
+    const a=ann.annotations[i];
+    if(a.type==='circle'){
+      const nx=(x-a.cx)/a.rx,ny=(y-a.cy)/a.ry;
+      if(nx*nx+ny*ny<=1) return i;
+    } else if(a.type==='highlight'){
+      if(x>=a.x&&x<=a.x+a.w&&y>=a.y&&y<=a.y+a.h) return i;
+    } else if(a.type==='text'){
+      ann.ctx.font='bold 16px Arial';
+      const tw=ann.ctx.measureText(a.text).width;
+      if(x>=a.x-3&&x<=a.x-3+tw+8&&y>=a.y-18&&y<=a.y+4) return i;
+    } else if(a.type==='arrow'){
+      const d=annPointToSegDist(x,y,a.x1,a.y1,a.x2,a.y2);
+      if(d<=8) return i;
+    }
+  }
+  return -1;
+}
+function annPointToSegDist(px,py,x1,y1,x2,y2){
+  const dx=x2-x1,dy=y2-y1;
+  const len2=dx*dx+dy*dy;
+  let t=len2?((px-x1)*dx+(py-y1)*dy)/len2:0;
+  t=Math.max(0,Math.min(1,t));
+  const cx=x1+t*dx,cy=y1+t*dy;
+  return Math.hypot(px-cx,py-cy);
+}
+function annApplyMoveDelta(shape,dx,dy,orig){
+  if(shape.type==='circle'){shape.cx=orig.cx+dx;shape.cy=orig.cy+dy;}
+  else if(shape.type==='highlight'){shape.x=orig.x+dx;shape.y=orig.y+dy;}
+  else if(shape.type==='text'){shape.x=orig.x+dx;shape.y=orig.y+dy;}
+  else if(shape.type==='arrow'){shape.x1=orig.x1+dx;shape.y1=orig.y1+dy;shape.x2=orig.x2+dx;shape.y2=orig.y2+dy;}
 }
 
 function redrawCanvas(idx){
@@ -489,6 +609,8 @@ function redrawCanvas(idx){
       const tw=ctx.measureText(a.text).width;
       ctx.fillStyle='rgba(220,53,69,0.92)';ctx.fillRect(a.x-3,a.y-18,tw+8,22);
       ctx.fillStyle='#fff';ctx.fillText(a.text,a.x+1,a.y);
+    } else if(a.type==='arrow'){
+      annDrawArrow(ctx,a.x1,a.y1,a.x2,a.y2,'#dc3545');
     }
   });
 }
@@ -496,7 +618,7 @@ function redrawCanvas(idx){
 function setAnnTool(idx,tool){
   const ann=_annotators[idx]; if(!ann) return;
   ann.tool=tool;
-  ['circle','highlight','text'].forEach(t=>{
+  ['circle','highlight','arrow','text'].forEach(t=>{
     const btn=document.getElementById(`t-${t}-${idx}`);
     if(btn) btn.style.background=t===tool?'#0d2f6e':''
       ,btn.style.color=t===tool?'#fff':'';
@@ -519,13 +641,13 @@ async function saveAlert(complaintId){
     if(ann){images.push(ann.canvas.toDataURL('image/jpeg',0.82));}
   }
 
-  // Collect sign-off names
+  // Collect sign-off names (unlimited rows)
   const signoffs=[];
-  for(let i=1;i<=4;i++){
-    const name=document.getElementById(`sig-name-${i}`)?.value.trim();
-    const desig=document.getElementById(`sig-desig-${i}`)?.value.trim();
+  document.querySelectorAll('#signoff-rows .signoff-row').forEach(row=>{
+    const name=row.querySelector('.sig-name')?.value.trim();
+    const desig=row.querySelector('.sig-desig')?.value.trim();
     if(name) signoffs.push({name,designation:desig||''});
-  }
+  });
 
   const c=await DB.getComplaint(complaintId);
   const qaNum=document.getElementById('qa-num').value;
@@ -621,18 +743,41 @@ async function viewAlert(id){
           </div>`).join('')}
         </div>
       </div>
-      ${a.signoffs&&a.signoffs.length?`<div class="card">
+      <div class="card">
         <div class="ch"><h5>Sign-off List</h5></div>
         <div class="cb">
-          <div style="font-size:12px;color:#6b7280;margin-bottom:8px">Physical signatures on printed copy</div>
-          ${a.signoffs.map(s=>`<div style="padding:6px 0;border-bottom:1px solid #f0f3f9">
-            <div style="font-weight:600;font-size:12.5px">${esc(s.name)}</div>
-            <div style="font-size:11.5px;color:#6b7280">${esc(s.designation)}</div>
-          </div>`).join('')}
+          <div style="font-size:12px;color:#6b7280;margin-bottom:8px">Everyone associated with this process — physical signatures collected on printed copy. Add anyone still needed below.</div>
+          <div id="alert-signoff-list">
+            ${(a.signoffs||[]).map((s,i)=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #f0f3f9">
+              <div><div style="font-weight:600;font-size:12.5px">${esc(s.name)}</div><div style="font-size:11.5px;color:#6b7280">${esc(s.designation)}</div></div>
+              ${a.status!=='CLOSED'?`<button style="background:none;border:none;color:#dc3545;cursor:pointer;font-size:13px" onclick="removeAlertSignoff(${id},${i})">✕</button>`:''}
+            </div>`).join('')||'<div class="muted" style="font-size:12px">No sign-off names added yet</div>'}
+          </div>
+          ${a.status!=='CLOSED'?`<div style="display:flex;gap:6px;margin-top:8px">
+            <input class="fc" id="as-name" placeholder="Name" style="flex:1">
+            <input class="fc" id="as-desig" placeholder="Designation" style="flex:1">
+            <button class="btn btn-p btn-xs" onclick="addAlertSignoff(${id})">+</button>
+          </div>`:''}
         </div>
-      </div>`:''}
+      </div>
     </div>
   </div>`);
+}
+
+async function addAlertSignoff(alertId){
+  const name=document.getElementById('as-name')?.value.trim();
+  const desig=document.getElementById('as-desig')?.value.trim();
+  if(!name){toast('Enter a name','d');return}
+  const a=await DB.getAlert(alertId);
+  const signoffs=[...(a.signoffs||[]),{name,designation:desig||''}];
+  await DB.updateAlert(alertId,{signoffs});
+  viewAlert(alertId);
+}
+async function removeAlertSignoff(alertId,idx){
+  const a=await DB.getAlert(alertId);
+  const signoffs=(a.signoffs||[]).filter((_,i)=>i!==idx);
+  await DB.updateAlert(alertId,{signoffs});
+  viewAlert(alertId);
 }
 
 function showImgFull(src){
@@ -677,6 +822,7 @@ async function viewCapa(id){
   document.getElementById('topbar-title').textContent='CAPA';
   document.querySelectorAll('.sl-item').forEach(el=>el.classList.remove('active'));
   const ca=await DB.getCapa(id); if(!ca){toast('Not found','d');return}
+  _whyCapaId=id;
   const actions=await DB.getCapaActions(id);
   const today=new Date().toISOString().split('T')[0];
   const allDone=actions.length>0&&actions.every(a=>a.status==='COMPLETE');
@@ -744,43 +890,52 @@ async function viewCapa(id){
 
   <!-- 5 Why Analysis -->
   <div class="card" style="margin-bottom:14px">
-    <div class="ch"><h5>5 Why Analysis</h5></div>
+    <div class="ch">
+      <h5>5 Why Analysis</h5>
+      <button class="btn btn-o btn-sm" onclick="addExtraWhy(${id})">+ Add Why</button>
+    </div>
     <div class="cb">
-      <div style="font-size:12px;color:#6b7280;margin-bottom:12px">Start from the problem and keep asking "why" until you reach the root cause.</div>
-      ${[1,2,3,4,5].map(n=>`
-      <div style="display:flex;gap:10px;align-items:flex-start;margin-bottom:10px">
-        <div style="flex-shrink:0;text-align:center">
-          <div style="width:32px;height:32px;border-radius:50%;background:${n===5?'#0d2f6e':'#edf1fb'};color:${n===5?'#fff':'#0d2f6e'};display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px">${n}</div>
-          ${n<5?`<div style="width:2px;height:16px;background:#d4daf0;margin:3px auto"></div>`:''}
-        </div>
-        <div style="flex:1">
-          <div style="font-size:11.5px;font-weight:600;color:${n===5?'#dc3545':'#0d2f6e'};margin-bottom:3px">
-            ${n===5?'Root Cause':'Why '+n}
-          </div>
-          <textarea class="fc" rows="2" id="why-${n}" placeholder="${n===1?'Why did the problem occur?':'Why?'}"
-            onblur="saveWhy(${id})">${esc(ca['why'+n]||'')}</textarea>
-        </div>
-      </div>`).join('')}
+      <div style="font-size:12px;color:#6b7280;margin-bottom:12px">Start from the problem and keep asking "why" — at least 5 times — until you reach the root cause. Add more whys if 5 isn't enough.</div>
+      <div id="why-list">
+        ${capaWhyRowsHTML(ca)}
+      </div>
+      <div class="fg" style="margin-top:8px">
+        <label class="lbl" style="color:#dc3545">Root Cause</label>
+        <textarea class="fc" rows="2" id="root-cause" placeholder="State the confirmed root cause reached by the Why analysis above"
+          onblur="saveWhy(${id})">${esc(ca.rootCause||'')}</textarea>
+      </div>
       <div style="margin-top:4px">
         <button class="btn btn-o btn-sm" onclick="saveWhy(${id})">💾 Save Analysis</button>
       </div>
     </div>
   </div>
 
-  <!-- Actions -->
+  <!-- Corrective Actions -->
   <div class="card" style="margin-bottom:14px">
-    <div class="ch">
-      <h5>Corrective & Preventive Actions</h5>
-      <button class="btn btn-p btn-sm" onclick="addCapaAction(${id})">+ Add Action</button>
+    <div class="ch"><h5>🔧 Corrective Actions</h5></div>
+    <div class="cb" style="padding-bottom:0">
+      ${capaActionAddRowHTML(id,'CORRECTIVE')}
     </div>
-    <div id="actions-table">
-      ${await renderActionsTable(id, actions, today)}
+    <div id="actions-table-CORRECTIVE">
+      ${await renderActionsTable(id, actions.filter(a=>(a.type||'CORRECTIVE')==='CORRECTIVE'), today)}
     </div>
-    ${allDone&&!ca.effectivenessDate?`<div class="alert al-s" style="margin:10px 14px">
-      ✅ All actions complete! 60-day effectiveness review period has started.
-      <button class="btn btn-p btn-xs" style="margin-left:8px" onclick="startEffectiveness(${id})">Set Effectiveness Date</button>
-    </div>`:''}
   </div>
+
+  <!-- Preventive Actions -->
+  <div class="card" style="margin-bottom:14px">
+    <div class="ch"><h5>🛡️ Preventive Actions</h5></div>
+    <div class="cb" style="padding-bottom:0">
+      ${capaActionAddRowHTML(id,'PREVENTIVE')}
+    </div>
+    <div id="actions-table-PREVENTIVE">
+      ${await renderActionsTable(id, actions.filter(a=>a.type==='PREVENTIVE'), today)}
+    </div>
+  </div>
+
+  ${allDone&&!ca.effectivenessDate?`<div class="alert al-s" style="margin-bottom:14px">
+    ✅ All actions complete! 60-day effectiveness review period has started.
+    <button class="btn btn-p btn-xs" style="margin-left:8px" onclick="startEffectiveness(${id})">Set Effectiveness Date</button>
+  </div>`:''}
 
   <!-- Effectiveness -->
   <div class="card" style="margin-bottom:14px">
@@ -826,7 +981,7 @@ async function viewCapa(id){
 }
 
 async function renderActionsTable(capaId, actions, today){
-  if(!actions.length) return`<div style="padding:16px;text-align:center;color:#9ca3af;font-size:12.5px">No actions defined yet. Click "+ Add Action" above.</div>`;
+  if(!actions.length) return`<div style="padding:16px;text-align:center;color:#9ca3af;font-size:12.5px">No actions added yet.</div>`;
   return`<div class="tw"><table>
     <thead><tr><th>#</th><th>Action</th><th>Responsible</th><th>Designation</th><th>Due Date</th><th>Status</th><th></th></tr></thead>
     <tbody>${actions.map((a,i)=>{
@@ -844,6 +999,7 @@ async function renderActionsTable(capaId, actions, today){
         <td style="white-space:nowrap">
           ${a.status==='OPEN'?`<button class="btn btn-g btn-xs" onclick="markActionDone(${capaId},${a.id})">✓ Done</button>`:
             `<span style="font-size:11px;color:#16a34a">✓ ${fmtD(a.completedAt)}</span>`}
+          <button class="btn btn-o btn-xs" style="margin-left:3px" onclick="editCapaAction(${capaId},${a.id})" title="Edit action">✏️</button>
           <button class="btn btn-xs" style="color:#dc3545;background:#fee2e2;border:none;cursor:pointer;margin-left:3px" onclick="deleteCapaActionRow(${capaId},${a.id})">✕</button>
         </td>
       </tr>`;
@@ -852,36 +1008,117 @@ async function renderActionsTable(capaId, actions, today){
   </table></div>`;
 }
 
-async function addCapaAction(capaId){
-  const action=prompt('Action description:'); if(!action) return;
-  const responsible=prompt('Responsible person name:'); if(!responsible) return;
-  const designation=prompt('Designation (e.g. Quality Head, Operator):');
-  const dueDate=prompt('Due date (YYYY-MM-DD):',new Date(Date.now()+7*864e5).toISOString().split('T')[0]);
-  await DB.addCapaAction({capaId,action:action.trim(),responsible:responsible.trim(),designation:(designation||'').trim(),dueDate:dueDate||'',status:'OPEN',createdAt:new Date().toISOString()});
-  toast('Action added!','s');
+// Inline add-row (no browser prompt popups) for a Corrective or Preventive action
+function capaActionAddRowHTML(capaId,type){
+  const defDue=new Date(Date.now()+7*864e5).toISOString().split('T')[0];
+  return`<div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr auto;gap:8px;align-items:end;margin-bottom:14px">
+    <div class="fg" style="margin:0"><label class="lbl">Action Description</label>
+      <input class="fc" id="ca-action-${type}" placeholder="${type==='PREVENTIVE'?'What will prevent this from recurring elsewhere?':'What will be done to fix the root cause?'}"></div>
+    <div class="fg" style="margin:0"><label class="lbl">Responsible</label><input class="fc" id="ca-resp-${type}" placeholder="Name"></div>
+    <div class="fg" style="margin:0"><label class="lbl">Designation</label><input class="fc" id="ca-desig-${type}" placeholder="Designation"></div>
+    <div class="fg" style="margin:0"><label class="lbl">Due Date</label><input class="fc" type="date" id="ca-due-${type}" value="${defDue}"></div>
+    <button class="btn btn-p btn-sm" onclick="addCapaAction(${capaId},'${type}')">+ Add</button>
+  </div>`;
+}
+
+async function addCapaAction(capaId,type){
+  const actionEl=document.getElementById(`ca-action-${type}`);
+  const respEl=document.getElementById(`ca-resp-${type}`);
+  const desigEl=document.getElementById(`ca-desig-${type}`);
+  const dueEl=document.getElementById(`ca-due-${type}`);
+  const action=actionEl?.value.trim();
+  const responsible=respEl?.value.trim();
+  if(!action){toast('Action description required','d');return}
+  if(!responsible){toast('Responsible person required','d');return}
+  await DB.addCapaAction({
+    capaId,type,action,responsible,
+    designation:(desigEl?.value||'').trim(),
+    dueDate:dueEl?.value||new Date(Date.now()+7*864e5).toISOString().split('T')[0],
+    status:'OPEN',createdAt:new Date().toISOString()
+  });
+  toast(`${type==='PREVENTIVE'?'Preventive':'Corrective'} action added!`,'s');
+  if(actionEl)actionEl.value=''; if(respEl)respEl.value=''; if(desigEl)desigEl.value='';
+  await refreshActionsTables(capaId);
+}
+
+async function refreshActionsTables(capaId){
   const actions=await DB.getCapaActions(capaId);
   const today=new Date().toISOString().split('T')[0];
-  document.getElementById('actions-table').innerHTML=await renderActionsTable(capaId,actions,today);
+  const cEl=document.getElementById('actions-table-CORRECTIVE');
+  const pEl=document.getElementById('actions-table-PREVENTIVE');
+  if(cEl) cEl.innerHTML=await renderActionsTable(capaId,actions.filter(a=>(a.type||'CORRECTIVE')==='CORRECTIVE'),today);
+  if(pEl) pEl.innerHTML=await renderActionsTable(capaId,actions.filter(a=>a.type==='PREVENTIVE'),today);
+  const ca=await DB.getCapa(capaId);
+  const allDone=actions.length>0&&actions.every(a=>a.status==='COMPLETE');
+  if(allDone&&!ca.effectivenessDate){
+    await startEffectiveness(capaId);
+    toast('✅ All actions complete! 60-day effectiveness period started.','s');
+    viewCapa(capaId);
+  }
 }
 
 async function markActionDone(capaId,actionId){
   await DB.updateCapaAction(actionId,{status:'COMPLETE',completedAt:new Date().toISOString().split('T')[0]});
-  const actions=await DB.getCapaActions(capaId);
-  const allDone=actions.every(a=>a.status==='COMPLETE');
-  if(allDone){
-    await startEffectiveness(capaId);
-    toast('✅ All actions complete! 60-day effectiveness period started.','s');
-  } else toast('Action marked complete!','s');
-  const today=new Date().toISOString().split('T')[0];
-  document.getElementById('actions-table').innerHTML=await renderActionsTable(capaId,actions,today);
+  toast('Action marked complete!','s');
+  await refreshActionsTables(capaId);
 }
 
 async function deleteCapaActionRow(capaId,actionId){
   if(!confirm('Delete this action?')) return;
   await DB.deleteCapaAction(actionId);
+  toast('Deleted','d');
+  await refreshActionsTables(capaId);
+}
+
+// ── Edit an existing action (description, owner, due date, and status) ──
+async function editCapaAction(capaId,actionId){
   const actions=await DB.getCapaActions(capaId);
-  const today=new Date().toISOString().split('T')[0];
-  document.getElementById('actions-table').innerHTML=await renderActionsTable(capaId,actions,today);
+  const a=actions.find(x=>x.id===actionId); if(!a) return;
+  const type=a.type||'CORRECTIVE';
+  const ov=document.createElement('div');ov.className='overlay';ov.id='edit-action-ov';
+  ov.innerHTML=`<div class="modal" style="width:480px;max-height:92vh;overflow-y:auto">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <h3>✏️ Edit ${type==='PREVENTIVE'?'Preventive':'Corrective'} Action</h3>
+      <button class="btn btn-o btn-sm" onclick="document.getElementById('edit-action-ov').remove()">✕</button>
+    </div>
+    <div class="fg"><label class="lbl">Action Description</label>
+      <textarea class="fc" id="eca-action" rows="2">${esc(a.action||'')}</textarea></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="fg"><label class="lbl">Responsible</label><input class="fc" id="eca-resp" value="${esc(a.responsible||'')}"></div>
+      <div class="fg"><label class="lbl">Designation</label><input class="fc" id="eca-desig" value="${esc(a.designation||'')}"></div>
+      <div class="fg"><label class="lbl">Due Date</label><input class="fc" type="date" id="eca-due" value="${a.dueDate||''}"></div>
+      <div class="fg"><label class="lbl">Status</label>
+        <select class="fc" id="eca-status">
+          <option value="OPEN" ${a.status==='OPEN'?'selected':''}>Open</option>
+          <option value="COMPLETE" ${a.status==='COMPLETE'?'selected':''}>Complete</option>
+        </select></div>
+    </div>
+    <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-o" onclick="document.getElementById('edit-action-ov').remove()">Cancel</button>
+      <button class="btn btn-p" onclick="saveEditCapaAction(${capaId},${actionId})">💾 Save</button>
+    </div>
+  </div>`;
+  document.body.appendChild(ov);
+}
+
+async function saveEditCapaAction(capaId,actionId){
+  const action=document.getElementById('eca-action').value.trim();
+  const responsible=document.getElementById('eca-resp').value.trim();
+  if(!action||!responsible){toast('Action and responsible person are required','d');return}
+  const status=document.getElementById('eca-status').value;
+  const actions=await DB.getCapaActions(capaId);
+  const existing=actions.find(x=>x.id===actionId);
+  const updates={
+    action,responsible,
+    designation:document.getElementById('eca-desig').value.trim(),
+    dueDate:document.getElementById('eca-due').value,
+    status,
+    completedAt:status==='COMPLETE'?(existing?.completedAt||new Date().toISOString().split('T')[0]):null,
+  };
+  await DB.updateCapaAction(actionId,updates);
+  document.getElementById('edit-action-ov').remove();
+  toast('✅ Action updated');
+  await refreshActionsTables(capaId);
 }
 
 async function startEffectiveness(capaId){
@@ -889,9 +1126,56 @@ async function startEffectiveness(capaId){
   await DB.updateCapa(capaId,{effectivenessDate:effDate,allActionsDone:true});
 }
 
+// ── 5 Why rows — fixed Why 1-5 plus any extra whys added on top ──
+function capaWhyRowHTML(n,val,isLast,extraIdx){
+  return`<div style="display:flex;gap:10px;align-items:flex-start;margin-bottom:10px">
+    <div style="flex-shrink:0;text-align:center">
+      <div style="width:32px;height:32px;border-radius:50%;background:#edf1fb;color:#0d2f6e;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px">${n}</div>
+      ${!isLast?`<div style="width:2px;height:16px;background:#d4daf0;margin:3px auto"></div>`:''}
+    </div>
+    <div style="flex:1">
+      <div style="font-size:11.5px;font-weight:600;color:#0d2f6e;margin-bottom:3px">Why ${n}</div>
+      <textarea class="fc why-input" data-why-n="${n}" ${extraIdx!==undefined?`data-extra-idx="${extraIdx}"`:''} rows="2" placeholder="${n===1?'Why did the problem occur?':'Why?'}">${esc(val)}</textarea>
+    </div>
+    ${extraIdx!==undefined?`<button class="btn btn-xs" style="color:#dc3545;background:#fee2e2;border:none;margin-top:20px" onclick="removeExtraWhy(${extraIdx})" title="Remove this why">✕</button>`:''}
+  </div>`;
+}
+function capaWhyRowsHTML(ca){
+  const extra=ca.extraWhys||[];
+  const total=5+extra.length;
+  let html='';
+  for(let n=1;n<=5;n++) html+=capaWhyRowHTML(n,ca['why'+n]||'',n===total);
+  extra.forEach((val,i)=>{ html+=capaWhyRowHTML(6+i,val||'',6+i===total,i); });
+  return html;
+}
+let _whyCapaId=null;
+async function addExtraWhy(capaId){
+  _whyCapaId=capaId;
+  const ca=await DB.getCapa(capaId);
+  const extraWhys=[...(ca.extraWhys||[]),''];
+  await DB.updateCapa(capaId,{extraWhys});
+  const wrap=document.getElementById('why-list');
+  if(wrap) wrap.innerHTML=capaWhyRowsHTML({...ca,extraWhys});
+}
+async function removeExtraWhy(idx){
+  const capaId=_whyCapaId; if(!capaId) return;
+  const ca=await DB.getCapa(capaId);
+  const extraWhys=(ca.extraWhys||[]).filter((_,i)=>i!==idx);
+  await DB.updateCapa(capaId,{extraWhys});
+  const wrap=document.getElementById('why-list');
+  if(wrap) wrap.innerHTML=capaWhyRowsHTML({...ca,extraWhys});
+}
 async function saveWhy(capaId){
+  _whyCapaId=capaId;
   const updates={};
-  for(let i=1;i<=5;i++) updates['why'+i]=document.getElementById(`why-${i}`)?.value||'';
+  const extraWhys=[];
+  document.querySelectorAll('.why-input').forEach(el=>{
+    const n=parseInt(el.dataset.whyN);
+    if(el.dataset.extraIdx!==undefined) extraWhys[parseInt(el.dataset.extraIdx)]=el.value;
+    else if(n<=5) updates['why'+n]=el.value;
+  });
+  updates.extraWhys=extraWhys;
+  updates.rootCause=document.getElementById('root-cause')?.value||'';
   await DB.updateCapa(capaId,updates);
   toast('Analysis saved','s');
 }
@@ -1031,7 +1315,7 @@ async function editCapa(id){
     <div class="fg"><label class="lbl">Why 2</label><input class="fc" id="ec-why2" value="${esc(ca.why2||'')}"></div>
     <div class="fg"><label class="lbl">Why 3</label><input class="fc" id="ec-why3" value="${esc(ca.why3||'')}"></div>
     <div class="fg"><label class="lbl">Why 4</label><input class="fc" id="ec-why4" value="${esc(ca.why4||'')}"></div>
-    <div class="fg"><label class="lbl">Why 5 (Root Cause)</label><input class="fc" id="ec-why5" value="${esc(ca.why5||'')}"></div>
+    <div class="fg"><label class="lbl">Why 5</label><input class="fc" id="ec-why5" value="${esc(ca.why5||'')}"></div>
 
     <div class="fg"><label class="lbl">Permanent Corrective Action Plan</label>
       <textarea class="fc" id="ec-correctiveAction" rows="3">${esc(ca.correctiveAction||'')}</textarea></div>
@@ -1127,12 +1411,27 @@ ${a.signoffs&&a.signoffs.length?`<div class="section"><div class="section-title"
   w.document.close();
 }
 
+function capaPrintActionsTable(list){
+  return`<table class="dt" style="margin-bottom:5px">
+    <thead><tr><th style="width:20px">#</th><th>Action</th><th style="width:90px">Responsible</th><th style="width:75px">Designation</th><th style="width:58px">Due Date</th><th style="width:52px">Status</th><th style="width:62px">Completed</th></tr></thead>
+    <tbody>${list.map((a,i)=>`<tr>
+      <td style="text-align:center">${i+1}</td><td>${esc(a.action)}</td><td>${esc(a.responsible)}</td>
+      <td style="font-size:7pt">${esc(a.designation||'')}</td><td>${fmtD(a.dueDate)}</td>
+      <td style="font-weight:bold;color:${a.status==='COMPLETE'?'#16a34a':'#e67c00'}">${a.status}</td>
+      <td>${a.completedAt?fmtD(a.completedAt):''}</td>
+    </tr>`).join('')||'<tr><td colspan="7" style="padding:5px;color:#999;text-align:center">No actions recorded</td></tr>'}
+    </tbody>
+  </table>`;
+}
+
 async function printFullReport(complaintId){
   if(!complaintId){toast('No complaint linked','w');return}
   const c=await DB.getComplaint(complaintId); if(!c){toast('Complaint not found','d');return}
   const alert=await DB.getAlertByComplaint(complaintId);
   const capa=alert?await DB.getCapaByAlert(alert.id):null;
   const actions=capa?await DB.getCapaActions(capa.id):[];
+  const correctiveActions=actions.filter(a=>(a.type||'CORRECTIVE')==='CORRECTIVE');
+  const preventiveActions=actions.filter(a=>a.type==='PREVENTIVE');
 
   const w=window.open('','_blank','width=900,height=700');
   w.document.write(`<!DOCTYPE html><html><head><title>Full Report \u2014 ${c.crNumber}</title>
@@ -1212,19 +1511,14 @@ ${capa?`
   </div>`:''}
   <div class="sub-lbl">5-Why Analysis</div>
   <div style="margin-bottom:5px">
-    ${[1,2,3,4,5].map(n=>`<div class="why-row"><div class="why-lbl">${n===5?'Root Cause':'Why '+n}</div><div class="why-val">${esc(capa['why'+n]||'')}</div></div>`).join('')}
+    ${[1,2,3,4,5].map(n=>`<div class="why-row"><div class="why-lbl">Why ${n}</div><div class="why-val">${esc(capa['why'+n]||'')}</div></div>`).join('')}
+    ${(capa.extraWhys||[]).map((wv,i)=>`<div class="why-row"><div class="why-lbl">Why ${6+i}</div><div class="why-val">${esc(wv||'')}</div></div>`).join('')}
+    <div class="why-row"><div class="why-lbl" style="background:#f6c8c8">Root Cause</div><div class="why-val" style="font-weight:bold">${esc(capa.rootCause||'')}</div></div>
   </div>
-  <div class="sub-lbl">Corrective & Preventive Actions</div>
-  <table class="dt" style="margin-bottom:5px">
-    <thead><tr><th style="width:20px">#</th><th>Action</th><th style="width:90px">Responsible</th><th style="width:75px">Designation</th><th style="width:58px">Due Date</th><th style="width:52px">Status</th><th style="width:62px">Completed</th></tr></thead>
-    <tbody>${actions.map((a,i)=>`<tr>
-      <td style="text-align:center">${i+1}</td><td>${esc(a.action)}</td><td>${esc(a.responsible)}</td>
-      <td style="font-size:7pt">${esc(a.designation||'')}</td><td>${fmtD(a.dueDate)}</td>
-      <td style="font-weight:bold;color:${a.status==='COMPLETE'?'#16a34a':'#e67c00'}">${a.status}</td>
-      <td>${a.completedAt?fmtD(a.completedAt):''}</td>
-    </tr>`).join('')||'<tr><td colspan="7" style="padding:5px;color:#999;text-align:center">No actions recorded</td></tr>'}
-    </tbody>
-  </table>
+  <div class="sub-lbl">Corrective Actions</div>
+  ${capaPrintActionsTable(correctiveActions)}
+  <div class="sub-lbl">Preventive Actions</div>
+  ${capaPrintActionsTable(preventiveActions)}
   ${capa.effectiveness?`<div class="sub-lbl">Effectiveness Verification</div>
   <div class="irow irow-3" style="margin-bottom:3px">
     <div class="ic"><div class="lbl">Review Date</div><div class="val">${fmtD(capa.effectivenessDate)}</div></div>
