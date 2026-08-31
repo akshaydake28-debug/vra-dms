@@ -39,6 +39,32 @@ function cfTotalPct(ratings){
 function cfPctBadge(avg){ return purPctBadge(avg==null?null:Math.round(avg)); }
 
 // ══════════════════════════════════════════════════════
+//  REVIEW PERIOD — feedback is requested quarterly; every request is
+//  tagged with the quarter it's asking the customer to reflect on
+//  (which may differ from the quarter it happens to be filled in).
+// ══════════════════════════════════════════════════════
+const CF_MONTH_NAMES=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function cfQuarterInfo(date){
+  const q=Math.floor(date.getMonth()/3)+1;
+  const year=date.getFullYear();
+  const startMonth=(q-1)*3;
+  return{
+    key:`${year}-Q${q}`,
+    label:`Q${q} ${year} (${CF_MONTH_NAMES[startMonth]}–${CF_MONTH_NAMES[startMonth+2]} ${year})`,
+  };
+}
+// A handful of quarters centered on today — two just-ended, the current one, and one ahead —
+// so staff can log a request for the quarter that just closed as easily as the current one.
+function cfQuarterOptions(){
+  const now=new Date();
+  const opts=[];
+  for(let offset=-2;offset<=1;offset++){
+    opts.push(cfQuarterInfo(new Date(now.getFullYear(),now.getMonth()+offset*3,1)));
+  }
+  return opts;
+}
+
+// ══════════════════════════════════════════════════════
 //  MAIN VIEW — requests, responses, per-customer scorecard
 // ══════════════════════════════════════════════════════
 let _cfPeriod={period:'all',from:'',to:''};
@@ -122,16 +148,17 @@ async function cfRenderFeedback(){
 
   <div class="card">
     <div class="ch"><h5>All Requests (${inPeriod.length})</h5></div>
-    <div class="tw" style="overflow-x:auto"><table style="min-width:1080px">
+    <div class="tw" style="overflow-x:auto"><table style="min-width:1160px">
       <thead><tr style="background:var(--navy);color:#fff">
-        <th>SR</th><th>Date Requested</th><th style="text-align:left">Customer</th><th style="text-align:left">Respondent</th><th>Requested By</th><th>Status</th><th>Total Score</th><th></th>
+        <th>SR</th><th>Date Requested</th><th style="text-align:left">Customer</th><th>Review Period</th><th style="text-align:left">Respondent</th><th>Requested By</th><th>Status</th><th>Total Score</th><th></th>
       </tr></thead>
       <tbody>${inPeriod.length===0
-        ?`<tr><td colspan="8" style="text-align:center;padding:30px;color:#9ca3af">No feedback requests yet. Click + Request Feedback to send the first link.</td></tr>`
+        ?`<tr><td colspan="9" style="text-align:center;padding:30px;color:#9ca3af">No feedback requests yet. Click + Request Feedback to send the first link.</td></tr>`
         :inPeriod.map((r,i)=>`<tr>
           <td style="text-align:center">${i+1}</td>
           <td>${fmtD(r.createdAt)}</td>
           <td><strong>${esc(r.customerName)}</strong></td>
+          <td>${esc(r.reviewPeriod||'—')}</td>
           <td>${r.status==='SUBMITTED'?`${esc(r.respondentName||'—')}<div class="muted" style="font-size:10.5px">${esc(r.respondentDesignation||'')}</div>`:'<span class="muted">—</span>'}</td>
           <td>${esc(r.createdBy||'—')}</td>
           <td>${cfStatusBadge(r.status)}</td>
@@ -139,6 +166,7 @@ async function cfRenderFeedback(){
           <td style="white-space:nowrap">
             ${r.status!=='SUBMITTED'?`<button class="btn btn-o btn-xs" onclick="cfCopyLink('${r.token}')">🔗 Copy Link</button>`:''}
             <button class="btn btn-o btn-xs" onclick="cfViewRecord(${r.id})">👁️ View</button>
+            ${r.status==='SUBMITTED'?`<button class="btn btn-o btn-xs" onclick="cfPrintResponse(${r.id})">🖨️</button>`:''}
             <button class="btn btn-r btn-xs" onclick="cfDeleteRecord(${r.id})">🗑️</button>
           </td>
         </tr>`).join('')}
@@ -161,6 +189,8 @@ async function cfOpenNewLinkModal(){
   const enquiries=await db.mktEnquiries.toArray().catch(()=>[]);
   const past=await db.custFeedback.toArray().catch(()=>[]);
   const names=[...new Set([...enquiries.map(e=>e.customerName),...past.map(p=>p.customerName)].filter(Boolean))].sort();
+  const quarters=cfQuarterOptions();
+  const currentKey=cfQuarterInfo(new Date()).key;
 
   const ov=document.createElement('div');ov.className='overlay';ov.id='cf-new-ov';
   ov.innerHTML=`<div class="modal" style="width:460px">
@@ -172,7 +202,13 @@ async function cfOpenNewLinkModal(){
       <input class="fc" id="cf-new-name" list="cf-cust-datalist" placeholder="e.g. M/s Menon Alkop Pvt Ltd" autocomplete="off">
       <datalist id="cf-cust-datalist">${names.map(n=>`<option value="${esc(n)}">`).join('')}</datalist>
     </div>
-    <div class="muted" style="font-size:11.5px;margin-top:6px">A unique link will be generated. You'll copy it and share it with the customer yourself (email, WhatsApp, etc.) — the app does not send it automatically.</div>
+    <div class="fg" style="margin-top:10px"><label class="lbl">Review Period *</label>
+      <select class="fc" id="cf-new-period">
+        ${quarters.map(q=>`<option value="${esc(q.label)}" ${q.key===currentKey?'selected':''}>${esc(q.label)}</option>`).join('')}
+      </select>
+      <div class="muted" style="font-size:11px;margin-top:4px">Which quarter is this feedback asking the customer to reflect on?</div>
+    </div>
+    <div class="muted" style="font-size:11.5px;margin-top:10px">A unique link will be generated. You'll copy it and share it with the customer yourself (email, WhatsApp, etc.) — the app does not send it automatically.</div>
     <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
       <button class="btn btn-o" onclick="document.getElementById('cf-new-ov').remove()">Cancel</button>
       <button class="btn btn-p" onclick="cfCreateLink()">Generate Link</button>
@@ -184,20 +220,21 @@ async function cfOpenNewLinkModal(){
 async function cfCreateLink(){
   const name=document.getElementById('cf-new-name').value.trim();
   if(!name){toast('Customer name required','d');return;}
+  const reviewPeriod=document.getElementById('cf-new-period').value;
   const token=crypto.randomUUID();
   const rec={
-    token, customerName:name,
+    token, customerName:name, reviewPeriod,
     createdBy:Auth.user?.name||Auth.user?.username||'',
     createdAt:new Date().toISOString(),
     status:'PENDING', ratings:null, comments:'', submittedAt:null,
   };
   await db.custFeedback.add(rec);
   document.getElementById('cf-new-ov').remove();
-  cfShowLinkModal(token,name);
+  cfShowLinkModal(token,name,reviewPeriod);
   cfRenderFeedback();
 }
 
-function cfShowLinkModal(token,name){
+function cfShowLinkModal(token,name,reviewPeriod){
   const url=`${location.origin}/feedback/${token}`;
   const ov=document.createElement('div');ov.className='overlay';ov.id='cf-link-ov';
   ov.innerHTML=`<div class="modal" style="width:480px">
@@ -205,6 +242,7 @@ function cfShowLinkModal(token,name){
       <h3>✅ Link Ready — ${esc(name)}</h3>
       <button class="btn btn-o btn-sm" onclick="document.getElementById('cf-link-ov').remove()">✕</button>
     </div>
+    <div class="muted" style="font-size:12px;margin-bottom:8px">Review Period: <strong>${esc(reviewPeriod)}</strong></div>
     <div class="fg"><label class="lbl">Share this link with the customer</label>
       <input class="fc mono" id="cf-link-url" value="${esc(url)}" readonly onclick="this.select()"></div>
     <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
@@ -234,8 +272,8 @@ async function cfViewRecord(id){
   const ov=document.createElement('div');ov.className='overlay';ov.id='cf-view-ov';
   const body=r.status==='SUBMITTED'?`
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
-      <div class="fg"><label class="lbl">Respondent</label><div style="font-weight:600">${esc(r.respondentName||'—')}</div></div>
-      <div class="fg"><label class="lbl">Designation</label><div style="font-weight:600">${esc(r.respondentDesignation||'—')}</div></div>
+      <div class="fg"><label class="lbl">Review Period</label><div style="font-weight:600">${esc(r.reviewPeriod||'—')}</div></div>
+      <div class="fg"><label class="lbl">Respondent</label><div style="font-weight:600">${esc(r.respondentName||'—')} <span class="muted" style="font-weight:400">— ${esc(r.respondentDesignation||'—')}</span></div></div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
       ${CF_RATING_DEFS.map(([k,l])=>`<div class="fg"><label class="lbl">${l}</label>${cfScoreBadge(r.ratings?.[k])}</div>`).join('')}
@@ -245,6 +283,7 @@ async function cfViewRecord(id){
       <div class="card" style="padding:10px;font-size:13px;white-space:pre-wrap">${esc(r.comments||'—')}</div></div>
     <div class="muted" style="font-size:11px;margin-top:8px">Submitted ${fmtD(r.submittedAt)}</div>
   `:`
+    <div class="muted" style="margin-bottom:6px">Review Period: <strong>${esc(r.reviewPeriod||'—')}</strong></div>
     <div class="muted" style="margin-bottom:10px">This request is still pending. Share the link below with the customer.</div>
     <input class="fc mono" value="${esc(location.origin+'/feedback/'+r.token)}" readonly onclick="this.select()">
   `;
@@ -255,7 +294,7 @@ async function cfViewRecord(id){
     </div>
     ${body}
     <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
-      ${r.status!=='SUBMITTED'?`<button class="btn btn-o" onclick="cfCopyLink('${r.token}')">📋 Copy Link</button>`:''}
+      ${r.status!=='SUBMITTED'?`<button class="btn btn-o" onclick="cfCopyLink('${r.token}')">📋 Copy Link</button>`:`<button class="btn btn-o" onclick="cfPrintResponse(${r.id})">🖨️ Print</button>`}
       <button class="btn btn-o" onclick="document.getElementById('cf-view-ov').remove()">Close</button>
     </div>
   </div>`;
@@ -271,6 +310,34 @@ async function cfDeleteRecord(id){
 }
 
 // ══════════════════════════════════════════════════════
+//  PRINT — a single customer's response
+// ══════════════════════════════════════════════════════
+async function cfPrintResponse(id){
+  const r=await db.custFeedback.get(id);
+  if(!r||r.status!=='SUBMITTED'){toast('This request has not been submitted yet','d');return;}
+  const today=new Date().toLocaleDateString('en-IN');
+  const w=window.open('','_blank');
+  w.document.write(`<!DOCTYPE html><html><head><title>Customer Feedback — ${esc(r.customerName)}</title><style>${purPrintCSS()}</style></head><body>
+  <div class="pg-hdr">
+    <div><div class="co-name">V R ALUCAST</div><div class="co-sub">High Pressure Die Casting · Ichalkaranji</div></div>
+    <div><div class="rpt-title">CUSTOMER SATISFACTION SURVEY</div><div class="rpt-sub">${esc(r.reviewPeriod||'—')}</div></div>
+    <div><div class="rpt-num">${CF_DOC_NO}</div><div style="font-size:7pt;text-align:right">${CF_DOC_REV} &nbsp;|&nbsp; ${today}</div></div>
+  </div>
+  <div class="frm-row" style="border-top:1px solid #000"><div class="fl">Customer</div><div class="fv">${esc(r.customerName)}</div></div>
+  <div class="frm-row"><div class="fl">Review Period</div><div class="fv">${esc(r.reviewPeriod||'—')}</div></div>
+  <div class="frm-row"><div class="fl">Respondent</div><div class="fv">${esc(r.respondentName||'—')} — ${esc(r.respondentDesignation||'—')}</div></div>
+  <div class="frm-row"><div class="fl">Date Submitted</div><div class="fv">${fmtD(r.submittedAt)}</div></div>
+  <div class="sec-bar">Ratings &nbsp;·&nbsp; Scale: 2 Unsatisfactory · 4 Needs Improvement · 6 Satisfactory · 8 Good · 10 Excellent</div>
+  ${CF_RATING_DEFS.map(([k,l],i)=>`<div class="frm-row" style="${i===0?'border-top:1px solid #000':''}"><div class="fl">${l}</div><div class="fv">${r.ratings?.[k]??'—'} / 10</div></div>`).join('')}
+  <div class="frm-row"><div class="fl">Total Score</div><div class="fv" style="font-weight:bold">${cfTotalPct(r.ratings)}%</div></div>
+  <div class="sec-bar">Comments</div>
+  <div class="frm-row" style="border-top:1px solid #000"><div class="fl">Remarks</div><div class="fv">${esc(r.comments||'—')}</div></div>
+  <div style="margin-top:8px;font-size:7.5pt;color:#555">${CF_DOC_NO} · ${CF_DOC_REV} · Effective ${CF_DOC_DATE} · V R Alucast</div>
+  <script>window.onload=()=>window.print()<\/script></body></html>`);
+  w.document.close();
+}
+
+// ══════════════════════════════════════════════════════
 //  PRINT — Customer Satisfaction Summary
 // ══════════════════════════════════════════════════════
 async function cfPrintSummary(){
@@ -280,13 +347,14 @@ async function cfPrintSummary(){
   const byCustomer={};
   inPeriod.forEach(r=>{
     const key=(r.customerName||'Unknown').trim()||'Unknown';
-    if(!byCustomer[key]) byCustomer[key]={name:key,requests:0,responses:0,ratings:{quality:[],delivery:[],communication:[],pricing:[],overall:[]},totalPcts:[]};
+    if(!byCustomer[key]) byCustomer[key]={name:key,requests:0,responses:0,ratings:{quality:[],delivery:[],communication:[],pricing:[],overall:[]},totalPcts:[],periods:new Set()};
     const c=byCustomer[key];
     c.requests++;
     if(r.status==='SUBMITTED'){
       c.responses++;
       CF_RATING_DEFS.forEach(([k])=>{ if(typeof r.ratings?.[k]==='number') c.ratings[k].push(r.ratings[k]); });
       c.totalPcts.push(cfTotalPct(r.ratings));
+      if(r.reviewPeriod) c.periods.add(r.reviewPeriod);
     }
   });
   const custRows=Object.values(byCustomer).sort((a,b)=>a.name.localeCompare(b.name));
@@ -295,6 +363,7 @@ async function cfPrintSummary(){
   const fmtPct=v=>v==null?'—':v+'%';
   const rows=custRows.map((c,i)=>`<tr>
     <td>${i+1}</td><td class="tl"><strong>${esc(c.name)}</strong></td>
+    <td class="tl">${esc([...c.periods].join(', ')||'—')}</td>
     <td>${c.requests}</td><td>${c.responses}</td>
     ${CF_RATING_DEFS.map(([k])=>`<td style="font-weight:bold">${fmt(cfAvg(c.ratings[k]))}</td>`).join('')}
     <td style="font-weight:bold">${fmtPct(cfAvg(c.totalPcts)!=null?Math.round(cfAvg(c.totalPcts)):null)}</td>
@@ -309,11 +378,11 @@ async function cfPrintSummary(){
   </div>
   <table class="dt">
     <thead><tr>
-      <th>SR</th><th class="tl">Customer</th><th>Requests</th><th>Responses</th>
+      <th>SR</th><th class="tl">Customer</th><th class="tl">Review Period(s)</th><th>Requests</th><th>Responses</th>
       ${CF_RATING_DEFS.map(([,l])=>`<th>${l}</th>`).join('')}
       <th>Total Score</th>
     </tr></thead>
-    <tbody>${rows||'<tr><td colspan="10" style="text-align:center">No feedback in this period</td></tr>'}</tbody>
+    <tbody>${rows||'<tr><td colspan="11" style="text-align:center">No feedback in this period</td></tr>'}</tbody>
   </table>
   <div style="margin-top:6px;font-size:7.5pt;color:#555">Rating scale: 2 Unsatisfactory · 4 Needs Improvement · 6 Satisfactory · 8 Good · 10 Excellent &nbsp;|&nbsp; Total Score = average of all 5 categories, as a % &nbsp;|&nbsp; ${CF_DOC_NO} · ${CF_DOC_REV} · Effective ${CF_DOC_DATE} · V R Alucast</div>
   <script>window.onload=()=>window.print()<\/script></body></html>`);
