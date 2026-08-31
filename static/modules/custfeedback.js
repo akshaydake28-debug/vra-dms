@@ -12,10 +12,11 @@ const CF_RATING_DEFS=[
   ['overall','Overall Satisfaction'],
 ];
 
+// Scale: 10 Excellent · 8 Good · 6 Satisfactory · 4 Needs Improvement · 2 Unsatisfactory
 function cfScoreBadge(avg){
   if(avg==null) return'<span class="muted">—</span>';
-  const cls=avg>=4?'ba':avg>=3?'bp':'br';
-  return`<span class="badge ${cls}">${avg.toFixed(1)} / 5</span>`;
+  const cls=avg>=7?'ba':avg>=5?'bp':'br';
+  return`<span class="badge ${cls}">${avg.toFixed(1)} / 10</span>`;
 }
 function cfStatusBadge(status){
   return status==='SUBMITTED'?'<span class="badge ba">✓ Submitted</span>':'<span class="badge bp">⏳ Pending</span>';
@@ -282,7 +283,7 @@ async function cfPrintSummary(){
     </tr></thead>
     <tbody>${rows||'<tr><td colspan="9" style="text-align:center">No feedback in this period</td></tr>'}</tbody>
   </table>
-  <div style="margin-top:6px;font-size:7.5pt;color:#555">Rating scale: 1 (poor) – 5 (excellent) · V R Alucast</div>
+  <div style="margin-top:6px;font-size:7.5pt;color:#555">Rating scale: 2 Unsatisfactory · 4 Needs Improvement · 6 Satisfactory · 8 Good · 10 Excellent · V R Alucast</div>
   <script>window.onload=()=>window.print()<\/script></body></html>`);
   w.document.close();
 }
