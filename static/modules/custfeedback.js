@@ -101,6 +101,7 @@ async function cfRenderFeedback(){
     <h2>💬 Customer Feedback</h2>
     <div style="display:flex;gap:8px">
       <button class="btn btn-p" onclick="cfOpenNewLinkModal()">+ Request Feedback</button>
+      <button class="btn btn-p" onclick="cfOpenBulkEmailModal()">✉️ Bulk Email Links</button>
       <button class="btn btn-o" onclick="cfPrintSummary()">🖨️ Print</button>
     </div>
   </div>
@@ -165,6 +166,7 @@ async function cfRenderFeedback(){
           <td style="text-align:center">${r.status==='SUBMITTED'?purPctBadge(cfTotalPct(r.ratings)):'<span class="muted">—</span>'}</td>
           <td style="white-space:nowrap">
             ${r.status!=='SUBMITTED'?`<button class="btn btn-o btn-xs" onclick="cfCopyLink('${r.token}')">🔗 Copy Link</button>`:''}
+            ${r.status!=='SUBMITTED'?cfMailtoButton(r.customerEmail,r.customerName,r.reviewPeriod,location.origin+'/feedback/'+r.token):''}
             <button class="btn btn-o btn-xs" onclick="cfViewRecord(${r.id})">👁️ View</button>
             ${r.status==='SUBMITTED'?`<button class="btn btn-o btn-xs" onclick="cfPrintResponse(${r.id})">🖨️</button>`:''}
             <button class="btn btn-r btn-xs" onclick="cfDeleteRecord(${r.id})">🗑️</button>
@@ -185,10 +187,14 @@ function cfPeriodChange(){
 // ══════════════════════════════════════════════════════
 //  GENERATE A NEW LINK
 // ══════════════════════════════════════════════════════
+let _cfKnownCustomersMap={};
 async function cfOpenNewLinkModal(){
   const enquiries=await db.mktEnquiries.toArray().catch(()=>[]);
   const past=await db.custFeedback.toArray().catch(()=>[]);
   const names=[...new Set([...enquiries.map(e=>e.customerName),...past.map(p=>p.customerName)].filter(Boolean))].sort();
+  const known=await cfKnownCustomers();
+  _cfKnownCustomersMap={};
+  known.forEach(c=>{ _cfKnownCustomersMap[c.name]=c.email; });
   const quarters=cfQuarterOptions();
   const currentKey=cfQuarterInfo(new Date()).key;
 
@@ -199,8 +205,11 @@ async function cfOpenNewLinkModal(){
       <button class="btn btn-o btn-sm" onclick="document.getElementById('cf-new-ov').remove()">✕</button>
     </div>
     <div class="fg"><label class="lbl">Customer Name *</label>
-      <input class="fc" id="cf-new-name" list="cf-cust-datalist" placeholder="e.g. M/s Menon Alkop Pvt Ltd" autocomplete="off">
+      <input class="fc" id="cf-new-name" list="cf-cust-datalist" placeholder="e.g. M/s Menon Alkop Pvt Ltd" autocomplete="off" oninput="cfAutoFillEmail()">
       <datalist id="cf-cust-datalist">${names.map(n=>`<option value="${esc(n)}">`).join('')}</datalist>
+    </div>
+    <div class="fg" style="margin-top:10px"><label class="lbl">Customer Email <span class="muted" style="font-weight:400">(optional — enables the ✉️ Email button)</span></label>
+      <input class="fc" type="email" id="cf-new-email" placeholder="customer email">
     </div>
     <div class="fg" style="margin-top:10px"><label class="lbl">Review Period *</label>
       <select class="fc" id="cf-new-period">
@@ -208,7 +217,7 @@ async function cfOpenNewLinkModal(){
       </select>
       <div class="muted" style="font-size:11px;margin-top:4px">Which quarter is this feedback asking the customer to reflect on?</div>
     </div>
-    <div class="muted" style="font-size:11.5px;margin-top:10px">A unique link will be generated. You'll copy it and share it with the customer yourself (email, WhatsApp, etc.) — the app does not send it automatically.</div>
+    <div class="muted" style="font-size:11.5px;margin-top:10px">A unique link will be generated. You can copy it, or use the ✉️ Email button to open it pre-filled in your mail app.</div>
     <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
       <button class="btn btn-o" onclick="document.getElementById('cf-new-ov').remove()">Cancel</button>
       <button class="btn btn-p" onclick="cfCreateLink()">Generate Link</button>
@@ -217,24 +226,32 @@ async function cfOpenNewLinkModal(){
   document.body.appendChild(ov);
 }
 
+function cfAutoFillEmail(){
+  const nameEl=document.getElementById('cf-new-name');
+  const emailEl=document.getElementById('cf-new-email');
+  const known=_cfKnownCustomersMap[nameEl.value.trim()];
+  if(known&&!emailEl.value) emailEl.value=known;
+}
+
 async function cfCreateLink(){
   const name=document.getElementById('cf-new-name').value.trim();
   if(!name){toast('Customer name required','d');return;}
+  const email=document.getElementById('cf-new-email').value.trim();
   const reviewPeriod=document.getElementById('cf-new-period').value;
   const token=crypto.randomUUID();
   const rec={
-    token, customerName:name, reviewPeriod,
+    token, customerName:name, customerEmail:email, reviewPeriod,
     createdBy:Auth.user?.name||Auth.user?.username||'',
     createdAt:new Date().toISOString(),
     status:'PENDING', ratings:null, comments:'', submittedAt:null,
   };
   await db.custFeedback.add(rec);
   document.getElementById('cf-new-ov').remove();
-  cfShowLinkModal(token,name,reviewPeriod);
+  cfShowLinkModal(token,name,reviewPeriod,email);
   cfRenderFeedback();
 }
 
-function cfShowLinkModal(token,name,reviewPeriod){
+function cfShowLinkModal(token,name,reviewPeriod,email){
   const url=`${location.origin}/feedback/${token}`;
   const ov=document.createElement('div');ov.className='overlay';ov.id='cf-link-ov';
   ov.innerHTML=`<div class="modal" style="width:480px">
@@ -247,7 +264,8 @@ function cfShowLinkModal(token,name,reviewPeriod){
       <input class="fc mono" id="cf-link-url" value="${esc(url)}" readonly onclick="this.select()"></div>
     <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
       <button class="btn btn-o" onclick="document.getElementById('cf-link-ov').remove()">Close</button>
-      <button class="btn btn-p" onclick="cfCopyLink('${token}')">📋 Copy Link</button>
+      <button class="btn btn-o" onclick="cfCopyLink('${token}')">📋 Copy Link</button>
+      ${cfMailtoButton(email,name,reviewPeriod,url,'✉️ Email','btn-p')}
     </div>
   </div>`;
   document.body.appendChild(ov);
@@ -261,6 +279,192 @@ async function cfCopyLink(token){
   }catch(e){
     toast('Could not copy automatically — link: '+url,'d');
   }
+}
+
+// ══════════════════════════════════════════════════════
+//  EMAIL — mailto: links only. Nothing is ever sent from the server;
+//  clicking "✉️ Email" hands the browser a pre-filled compose window
+//  (opens in whatever's registered as your mail handler — e.g. Zoho
+//  Mail, if you've set it as your default). No credentials involved.
+//  Each customer still gets their own unique link either way.
+// ══════════════════════════════════════════════════════
+const CF_EMAIL_RE=/^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+const CF_DEFAULT_SUBJECT='Customer Feedback Request — {{period}}';
+const CF_DEFAULT_MESSAGE=`Hello {{name}},
+
+Here is the link for our customer feedback survey for the period {{period}}. It only takes a couple of minutes — please fill it up at your earliest convenience:
+
+{{link}}
+
+Thank you for your continued business.
+
+Regards,
+V R Alucast`;
+
+function cfFillTemplate(t,vars){
+  return String(t||'')
+    .replace(/\{\{name\}\}/g,vars.name||'')
+    .replace(/\{\{period\}\}/g,vars.period||'')
+    .replace(/\{\{link\}\}/g,vars.link||'');
+}
+function cfMailtoUrl(email,subject,body){
+  const q=new URLSearchParams({subject,body}).toString().replace(/\+/g,'%20');
+  return `mailto:${encodeURIComponent(email)}?${q}`;
+}
+// A subject/body pre-filled mailto link, styled as a button, for one recipient.
+function cfMailtoButton(email,name,period,link,label,cls){
+  if(!email) return'';
+  const subject=cfFillTemplate(CF_DEFAULT_SUBJECT,{name,period,link});
+  const body=cfFillTemplate(CF_DEFAULT_MESSAGE,{name,period,link});
+  return`<a class="btn ${cls||'btn-o btn-xs'}" href="${esc(cfMailtoUrl(email,subject,body))}">${label||'✉️ Email'}</a>`;
+}
+
+// Customers known from the Enquiry Register, deduped by name with the
+// latest non-empty email winning (customerEmail was added there for
+// exactly this purpose).
+async function cfKnownCustomers(){
+  const enquiries=(await db.mktEnquiries.toArray().catch(()=>[])).sort((a,b)=>(a.createdAt||'')>(b.createdAt||'')?1:-1);
+  const map={};
+  enquiries.forEach(e=>{
+    const name=(e.customerName||'').trim();
+    if(!name) return;
+    if(!map[name]) map[name]={name,email:''};
+    if(e.customerEmail&&e.customerEmail.trim()) map[name].email=e.customerEmail.trim();
+  });
+  return Object.values(map).sort((a,b)=>a.name.localeCompare(b.name));
+}
+
+async function cfOpenBulkEmailModal(){
+  const customers=await cfKnownCustomers();
+  const quarters=cfQuarterOptions();
+  const currentKey=cfQuarterInfo(new Date()).key;
+
+  const ov=document.createElement('div');ov.className='overlay';ov.id='cf-bulk-ov';
+  ov.innerHTML=`<div class="modal" style="width:640px;max-height:92vh;overflow-y:auto">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <h3>✉️ Bulk Email Feedback Links</h3>
+      <button class="btn btn-o btn-sm" onclick="document.getElementById('cf-bulk-ov').remove()">✕</button>
+    </div>
+
+    <div class="fg"><label class="lbl">Review Period *</label>
+      <select class="fc" id="cf-bulk-period">
+        ${quarters.map(q=>`<option value="${esc(q.label)}" ${q.key===currentKey?'selected':''}>${esc(q.label)}</option>`).join('')}
+      </select>
+    </div>
+
+    <div class="fg" style="margin-top:10px">
+      <label class="lbl">Select Customers *
+        <span class="muted" style="font-weight:400">(email comes from the Enquiry Register — edit here if it's wrong or missing)</span>
+      </label>
+      <div id="cf-bulk-custlist" style="max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:7px;padding:8px">
+        ${customers.length===0?'<div class="muted" style="padding:8px">No customers found in the Enquiry Register yet. Add one below.</div>':customers.map((c,i)=>`
+        <div style="display:flex;gap:8px;align-items:center;padding:5px 2px;border-bottom:1px solid var(--border)">
+          <input type="checkbox" class="cf-bulk-check" id="cf-bulk-chk-${i}" ${c.email?'checked':''}>
+          <label for="cf-bulk-chk-${i}" style="flex:0 0 220px;font-weight:600;font-size:12.5px;cursor:pointer">${esc(c.name)}</label>
+          <input class="fc cf-bulk-email" id="cf-bulk-email-${i}" data-name="${esc(c.name)}" type="email" value="${esc(c.email)}" placeholder="customer email" style="flex:1">
+        </div>`).join('')}
+      </div>
+      <div style="margin-top:6px;display:flex;gap:8px;align-items:center">
+        <input class="fc" id="cf-bulk-add-name" placeholder="Add a customer not listed — name" style="flex:1">
+        <input class="fc" id="cf-bulk-add-email" type="email" placeholder="email" style="flex:1">
+        <button class="btn btn-o btn-sm" onclick="cfAddBulkCustomerRow()">+ Add</button>
+      </div>
+    </div>
+
+    <div class="fg" style="margin-top:10px"><label class="lbl">Subject *</label>
+      <input class="fc" id="cf-bulk-subject" value="${esc(CF_DEFAULT_SUBJECT)}"></div>
+    <div class="fg" style="margin-top:10px"><label class="lbl">Message *
+        <span class="muted" style="font-weight:400">— {{name}}, {{period}} and {{link}} are filled in per customer</span></label>
+      <textarea class="fc" id="cf-bulk-message" rows="9">${esc(CF_DEFAULT_MESSAGE)}</textarea>
+    </div>
+
+    <div id="cf-bulk-result" style="margin-top:10px"></div>
+
+    <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-o" onclick="document.getElementById('cf-bulk-ov').remove()">Cancel</button>
+      <button class="btn btn-p" id="cf-bulk-send-btn" onclick="cfPrepareBulkEmails()">✉️ Create Links</button>
+    </div>
+  </div>`;
+  document.body.appendChild(ov);
+}
+
+function cfAddBulkCustomerRow(){
+  const name=document.getElementById('cf-bulk-add-name').value.trim();
+  const email=document.getElementById('cf-bulk-add-email').value.trim();
+  if(!name){toast('Enter a customer name first','d');return;}
+  const list=document.getElementById('cf-bulk-custlist');
+  const i='x'+Date.now();
+  const row=document.createElement('div');
+  row.style='display:flex;gap:8px;align-items:center;padding:5px 2px;border-bottom:1px solid var(--border)';
+  row.innerHTML=`
+    <input type="checkbox" class="cf-bulk-check" id="cf-bulk-chk-${i}" checked>
+    <label for="cf-bulk-chk-${i}" style="flex:0 0 220px;font-weight:600;font-size:12.5px;cursor:pointer">${esc(name)}</label>
+    <input class="fc cf-bulk-email" id="cf-bulk-email-${i}" data-name="${esc(name)}" type="email" value="${esc(email)}" placeholder="customer email" style="flex:1">`;
+  list.appendChild(row);
+  document.getElementById('cf-bulk-add-name').value='';
+  document.getElementById('cf-bulk-add-email').value='';
+}
+
+// Creates one feedback request (own token) per selected customer, then shows
+// a per-customer "✉️ Email" button — each click opens ONE compose window in
+// your mail app, pre-filled for that one customer. Browsers won't reliably
+// let a single click fire off many compose windows at once, so this is the
+// honest bulk workflow: prepare all the links together, then one click per
+// customer to actually hand it to your mail client.
+async function cfPrepareBulkEmails(){
+  const reviewPeriod=document.getElementById('cf-bulk-period').value;
+  const subject=document.getElementById('cf-bulk-subject').value.trim();
+  const message=document.getElementById('cf-bulk-message').value;
+  const resultEl=document.getElementById('cf-bulk-result');
+  resultEl.innerHTML='';
+
+  if(!subject||!message.trim()){toast('Subject and message are required','d');return;}
+
+  const checks=[...document.querySelectorAll('.cf-bulk-check')].filter(c=>c.checked);
+  if(checks.length===0){toast('Select at least one customer','d');return;}
+
+  const selected=[];
+  const skipped=[];
+  checks.forEach(chk=>{
+    const suffix=chk.id.replace('cf-bulk-chk-','');
+    const emailInput=document.getElementById('cf-bulk-email-'+suffix);
+    const name=emailInput.dataset.name;
+    const email=emailInput.value.trim();
+    if(email&&CF_EMAIL_RE.test(email)) selected.push({name,email});
+    else skipped.push(name);
+  });
+  if(selected.length===0){toast('None of the selected customers have a valid email address','d');return;}
+
+  const btn=document.getElementById('cf-bulk-send-btn');
+  btn.disabled=true;btn.textContent='Creating…';
+
+  const prepared=[];
+  for(const s of selected){
+    const token=crypto.randomUUID();
+    const rec={
+      token, customerName:s.name, customerEmail:s.email, reviewPeriod,
+      createdBy:Auth.user?.name||Auth.user?.username||'',
+      createdAt:new Date().toISOString(),
+      status:'PENDING', ratings:null, comments:'', submittedAt:null,
+    };
+    await db.custFeedback.add(rec);
+    prepared.push({name:s.name, email:s.email, link:`${location.origin}/feedback/${token}`});
+  }
+
+  resultEl.innerHTML=`
+    <div class="alert al-s">✅ ${prepared.length} link(s) ready. Click each to open a pre-filled email in your mail app.
+      ${skipped.length?`<br>⚠️ Skipped (no valid email): ${skipped.map(esc).join(', ')}`:''}
+    </div>
+    <div style="max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:7px;margin-top:8px">
+      ${prepared.map(p=>`
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid var(--border)">
+        <div><strong style="font-size:12.5px">${esc(p.name)}</strong><div class="muted" style="font-size:11px">${esc(p.email)}</div></div>
+        ${cfMailtoButton(p.email,p.name,reviewPeriod,p.link)}
+      </div>`).join('')}
+    </div>`;
+  btn.textContent='Done';
+  toast(`✅ ${prepared.length} feedback link(s) created`);
+  cfRenderFeedback();
 }
 
 // ══════════════════════════════════════════════════════
@@ -284,7 +488,7 @@ async function cfViewRecord(id){
     <div class="muted" style="font-size:11px;margin-top:8px">Submitted ${fmtD(r.submittedAt)}</div>
   `:`
     <div class="muted" style="margin-bottom:6px">Review Period: <strong>${esc(r.reviewPeriod||'—')}</strong></div>
-    <div class="muted" style="margin-bottom:10px">This request is still pending. Share the link below with the customer.</div>
+    <div class="muted" style="margin-bottom:10px">This request is still pending. Share the link below with the customer${r.customerEmail?'':' — add their email via Delete + re-create to enable the ✉️ Email button'}.</div>
     <input class="fc mono" value="${esc(location.origin+'/feedback/'+r.token)}" readonly onclick="this.select()">
   `;
   ov.innerHTML=`<div class="modal" style="width:480px">
@@ -294,7 +498,7 @@ async function cfViewRecord(id){
     </div>
     ${body}
     <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
-      ${r.status!=='SUBMITTED'?`<button class="btn btn-o" onclick="cfCopyLink('${r.token}')">📋 Copy Link</button>`:`<button class="btn btn-o" onclick="cfPrintResponse(${r.id})">🖨️ Print</button>`}
+      ${r.status!=='SUBMITTED'?`<button class="btn btn-o" onclick="cfCopyLink('${r.token}')">📋 Copy Link</button>${cfMailtoButton(r.customerEmail,r.customerName,r.reviewPeriod,location.origin+'/feedback/'+r.token,'✉️ Email','btn-p')}`:`<button class="btn btn-o" onclick="cfPrintResponse(${r.id})">🖨️ Print</button>`}
       <button class="btn btn-o" onclick="document.getElementById('cf-view-ov').remove()">Close</button>
     </div>
   </div>`;
