@@ -5,7 +5,11 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime, timedelta
 import os
 import json
+import re
 import secrets
+import smtplib
+from email.mime.text import MIMEText
+from email.utils import formataddr
 
 app = Flask(__name__, static_folder='static')
 CORS(app)
@@ -120,6 +124,15 @@ PUBLIC_PATHS = {'/api/auth/login'}
 # session. Everything under this prefix must independently validate its
 # own token and never expose data beyond that one record.
 PUBLIC_PREFIXES = ('/api/public/feedback/',)
+# Shared mailbox used to send Customer Feedback survey links. Unset until
+# SMTP_USER/SMTP_PASSWORD are added in the hosting environment (Railway) —
+# see the /api/customer-feedback/send route for the resulting error.
+SMTP_HOST = os.environ.get('SMTP_HOST', 'smtp.zoho.com')
+SMTP_PORT = int(os.environ.get('SMTP_PORT', '465'))
+SMTP_USER = os.environ.get('SMTP_USER')
+SMTP_PASSWORD = os.environ.get('SMTP_PASSWORD')
+SMTP_FROM_NAME = os.environ.get('SMTP_FROM_NAME', 'V R Alucast')
+EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
 BACKUP_API_TOKEN = os.environ.get('BACKUP_API_TOKEN')
 HASH_PREFIXES = ('pbkdf2:', 'scrypt:', 'argon2:')
 # APPROVER is this app's admin-equivalent role — it's what the frontend
@@ -595,6 +608,68 @@ def public_feedback_submit(token):
     r.updated_at = datetime.utcnow()
     db.session.commit()
     return jsonify({'ok': True})
+
+# Bulk-sends individual feedback-request emails from the shared VRA mailbox —
+# session-protected (staff only), unlike the two public routes above. Each
+# recipient gets their own email (never a single BCC blast) so each one's
+# link stays theirs alone; {{name}}/{{period}}/{{link}} are filled in per
+# recipient from the payload the frontend already assembled.
+@app.route('/api/customer-feedback/send', methods=['POST'])
+def send_customer_feedback_emails():
+    if not SMTP_USER or not SMTP_PASSWORD:
+        return jsonify({'error': 'Email sending is not configured yet. Set SMTP_USER and SMTP_PASSWORD (and optionally SMTP_HOST/SMTP_PORT/SMTP_FROM_NAME) in Railway.'}), 503
+
+    body = request.json or {}
+    subject_template = str(body.get('subject', '')).strip()
+    message_template = str(body.get('message', ''))
+    recipients = body.get('recipients') or []
+    if not subject_template or not message_template.strip():
+        return jsonify({'error': 'Subject and message are required'}), 400
+    if not isinstance(recipients, list) or not recipients:
+        return jsonify({'error': 'No recipients provided'}), 400
+    if len(recipients) > 200:
+        return jsonify({'error': 'Too many recipients in one batch (max 200) — split into smaller batches'}), 400
+
+    try:
+        if SMTP_PORT == 465:
+            server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=20)
+        else:
+            server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20)
+            server.starttls()
+        server.login(SMTP_USER, SMTP_PASSWORD)
+    except Exception as e:
+        return jsonify({'error': f'Could not connect/authenticate to the mail server: {e}'}), 502
+
+    results = []
+    try:
+        for r in recipients:
+            email_addr = str(r.get('email', '')).strip()
+            name = str(r.get('name', ''))
+            period = str(r.get('period', ''))
+            link = str(r.get('link', ''))
+            if not email_addr or not EMAIL_RE.match(email_addr):
+                results.append({'email': email_addr, 'ok': False, 'error': 'Invalid or missing email address'})
+                continue
+
+            def fill(t):
+                return t.replace('{{name}}', name).replace('{{period}}', period).replace('{{link}}', link)
+
+            msg = MIMEText(fill(message_template), 'plain', 'utf-8')
+            msg['Subject'] = fill(subject_template)
+            msg['From'] = formataddr((SMTP_FROM_NAME, SMTP_USER))
+            msg['To'] = email_addr
+            try:
+                server.sendmail(SMTP_USER, [email_addr], msg.as_string())
+                results.append({'email': email_addr, 'ok': True})
+            except Exception as e:
+                results.append({'email': email_addr, 'ok': False, 'error': str(e)})
+    finally:
+        try:
+            server.quit()
+        except Exception:
+            pass
+
+    return jsonify({'results': results})
 
 @app.route('/api/<module>', methods=['GET'])
 def list_generic(module):

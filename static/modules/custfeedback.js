@@ -101,6 +101,7 @@ async function cfRenderFeedback(){
     <h2>💬 Customer Feedback</h2>
     <div style="display:flex;gap:8px">
       <button class="btn btn-p" onclick="cfOpenNewLinkModal()">+ Request Feedback</button>
+      <button class="btn btn-p" onclick="cfOpenBulkEmailModal()">📧 Bulk Email Request</button>
       <button class="btn btn-o" onclick="cfPrintSummary()">🖨️ Print</button>
     </div>
   </div>
@@ -261,6 +262,183 @@ async function cfCopyLink(token){
   }catch(e){
     toast('Could not copy automatically — link: '+url,'d');
   }
+}
+
+// ══════════════════════════════════════════════════════
+//  BULK EMAIL REQUEST — one link + one individual email per
+//  selected customer (never a single BCC blast — see cfSendBulkEmail).
+// ══════════════════════════════════════════════════════
+const CF_EMAIL_RE=/^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+const CF_DEFAULT_SUBJECT='Customer Feedback Request — {{period}}';
+const CF_DEFAULT_MESSAGE=`Hello {{name}},
+
+Here is the link for our customer feedback survey for the period {{period}}. It only takes a couple of minutes — please fill it up at your earliest convenience:
+
+{{link}}
+
+Thank you for your continued business.
+
+Regards,
+V R Alucast`;
+
+// Customers known from the Enquiry Register, deduped by name with the
+// latest non-empty email winning (customerEmail was added there for
+// exactly this purpose).
+async function cfKnownCustomers(){
+  const enquiries=(await db.mktEnquiries.toArray().catch(()=>[])).sort((a,b)=>(a.createdAt||'')>(b.createdAt||'')?1:-1);
+  const map={};
+  enquiries.forEach(e=>{
+    const name=(e.customerName||'').trim();
+    if(!name) return;
+    if(!map[name]) map[name]={name,email:''};
+    if(e.customerEmail&&e.customerEmail.trim()) map[name].email=e.customerEmail.trim();
+  });
+  return Object.values(map).sort((a,b)=>a.name.localeCompare(b.name));
+}
+
+async function cfOpenBulkEmailModal(){
+  const customers=await cfKnownCustomers();
+  const quarters=cfQuarterOptions();
+  const currentKey=cfQuarterInfo(new Date()).key;
+
+  const ov=document.createElement('div');ov.className='overlay';ov.id='cf-bulk-ov';
+  ov.innerHTML=`<div class="modal" style="width:640px;max-height:92vh;overflow-y:auto">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <h3>📧 Bulk Email Feedback Request</h3>
+      <button class="btn btn-o btn-sm" onclick="document.getElementById('cf-bulk-ov').remove()">✕</button>
+    </div>
+
+    <div class="fg"><label class="lbl">Review Period *</label>
+      <select class="fc" id="cf-bulk-period">
+        ${quarters.map(q=>`<option value="${esc(q.label)}" ${q.key===currentKey?'selected':''}>${esc(q.label)}</option>`).join('')}
+      </select>
+    </div>
+
+    <div class="fg" style="margin-top:10px">
+      <label class="lbl">Select Customers *
+        <span class="muted" style="font-weight:400">(email comes from the Enquiry Register — edit here if it's wrong or missing)</span>
+      </label>
+      <div id="cf-bulk-custlist" style="max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:7px;padding:8px">
+        ${customers.length===0?'<div class="muted" style="padding:8px">No customers found in the Enquiry Register yet. Add one below.</div>':customers.map((c,i)=>`
+        <div style="display:flex;gap:8px;align-items:center;padding:5px 2px;border-bottom:1px solid var(--border)">
+          <input type="checkbox" class="cf-bulk-check" id="cf-bulk-chk-${i}" ${c.email?'checked':''}>
+          <label for="cf-bulk-chk-${i}" style="flex:0 0 220px;font-weight:600;font-size:12.5px;cursor:pointer">${esc(c.name)}</label>
+          <input class="fc cf-bulk-email" id="cf-bulk-email-${i}" data-name="${esc(c.name)}" type="email" value="${esc(c.email)}" placeholder="customer email" style="flex:1">
+        </div>`).join('')}
+      </div>
+      <div style="margin-top:6px;display:flex;gap:8px;align-items:center">
+        <input class="fc" id="cf-bulk-add-name" placeholder="Add a customer not listed — name" style="flex:1">
+        <input class="fc" id="cf-bulk-add-email" type="email" placeholder="email" style="flex:1">
+        <button class="btn btn-o btn-sm" onclick="cfAddBulkCustomerRow()">+ Add</button>
+      </div>
+    </div>
+
+    <div class="fg" style="margin-top:10px"><label class="lbl">Subject *</label>
+      <input class="fc" id="cf-bulk-subject" value="${esc(CF_DEFAULT_SUBJECT)}"></div>
+    <div class="fg" style="margin-top:10px"><label class="lbl">Message *
+        <span class="muted" style="font-weight:400">— {{name}}, {{period}} and {{link}} are filled in per customer</span></label>
+      <textarea class="fc" id="cf-bulk-message" rows="9">${esc(CF_DEFAULT_MESSAGE)}</textarea>
+    </div>
+
+    <div id="cf-bulk-result" style="margin-top:10px"></div>
+
+    <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-o" onclick="document.getElementById('cf-bulk-ov').remove()">Cancel</button>
+      <button class="btn btn-p" id="cf-bulk-send-btn" onclick="cfSendBulkEmail()">📧 Send</button>
+    </div>
+  </div>`;
+  document.body.appendChild(ov);
+}
+
+function cfAddBulkCustomerRow(){
+  const name=document.getElementById('cf-bulk-add-name').value.trim();
+  const email=document.getElementById('cf-bulk-add-email').value.trim();
+  if(!name){toast('Enter a customer name first','d');return;}
+  const list=document.getElementById('cf-bulk-custlist');
+  const i='x'+Date.now();
+  const row=document.createElement('div');
+  row.style='display:flex;gap:8px;align-items:center;padding:5px 2px;border-bottom:1px solid var(--border)';
+  row.innerHTML=`
+    <input type="checkbox" class="cf-bulk-check" id="cf-bulk-chk-${i}" checked>
+    <label for="cf-bulk-chk-${i}" style="flex:0 0 220px;font-weight:600;font-size:12.5px;cursor:pointer">${esc(name)}</label>
+    <input class="fc cf-bulk-email" id="cf-bulk-email-${i}" data-name="${esc(name)}" type="email" value="${esc(email)}" placeholder="customer email" style="flex:1">`;
+  list.appendChild(row);
+  document.getElementById('cf-bulk-add-name').value='';
+  document.getElementById('cf-bulk-add-email').value='';
+}
+
+async function cfSendBulkEmail(){
+  const reviewPeriod=document.getElementById('cf-bulk-period').value;
+  const subject=document.getElementById('cf-bulk-subject').value.trim();
+  const message=document.getElementById('cf-bulk-message').value;
+  const resultEl=document.getElementById('cf-bulk-result');
+  resultEl.innerHTML='';
+
+  if(!subject||!message.trim()){toast('Subject and message are required','d');return;}
+
+  const checks=[...document.querySelectorAll('.cf-bulk-check')].filter(c=>c.checked);
+  if(checks.length===0){toast('Select at least one customer','d');return;}
+
+  const selected=[];
+  const skipped=[];
+  checks.forEach(chk=>{
+    const suffix=chk.id.replace('cf-bulk-chk-','');
+    const emailInput=document.getElementById('cf-bulk-email-'+suffix);
+    const name=emailInput.dataset.name;
+    const email=emailInput.value.trim();
+    if(email&&CF_EMAIL_RE.test(email)) selected.push({name,email});
+    else skipped.push(name);
+  });
+  if(selected.length===0){toast('None of the selected customers have a valid email address','d');return;}
+
+  const btn=document.getElementById('cf-bulk-send-btn');
+  btn.disabled=true;btn.textContent='Sending…';
+
+  // Create one feedback request (own token) per customer first, same as a single request.
+  const recipients=[];
+  for(const s of selected){
+    const token=crypto.randomUUID();
+    const rec={
+      token, customerName:s.name, reviewPeriod,
+      createdBy:Auth.user?.name||Auth.user?.username||'',
+      createdAt:new Date().toISOString(),
+      status:'PENDING', ratings:null, comments:'', submittedAt:null,
+    };
+    await db.custFeedback.add(rec);
+    recipients.push({name:s.name, email:s.email, period:reviewPeriod, link:`${location.origin}/feedback/${token}`});
+  }
+
+  let data;
+  try{
+    const res=await fetch('/api/customer-feedback/send',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({subject, message, recipients})
+    });
+    data=await res.json().catch(()=>({}));
+    if(!res.ok){
+      resultEl.innerHTML=`<div class="alert al-d">${esc(data.error||'Could not send emails.')} <br>The feedback links were still created — you can copy/share them individually from the requests list below.</div>`;
+      btn.disabled=false;btn.textContent='📧 Send';
+      cfRenderFeedback();
+      return;
+    }
+  }catch(e){
+    resultEl.innerHTML=`<div class="alert al-d">Could not reach the server. The feedback links were still created — you can copy/share them individually from the requests list below.</div>`;
+    btn.disabled=false;btn.textContent='📧 Send';
+    cfRenderFeedback();
+    return;
+  }
+
+  const sentCount=(data.results||[]).filter(r=>r.ok).length;
+  const failed=(data.results||[]).filter(r=>!r.ok);
+  resultEl.innerHTML=`
+    <div class="alert ${failed.length?'al-w':'al-s'}">
+      ✅ Sent ${sentCount} of ${recipients.length} email(s).
+      ${skipped.length?`<br>⚠️ Skipped (no valid email): ${skipped.map(esc).join(', ')}`:''}
+      ${failed.length?`<br>⚠️ Failed to send: ${failed.map(f=>`${esc(f.email)} (${esc(f.error||'error')})`).join(', ')}`:''}
+    </div>`;
+  btn.textContent='Done';
+  toast(`📧 Sent ${sentCount} feedback request(s)`);
+  cfRenderFeedback();
 }
 
 // ══════════════════════════════════════════════════════

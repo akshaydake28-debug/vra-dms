@@ -390,6 +390,8 @@ async function mktOpenEnqForm(id=null){
         <input class="fc" type="date" id="enq-date" value="${e?.date||new Date().toISOString().split('T')[0]}"></div>
       <div class="fg" style="grid-column:span 2"><label class="lbl">Customer Name *</label>
         <input class="fc" id="enq-cust" value="${esc(e?.customerName||'')}" placeholder="e.g. M/s Menon Alkop Pvt Ltd"></div>
+      <div class="fg" style="grid-column:span 2"><label class="lbl">Customer Email <span class="muted" style="font-weight:400">(used for feedback requests etc.)</span></label>
+        <input class="fc" type="email" id="enq-cust-email" value="${esc(e?.customerEmail||'')}" placeholder="e.g. purchase@customer.com"></div>
       <div class="fg" style="grid-column:span 2"><label class="lbl">Enquiry Details / Part Name & Number *</label>
         <input class="fc" id="enq-part" value="${esc(e?.partDetails||'')}" placeholder="e.g. Cover Guide Plate — Part No. 303435"></div>
       <div class="fg"><label class="lbl">Part Number</label>
@@ -428,7 +430,7 @@ async function mktSaveEnq(id){
   const rec={
     enqNumber:document.getElementById('enq-num').value.trim(),
     date:document.getElementById('enq-date').value,
-    customerName, partDetails,
+    customerName, customerEmail:document.getElementById('enq-cust-email').value.trim(), partDetails,
     partNumber:document.getElementById('enq-partno').value.trim(),
     specialReq:document.getElementById('enq-specreq').value==='1',
     specialReqDetails:document.getElementById('enq-specdetails').value.trim(),
