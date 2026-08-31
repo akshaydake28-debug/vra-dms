@@ -222,6 +222,7 @@ select.fc{cursor:pointer}
     <a class="sl-item" data-view="complaints" onclick="nav('complaints')"><span class="ic">📋</span>Complaints</a>
     <a class="sl-item" data-view="qualAlerts" onclick="nav('qualAlerts')"><span class="ic">⚠️</span>Quality Alerts</a>
     <a class="sl-item" data-view="capas" onclick="nav('capas')"><span class="ic">🔄</span>CAPA</a>
+    <a class="sl-item" data-view="cust-feedback" onclick="nav('cust-feedback')"><span class="ic">💬</span>Customer Feedback</a>
     <div class="sl-sec">Purchasing</div>
     <a class="sl-item" data-view="pur-suppliers" onclick="nav('pur-suppliers')"><span class="ic">🏭</span>Supplier Register</a>
     <a class="sl-item" data-view="pur-approved" onclick="nav('pur-approved')"><span class="ic">✅</span>Approved Suppliers</a>
@@ -664,6 +665,8 @@ const db = {
   // Purchasing
   purVendors:     makeTable('purVendors'),
   purVendorLots:  makeTable('purVendorLots'),
+  // Customer Feedback
+  custFeedback:   makeTable('custFeedback'),
   // version() is a no-op — schema managed by server
   version() { return { stores() {} }; },
 };
@@ -799,6 +802,7 @@ function nav(view,params=''){
     approvals:'Approvals',audit:'Audit Trail',users:'Users',backup:'Backup & Restore',
     settings:'Settings',doctypes:'Document Types',
     complaints:'Complaint Register',qualAlerts:'Quality Alerts',capas:'CAPA',
+    'cust-feedback':'Customer Feedback',
     'hr-employees':'Employee Register',
     'hr-skillmatrix':'Skill Matrix',
     'hr-gap':'Training Gap Analysis',
@@ -837,6 +841,7 @@ function nav(view,params=''){
     approvals:'Approvals',audit:'Audit Trail',users:'Users',backup:'Backup & Restore',
     settings:'Settings',doctypes:'Document Types',
     complaints:'Complaint Register',qualAlerts:'Quality Alerts',capas:'CAPA',
+    'cust-feedback':'Customer Feedback',
     'hr-employees':'Employee Register',
     'hr-skillmatrix':'Skill Matrix',
     'hr-gap':'Training Gap Analysis',
@@ -870,6 +875,7 @@ function nav(view,params=''){
     approvals:renderApprovals,audit:renderAudit,users:renderUsers,backup:renderBackup,
     settings:renderSettings,doctypes:renderDocTypes,
     complaints:renderComplaints,qualAlerts:renderQualAlerts,capas:renderCapas,
+    'cust-feedback':cfRenderFeedback,
     'hr-employees':hrRenderEmployees,
     'hr-skillmatrix':hrRenderSkillMatrix,
     'hr-gap':hrRenderGap,
@@ -971,6 +977,7 @@ async function renderDashboard(){
 <script src="/static/modules/quality.js"></script>
 <script src="/static/modules/hr.js"></script>
 <script src="/static/modules/purchasing.js"></script>
+<script src="/static/modules/custfeedback.js"></script>
 <script src="/static/modules/calibration.js"></script>
 <script src="/static/modules/marketing.js"></script>
 <script src="/static/modules/rm.js"></script>
@@ -994,6 +1001,7 @@ window.views = {
   'complaints':   typeof renderComplaints   !== 'undefined' ? renderComplaints   : null,
   'qualAlerts':   typeof renderQualAlerts   !== 'undefined' ? renderQualAlerts   : null,
   'capas':        typeof renderCapas        !== 'undefined' ? renderCapas        : null,
+  'cust-feedback':typeof cfRenderFeedback   !== 'undefined' ? cfRenderFeedback   : null,
   'hr-employees': typeof hrRenderEmployees  !== 'undefined' ? hrRenderEmployees  : null,
   'hr-skillmatrix':typeof hrRenderSkillMatrix !== 'undefined' ? hrRenderSkillMatrix : null,
   'hr-gap':       typeof hrRenderGap        !== 'undefined' ? hrRenderGap        : null,
