@@ -313,6 +313,8 @@ const db = {
   // Purchasing
   purVendors:     makeTable('purVendors'),
   purVendorLots:  makeTable('purVendorLots'),
+  // Customer Feedback
+  custFeedback:   makeTable('custFeedback'),
   // version() is a no-op — schema managed by server
   version() { return { stores() {} }; },
 };

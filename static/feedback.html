@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Customer Feedback — V R Alucast</title>
+<style>
+:root{--navy:#0d2f6e;--navy-d:#081c45;--accent:#e8a020;--bg:#f0f3f9;--border:#d4daf0;--muted:#6b7280}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:#1a1a2e;font-size:15px;min-height:100vh;display:flex;align-items:flex-start;justify-content:center;padding:28px 14px}
+.wrap{width:100%;max-width:480px}
+.hdr{text-align:center;margin-bottom:18px}
+.co-name{font-family:'IBM Plex Mono',monospace;font-size:15px;font-weight:700;color:var(--navy-d)}
+.co-sub{font-size:11.5px;color:var(--muted);margin-top:2px}
+.card{background:#fff;border:1px solid var(--border);border-radius:12px;padding:22px 20px;box-shadow:0 2px 10px rgba(13,47,110,.06)}
+h1{font-size:18px;color:var(--navy);margin-bottom:4px}
+p.lead{font-size:13.5px;color:var(--muted);margin-bottom:20px;line-height:1.5}
+.q{margin-bottom:20px}
+.q label{display:block;font-size:13.5px;font-weight:600;color:#1a1a2e;margin-bottom:8px}
+.stars{display:flex;gap:6px}
+.star{font-size:30px;line-height:1;cursor:pointer;color:#d4daf0;transition:color .1s;user-select:none;background:none;border:none;padding:0}
+.star.on{color:var(--accent)}
+textarea{width:100%;border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:13.5px;font-family:inherit;resize:vertical;min-height:80px}
+textarea:focus{outline:2px solid var(--navy);outline-offset:1px}
+.btn{display:inline-block;background:var(--navy);color:#fff;border:none;border-radius:8px;padding:11px 22px;font-size:14px;font-weight:600;cursor:pointer;width:100%;margin-top:6px}
+.btn:hover{background:var(--navy-d)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.err{background:#fef2f2;border:1px solid #fecaca;color:#7f1d1d;border-radius:8px;padding:10px 14px;font-size:13px;margin-top:10px}
+.center{text-align:center;padding:20px 0}
+.muted{color:var(--muted);font-size:13px}
+.thanks-ic{font-size:44px;margin-bottom:8px}
+.foot{text-align:center;margin-top:16px;font-size:11px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hdr">
+    <div class="co-name">V R ALUCAST</div>
+    <div class="co-sub">High Pressure Die Casting · Ichalkaranji</div>
+  </div>
+  <div class="card" id="app">
+    <div class="center muted">Loading…</div>
+  </div>
+  <div class="foot">Your feedback helps us improve — thank you for taking the time.</div>
+</div>
+
+<script>
+const RATINGS=[
+  ['quality','Quality of the product/casting'],
+  ['delivery','On-time delivery'],
+  ['communication','Communication &amp; responsiveness'],
+  ['pricing','Pricing / value'],
+  ['overall','Overall satisfaction'],
+];
+const token=location.pathname.split('/').filter(Boolean).pop();
+const selected={};
+
+function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+
+function starsHtml(key){
+  let h='<div class="stars" data-key="'+key+'">';
+  for(let i=1;i<=5;i++) h+=`<button type="button" class="star" data-key="${key}" data-val="${i}" onclick="setStar('${key}',${i})">★</button>`;
+  h+='</div>';
+  return h;
+}
+function setStar(key,val){
+  selected[key]=val;
+  document.querySelectorAll(`.star[data-key="${key}"]`).forEach(el=>{
+    el.classList.toggle('on', Number(el.dataset.val)<=val);
+  });
+  updateSubmitState();
+}
+function updateSubmitState(){
+  const btn=document.getElementById('submit-btn');
+  if(!btn) return;
+  const allSet=RATINGS.every(([k])=>selected[k]);
+  btn.disabled=!allSet;
+}
+
+async function init(){
+  const app=document.getElementById('app');
+  if(!token){ app.innerHTML='<div class="err">Invalid feedback link.</div>'; return; }
+  let res;
+  try{ res=await fetch(`/api/public/feedback/${encodeURIComponent(token)}`); }
+  catch(e){ app.innerHTML='<div class="err">Could not reach the server. Please check your connection and reload.</div>'; return; }
+  if(res.status===410){ showAlreadySubmitted(); return; }
+  if(!res.ok){ app.innerHTML='<div class="err">This feedback link is invalid or has expired.</div>'; return; }
+  const data=await res.json();
+  renderForm(data.customerName||'');
+}
+
+function renderForm(customerName){
+  const app=document.getElementById('app');
+  app.innerHTML=`
+    <h1>Hi${customerName?', '+esc(customerName):''} 👋</h1>
+    <p class="lead">We'd value a minute of your time to rate your recent experience with us. Tap a rating for each category below.</p>
+    ${RATINGS.map(([k,l])=>`<div class="q"><label>${l}</label>${starsHtml(k)}</div>`).join('')}
+    <div class="q"><label>Comments (optional)</label>
+      <textarea id="fb-comments" placeholder="Anything you'd like us to know?"></textarea></div>
+    <div id="fb-err"></div>
+    <button class="btn" id="submit-btn" disabled onclick="submitFeedback()">Submit Feedback</button>
+  `;
+}
+
+async function submitFeedback(){
+  const btn=document.getElementById('submit-btn');
+  btn.disabled=true; btn.textContent='Submitting…';
+  const body={ratings:selected, comments:document.getElementById('fb-comments').value.trim()};
+  try{
+    const res=await fetch(`/api/public/feedback/${encodeURIComponent(token)}`,{
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)
+    });
+    if(res.status===410){ showAlreadySubmitted(); return; }
+    if(!res.ok){
+      const d=await res.json().catch(()=>({}));
+      document.getElementById('fb-err').innerHTML=`<div class="err">${esc(d.error||'Something went wrong. Please try again.')}</div>`;
+      btn.disabled=false; btn.textContent='Submit Feedback';
+      return;
+    }
+    showThanks();
+  }catch(e){
+    document.getElementById('fb-err').innerHTML='<div class="err">Could not reach the server. Please try again.</div>';
+    btn.disabled=false; btn.textContent='Submit Feedback';
+  }
+}
+
+function showThanks(){
+  document.getElementById('app').innerHTML=`
+    <div class="center">
+      <div class="thanks-ic">✅</div>
+      <h1>Thank you!</h1>
+      <p class="lead">Your feedback has been recorded. We appreciate you taking the time.</p>
+    </div>`;
+}
+function showAlreadySubmitted(){
+  document.getElementById('app').innerHTML=`
+    <div class="center">
+      <div class="thanks-ic">🙏</div>
+      <h1>Already submitted</h1>
+      <p class="lead">This feedback link has already been used. Thank you for your response.</p>
+    </div>`;
+}
+
+init();
+</script>
+</body>
+</html>
