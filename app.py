@@ -580,8 +580,15 @@ def public_feedback_submit(token):
             return jsonify({'error': f'Rating for "{key}" must be one of {CF_VALID_SCORES}'}), 400
         ratings[key] = val
 
+    respondent_name = str(body.get('respondentName', '')).strip()[:200]
+    respondent_designation = str(body.get('respondentDesignation', '')).strip()[:200]
+    if not respondent_name or not respondent_designation:
+        return jsonify({'error': 'Respondent name and designation are required'}), 400
+
     d['ratings'] = ratings
     d['comments'] = str(body.get('comments', ''))[:2000]
+    d['respondentName'] = respondent_name
+    d['respondentDesignation'] = respondent_designation
     d['status'] = 'SUBMITTED'
     d['submittedAt'] = datetime.utcnow().isoformat()
     r.data = json.dumps(d)
