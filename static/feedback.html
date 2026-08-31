@@ -33,6 +33,9 @@ textarea:focus{outline:2px solid var(--navy);outline-offset:1px}
 .muted{color:var(--muted);font-size:13px}
 .thanks-ic{font-size:44px;margin-bottom:8px}
 .foot{text-align:center;margin-top:16px;font-size:11px;color:var(--muted)}
+input[type=text]{width:100%;border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:13.5px;font-family:inherit}
+input[type=text]:focus{outline:2px solid var(--navy);outline-offset:1px}
+.doc-ctl{text-align:center;margin-top:10px;font-size:10px;color:var(--muted);letter-spacing:.3px}
 </style>
 </head>
 <body>
@@ -45,6 +48,7 @@ textarea:focus{outline:2px solid var(--navy);outline-offset:1px}
     <div class="center muted">Loading…</div>
   </div>
   <div class="foot">Your feedback helps us improve — thank you for taking the time.</div>
+  <div class="doc-ctl">VRA-MKT-F-01 &nbsp;|&nbsp; Rev 00 &nbsp;|&nbsp; Effective 31-Aug-2026</div>
 </div>
 
 <script>
@@ -82,7 +86,9 @@ function updateSubmitState(){
   const btn=document.getElementById('submit-btn');
   if(!btn) return;
   const allSet=RATINGS.every(([k])=>selected[k]);
-  btn.disabled=!allSet;
+  const name=document.getElementById('fb-name')?.value.trim();
+  const designation=document.getElementById('fb-designation')?.value.trim();
+  btn.disabled=!(allSet&&name&&designation);
 }
 
 async function init(){
@@ -102,6 +108,10 @@ function renderForm(customerName){
   app.innerHTML=`
     <h1>Hi${customerName?', '+esc(customerName):''} 👋</h1>
     <p class="lead">We'd value a minute of your time to rate your recent experience with us. Tap a rating for each category below.</p>
+    <div class="q"><label>Your Name *</label>
+      <input type="text" id="fb-name" placeholder="e.g. Rohan Mehta" oninput="updateSubmitState()"></div>
+    <div class="q"><label>Your Designation *</label>
+      <input type="text" id="fb-designation" placeholder="e.g. Purchase Manager" oninput="updateSubmitState()"></div>
     ${RATINGS.map(([k,l])=>`<div class="q"><label>${l}</label>${scaleHtml(k)}</div>`).join('')}
     <div class="q"><label>Comments (optional)</label>
       <textarea id="fb-comments" placeholder="Anything you'd like us to know?"></textarea></div>
@@ -113,7 +123,12 @@ function renderForm(customerName){
 async function submitFeedback(){
   const btn=document.getElementById('submit-btn');
   btn.disabled=true; btn.textContent='Submitting…';
-  const body={ratings:selected, comments:document.getElementById('fb-comments').value.trim()};
+  const body={
+    ratings:selected,
+    comments:document.getElementById('fb-comments').value.trim(),
+    respondentName:document.getElementById('fb-name').value.trim(),
+    respondentDesignation:document.getElementById('fb-designation').value.trim(),
+  };
   try{
     const res=await fetch(`/api/public/feedback/${encodeURIComponent(token)}`,{
       method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)
