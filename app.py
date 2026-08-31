@@ -103,11 +103,23 @@ def serve_module(filename):
 def serve_core(filename):
     return send_from_directory('static/core', filename)
 
+@app.route('/feedback/<token>')
+def customer_feedback_page(token):
+    # Standalone page, not the logged-in app shell — a customer opening
+    # this link has no VRA-DMS account. The token itself is looked up
+    # client-side against /api/public/feedback/<token>.
+    return send_from_directory('static', 'feedback.html')
+
 # ══════════════════════════════════════════════════════
 #  AUTH
 # ══════════════════════════════════════════════════════
 
 PUBLIC_PATHS = {'/api/auth/login'}
+# Customer feedback links are opened by people with no VRA-DMS account at
+# all — the unguessable token in the URL is what gates access, not a login
+# session. Everything under this prefix must independently validate its
+# own token and never expose data beyond that one record.
+PUBLIC_PREFIXES = ('/api/public/feedback/',)
 BACKUP_API_TOKEN = os.environ.get('BACKUP_API_TOKEN')
 HASH_PREFIXES = ('pbkdf2:', 'scrypt:', 'argon2:')
 # APPROVER is this app's admin-equivalent role — it's what the frontend
@@ -120,7 +132,7 @@ def is_hashed(pw):
 @app.before_request
 def require_login():
     path = request.path
-    if not path.startswith('/api/') or path in PUBLIC_PATHS:
+    if not path.startswith('/api/') or path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES):
         return None
     if 'user_id' in session:
         return None
@@ -515,6 +527,74 @@ def restore():
 
     db.session.commit()
     return jsonify({'ok':True,'documents':doc_count,'records':module_count})
+
+
+# ══════════════════════════════════════════════════════
+#  CUSTOMER FEEDBACK — public, token-gated (no login)
+#  Internal request/response records live as normal GenericRecords under
+#  module 'custFeedback' (created/listed via the generic endpoints below,
+#  behind the standard login gate). These two routes are the only way an
+#  outside customer, with no account, can read or write a single one of
+#  those records — scoped strictly to the record whose token they hold.
+# ══════════════════════════════════════════════════════
+CF_RATING_KEYS = ('quality', 'delivery', 'communication', 'pricing', 'overall')
+# 10 Excellent · 8 Good · 6 Satisfactory · 4 Needs Improvement · 2 Unsatisfactory
+CF_VALID_SCORES = (2, 4, 6, 8, 10)
+
+def _find_feedback_by_token(token):
+    for r in GenericRecord.query.filter_by(module='custFeedback').all():
+        try:
+            d = json.loads(r.data)
+        except (TypeError, ValueError):
+            continue
+        if d.get('token') == token:
+            return r, d
+    return None, None
+
+@app.route('/api/public/feedback/<token>', methods=['GET'])
+def public_feedback_get(token):
+    r, d = _find_feedback_by_token(token)
+    if not r:
+        return jsonify({'error': 'Not found'}), 404
+    if d.get('status') == 'SUBMITTED':
+        return jsonify({'error': 'This feedback link has already been used'}), 410
+    return jsonify({'customerName': d.get('customerName', '')})
+
+@app.route('/api/public/feedback/<token>', methods=['POST'])
+def public_feedback_submit(token):
+    r, d = _find_feedback_by_token(token)
+    if not r:
+        return jsonify({'error': 'Not found'}), 404
+    if d.get('status') == 'SUBMITTED':
+        return jsonify({'error': 'This feedback link has already been used'}), 410
+
+    body = request.json or {}
+    raw_ratings = body.get('ratings') or {}
+    ratings = {}
+    for key in CF_RATING_KEYS:
+        try:
+            val = int(raw_ratings.get(key))
+        except (TypeError, ValueError):
+            val = None
+        if val not in CF_VALID_SCORES:
+            return jsonify({'error': f'Rating for "{key}" must be one of {CF_VALID_SCORES}'}), 400
+        ratings[key] = val
+
+    respondent_name = str(body.get('respondentName', '')).strip()[:200]
+    respondent_designation = str(body.get('respondentDesignation', '')).strip()[:200]
+    if not respondent_name or not respondent_designation:
+        return jsonify({'error': 'Respondent name and designation are required'}), 400
+
+    d['ratings'] = ratings
+    d['comments'] = str(body.get('comments', ''))[:2000]
+    d['respondentName'] = respondent_name
+    d['respondentDesignation'] = respondent_designation
+    d['status'] = 'SUBMITTED'
+    d['submittedAt'] = datetime.utcnow().isoformat()
+    r.data = json.dumps(d)
+    r.updated_at = datetime.utcnow()
+    db.session.commit()
+    return jsonify({'ok': True})
 
 @app.route('/api/<module>', methods=['GET'])
 def list_generic(module):
