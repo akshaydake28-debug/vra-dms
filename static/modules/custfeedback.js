@@ -72,10 +72,10 @@ async function cfRenderFeedback(){
 
   setC(`
   <div class="ph">
-    <h2>💬 Customer Feedback <span class="muted" style="font-size:12px;font-weight:400">${CF_DOC_NO} · ${CF_DOC_REV}</span></h2>
+    <h2>💬 Customer Feedback</h2>
     <div style="display:flex;gap:8px">
       <button class="btn btn-p" onclick="cfOpenNewLinkModal()">+ Request Feedback</button>
-      <button class="btn btn-o" onclick="cfPrintSummary()">🖨️ Print Summary</button>
+      <button class="btn btn-o" onclick="cfPrintSummary()">🖨️ Print</button>
     </div>
   </div>
 
@@ -96,16 +96,19 @@ async function cfRenderFeedback(){
   </div>
 
   <div class="card" style="margin-bottom:12px">
-    <div class="ch"><h5>Scorecard by Customer</h5></div>
-    <div class="tw" style="overflow-x:auto"><table style="min-width:960px">
-      <thead><tr>
-        <th style="text-align:left">Customer</th><th>Requests</th><th>Responses</th>
+    <div class="ch"><h5>Scorecard by Customer — ${esc(purPeriodLabel(_cfPeriod.period,_cfPeriod.from,_cfPeriod.to))}</h5>
+      <span class="muted" style="font-size:11px">${CF_DOC_NO} · ${CF_DOC_REV} · Customer Satisfaction Survey</span>
+    </div>
+    <div class="tw" style="overflow-x:auto"><table style="min-width:1000px">
+      <thead><tr style="background:var(--navy);color:#fff">
+        <th>SR</th><th style="text-align:left">Name of Customer</th><th>Requests</th><th>Responses</th>
         ${CF_RATING_DEFS.map(([,l])=>`<th>${l}</th>`).join('')}
         <th>Total Score</th><th>Last Feedback</th>
       </tr></thead>
       <tbody>${custRows.length===0
-        ?`<tr><td colspan="9" style="text-align:center;padding:24px;color:#9ca3af">No feedback requests in this period.</td></tr>`
-        :custRows.map(c=>`<tr>
+        ?`<tr><td colspan="11" style="text-align:center;padding:24px;color:#9ca3af">No feedback requests in this period.</td></tr>`
+        :custRows.map((c,i)=>`<tr>
+          <td style="text-align:center">${i+1}</td>
           <td><strong>${esc(c.name)}</strong></td>
           <td style="text-align:center">${c.requests}</td>
           <td style="text-align:center">${c.responses}</td>
@@ -119,11 +122,14 @@ async function cfRenderFeedback(){
 
   <div class="card">
     <div class="ch"><h5>All Requests (${inPeriod.length})</h5></div>
-    <div class="tw" style="overflow-x:auto"><table style="min-width:1050px">
-      <thead><tr><th>Date Requested</th><th style="text-align:left">Customer</th><th style="text-align:left">Respondent</th><th>Requested By</th><th>Status</th><th>Total Score</th><th></th></tr></thead>
+    <div class="tw" style="overflow-x:auto"><table style="min-width:1080px">
+      <thead><tr style="background:var(--navy);color:#fff">
+        <th>SR</th><th>Date Requested</th><th style="text-align:left">Customer</th><th style="text-align:left">Respondent</th><th>Requested By</th><th>Status</th><th>Total Score</th><th></th>
+      </tr></thead>
       <tbody>${inPeriod.length===0
-        ?`<tr><td colspan="7" style="text-align:center;padding:30px;color:#9ca3af">No feedback requests yet. Click + Request Feedback to send the first link.</td></tr>`
-        :inPeriod.map(r=>`<tr>
+        ?`<tr><td colspan="8" style="text-align:center;padding:30px;color:#9ca3af">No feedback requests yet. Click + Request Feedback to send the first link.</td></tr>`
+        :inPeriod.map((r,i)=>`<tr>
+          <td style="text-align:center">${i+1}</td>
           <td>${fmtD(r.createdAt)}</td>
           <td><strong>${esc(r.customerName)}</strong></td>
           <td>${r.status==='SUBMITTED'?`${esc(r.respondentName||'—')}<div class="muted" style="font-size:10.5px">${esc(r.respondentDesignation||'')}</div>`:'<span class="muted">—</span>'}</td>
