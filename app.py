@@ -558,7 +558,7 @@ def public_feedback_get(token):
         return jsonify({'error': 'Not found'}), 404
     if d.get('status') == 'SUBMITTED':
         return jsonify({'error': 'This feedback link has already been used'}), 410
-    return jsonify({'customerName': d.get('customerName', '')})
+    return jsonify({'customerName': d.get('customerName', ''), 'reviewPeriod': d.get('reviewPeriod', '')})
 
 @app.route('/api/public/feedback/<token>', methods=['POST'])
 def public_feedback_submit(token):
