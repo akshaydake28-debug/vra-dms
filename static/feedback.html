@@ -15,11 +15,14 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:#1a1a2e
 .card{background:#fff;border:1px solid var(--border);border-radius:12px;padding:22px 20px;box-shadow:0 2px 10px rgba(13,47,110,.06)}
 h1{font-size:18px;color:var(--navy);margin-bottom:4px}
 p.lead{font-size:13.5px;color:var(--muted);margin-bottom:20px;line-height:1.5}
-.q{margin-bottom:20px}
+.q{margin-bottom:22px}
 .q label{display:block;font-size:13.5px;font-weight:600;color:#1a1a2e;margin-bottom:8px}
-.stars{display:flex;gap:6px}
-.star{font-size:30px;line-height:1;cursor:pointer;color:#d4daf0;transition:color .1s;user-select:none;background:none;border:none;padding:0}
-.star.on{color:var(--accent)}
+.scale{display:flex;gap:6px;flex-wrap:wrap}
+.opt{flex:1 1 62px;min-width:62px;border:1.5px solid var(--border);border-radius:8px;padding:8px 4px 7px;text-align:center;cursor:pointer;background:#fff;user-select:none}
+.opt .num{font-size:19px;font-weight:800;color:var(--navy);line-height:1}
+.opt .lbl{font-size:9px;color:var(--muted);margin-top:3px;line-height:1.2}
+.opt.on{border-color:var(--navy);background:#eef3fc}
+.opt.on .num,.opt.on .lbl{color:var(--navy)}
 textarea{width:100%;border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:13.5px;font-family:inherit;resize:vertical;min-height:80px}
 textarea:focus{outline:2px solid var(--navy);outline-offset:1px}
 .btn{display:inline-block;background:var(--navy);color:#fff;border:none;border-radius:8px;padding:11px 22px;font-size:14px;font-weight:600;cursor:pointer;width:100%;margin-top:6px}
@@ -52,21 +55,26 @@ const RATINGS=[
   ['pricing','Pricing / value'],
   ['overall','Overall satisfaction'],
 ];
+const SCALE=[[2,'Unsatisfactory'],[4,'Needs Improvement'],[6,'Satisfactory'],[8,'Good'],[10,'Excellent']];
 const token=location.pathname.split('/').filter(Boolean).pop();
 const selected={};
 
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 
-function starsHtml(key){
-  let h='<div class="stars" data-key="'+key+'">';
-  for(let i=1;i<=5;i++) h+=`<button type="button" class="star" data-key="${key}" data-val="${i}" onclick="setStar('${key}',${i})">★</button>`;
+function scaleHtml(key){
+  let h='<div class="scale" data-key="'+key+'">';
+  SCALE.forEach(([val,label])=>{
+    h+=`<button type="button" class="opt" data-key="${key}" data-val="${val}" onclick="setScore('${key}',${val})">
+      <div class="num">${val}</div><div class="lbl">${esc(label)}</div>
+    </button>`;
+  });
   h+='</div>';
   return h;
 }
-function setStar(key,val){
+function setScore(key,val){
   selected[key]=val;
-  document.querySelectorAll(`.star[data-key="${key}"]`).forEach(el=>{
-    el.classList.toggle('on', Number(el.dataset.val)<=val);
+  document.querySelectorAll(`.opt[data-key="${key}"]`).forEach(el=>{
+    el.classList.toggle('on', Number(el.dataset.val)===val);
   });
   updateSubmitState();
 }
@@ -94,7 +102,7 @@ function renderForm(customerName){
   app.innerHTML=`
     <h1>Hi${customerName?', '+esc(customerName):''} 👋</h1>
     <p class="lead">We'd value a minute of your time to rate your recent experience with us. Tap a rating for each category below.</p>
-    ${RATINGS.map(([k,l])=>`<div class="q"><label>${l}</label>${starsHtml(k)}</div>`).join('')}
+    ${RATINGS.map(([k,l])=>`<div class="q"><label>${l}</label>${scaleHtml(k)}</div>`).join('')}
     <div class="q"><label>Comments (optional)</label>
       <textarea id="fb-comments" placeholder="Anything you'd like us to know?"></textarea></div>
     <div id="fb-err"></div>

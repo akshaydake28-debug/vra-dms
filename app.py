@@ -538,6 +538,8 @@ def restore():
 #  those records — scoped strictly to the record whose token they hold.
 # ══════════════════════════════════════════════════════
 CF_RATING_KEYS = ('quality', 'delivery', 'communication', 'pricing', 'overall')
+# 10 Excellent · 8 Good · 6 Satisfactory · 4 Needs Improvement · 2 Unsatisfactory
+CF_VALID_SCORES = (2, 4, 6, 8, 10)
 
 def _find_feedback_by_token(token):
     for r in GenericRecord.query.filter_by(module='custFeedback').all():
@@ -574,8 +576,8 @@ def public_feedback_submit(token):
             val = int(raw_ratings.get(key))
         except (TypeError, ValueError):
             val = None
-        if val is None or val < 1 or val > 5:
-            return jsonify({'error': f'Rating for "{key}" must be 1-5'}), 400
+        if val not in CF_VALID_SCORES:
+            return jsonify({'error': f'Rating for "{key}" must be one of {CF_VALID_SCORES}'}), 400
         ratings[key] = val
 
     d['ratings'] = ratings
