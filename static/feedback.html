@@ -36,6 +36,17 @@ textarea:focus{outline:2px solid var(--navy);outline-offset:1px}
 input[type=text]{width:100%;border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:13.5px;font-family:inherit}
 input[type=text]:focus{outline:2px solid var(--navy);outline-offset:1px}
 .doc-ctl{text-align:center;margin-top:10px;font-size:10px;color:var(--muted);letter-spacing:.3px}
+.score-box{display:none;text-align:center;border-radius:10px;padding:14px;margin:6px 0 4px;border:1.5px solid var(--border);background:#f7f9fd}
+.score-box.show{display:block}
+.score-box .sb-label{font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
+.score-box .sb-pct{font-size:30px;font-weight:800;color:var(--navy);line-height:1.3}
+.score-box .sb-word{font-size:13px;font-weight:600}
+.score-box.good{background:#eefbf3;border-color:#bfe8cf}
+.score-box.good .sb-pct,.score-box.good .sb-word{color:#14532d}
+.score-box.mid{background:#fffaf0;border-color:#f5dfad}
+.score-box.mid .sb-pct,.score-box.mid .sb-word{color:#92650c}
+.score-box.low{background:#fef2f2;border-color:#f3c6c6}
+.score-box.low .sb-pct,.score-box.low .sb-word{color:#7f1d1d}
 </style>
 </head>
 <body>
@@ -89,6 +100,20 @@ function updateSubmitState(){
   const name=document.getElementById('fb-name')?.value.trim();
   const designation=document.getElementById('fb-designation')?.value.trim();
   btn.disabled=!(allSet&&name&&designation);
+  updateScoreBox(allSet);
+}
+
+function updateScoreBox(allSet){
+  const box=document.getElementById('score-box');
+  if(!box) return;
+  if(!allSet){ box.className='score-box'; return; }
+  const vals=RATINGS.map(([k])=>selected[k]);
+  const pct=Math.round((vals.reduce((a,b)=>a+b,0)/(vals.length*10))*100);
+  const avg=vals.reduce((a,b)=>a+b,0)/vals.length;
+  const word=avg>=9?'Excellent':avg>=7?'Good':avg>=5?'Satisfactory':avg>=3?'Needs Improvement':'Unsatisfactory';
+  const tier=pct>=70?'good':pct>=50?'mid':'low';
+  box.className=`score-box show ${tier}`;
+  box.innerHTML=`<div class="sb-label">Your Score</div><div class="sb-pct">${pct}%</div><div class="sb-word">${word}</div>`;
 }
 
 async function init(){
@@ -116,6 +141,7 @@ function renderForm(customerName, reviewPeriod){
     ${RATINGS.map(([k,l])=>`<div class="q"><label>${l}</label>${scaleHtml(k)}</div>`).join('')}
     <div class="q"><label>Comments (optional)</label>
       <textarea id="fb-comments" placeholder="Anything you'd like us to know?"></textarea></div>
+    <div class="score-box" id="score-box"></div>
     <div id="fb-err"></div>
     <button class="btn" id="submit-btn" disabled onclick="submitFeedback()">Submit Feedback</button>
   `;
