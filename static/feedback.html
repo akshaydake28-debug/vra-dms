@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Customer Feedback — V R Alucast</title>
+<style>
+:root{--navy:#0d2f6e;--navy-d:#081c45;--accent:#e8a020;--bg:#f0f3f9;--border:#d4daf0;--muted:#6b7280}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:#1a1a2e;font-size:15px;min-height:100vh;display:flex;align-items:flex-start;justify-content:center;padding:28px 14px}
+.wrap{width:100%;max-width:480px}
+.hdr{text-align:center;margin-bottom:18px}
+.co-name{font-family:'IBM Plex Mono',monospace;font-size:15px;font-weight:700;color:var(--navy-d)}
+.co-sub{font-size:11.5px;color:var(--muted);margin-top:2px}
+.card{background:#fff;border:1px solid var(--border);border-radius:12px;padding:22px 20px;box-shadow:0 2px 10px rgba(13,47,110,.06)}
+h1{font-size:18px;color:var(--navy);margin-bottom:4px}
+p.lead{font-size:13.5px;color:var(--muted);margin-bottom:20px;line-height:1.5}
+.q{margin-bottom:22px}
+.q label{display:block;font-size:13.5px;font-weight:600;color:#1a1a2e;margin-bottom:8px}
+.scale{display:flex;gap:6px;flex-wrap:wrap}
+.opt{flex:1 1 62px;min-width:62px;border:1.5px solid var(--border);border-radius:8px;padding:8px 4px 7px;text-align:center;cursor:pointer;background:#fff;user-select:none}
+.opt .num{font-size:19px;font-weight:800;color:var(--navy);line-height:1}
+.opt .lbl{font-size:9px;color:var(--muted);margin-top:3px;line-height:1.2}
+.opt.on{border-color:var(--navy);background:#eef3fc}
+.opt.on .num,.opt.on .lbl{color:var(--navy)}
+textarea{width:100%;border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:13.5px;font-family:inherit;resize:vertical;min-height:80px}
+textarea:focus{outline:2px solid var(--navy);outline-offset:1px}
+.btn{display:inline-block;background:var(--navy);color:#fff;border:none;border-radius:8px;padding:11px 22px;font-size:14px;font-weight:600;cursor:pointer;width:100%;margin-top:6px}
+.btn:hover{background:var(--navy-d)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.err{background:#fef2f2;border:1px solid #fecaca;color:#7f1d1d;border-radius:8px;padding:10px 14px;font-size:13px;margin-top:10px}
+.center{text-align:center;padding:20px 0}
+.muted{color:var(--muted);font-size:13px}
+.thanks-ic{font-size:44px;margin-bottom:8px}
+.foot{text-align:center;margin-top:16px;font-size:11px;color:var(--muted)}
+input[type=text]{width:100%;border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:13.5px;font-family:inherit}
+input[type=text]:focus{outline:2px solid var(--navy);outline-offset:1px}
+.doc-ctl{text-align:center;margin-top:10px;font-size:10px;color:var(--muted);letter-spacing:.3px}
+.score-box{display:none;text-align:center;border-radius:10px;padding:14px;margin:6px 0 4px;border:1.5px solid var(--border);background:#f7f9fd}
+.score-box.show{display:block}
+.score-box .sb-label{font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
+.score-box .sb-pct{font-size:30px;font-weight:800;color:var(--navy);line-height:1.3}
+.score-box .sb-word{font-size:13px;font-weight:600}
+.score-box.good{background:#eefbf3;border-color:#bfe8cf}
+.score-box.good .sb-pct,.score-box.good .sb-word{color:#14532d}
+.score-box.mid{background:#fffaf0;border-color:#f5dfad}
+.score-box.mid .sb-pct,.score-box.mid .sb-word{color:#92650c}
+.score-box.low{background:#fef2f2;border-color:#f3c6c6}
+.score-box.low .sb-pct,.score-box.low .sb-word{color:#7f1d1d}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hdr">
+    <div class="co-name">V R ALUCAST</div>
+    <div class="co-sub">High Pressure Die Casting · Ichalkaranji</div>
+  </div>
+  <div class="card" id="app">
+    <div class="center muted">Loading…</div>
+  </div>
+  <div class="foot">Your feedback helps us improve — thank you for taking the time.</div>
+  <div class="doc-ctl">VRA-MKT-F-01 &nbsp;|&nbsp; Rev 00 &nbsp;|&nbsp; Effective 31-Aug-2026</div>
+</div>
+
+<script>
+const RATINGS=[
+  ['quality','Quality of the product/casting'],
+  ['delivery','On-time delivery'],
+  ['communication','Communication &amp; responsiveness'],
+  ['pricing','Pricing / value'],
+  ['overall','Overall satisfaction'],
+];
+const SCALE=[[2,'Unsatisfactory'],[4,'Needs Improvement'],[6,'Satisfactory'],[8,'Good'],[10,'Excellent']];
+const token=location.pathname.split('/').filter(Boolean).pop();
+const selected={};
+
+function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+
+function scaleHtml(key){
+  let h='<div class="scale" data-key="'+key+'">';
+  SCALE.forEach(([val,label])=>{
+    h+=`<button type="button" class="opt" data-key="${key}" data-val="${val}" onclick="setScore('${key}',${val})">
+      <div class="num">${val}</div><div class="lbl">${esc(label)}</div>
+    </button>`;
+  });
+  h+='</div>';
+  return h;
+}
+function setScore(key,val){
+  selected[key]=val;
+  document.querySelectorAll(`.opt[data-key="${key}"]`).forEach(el=>{
+    el.classList.toggle('on', Number(el.dataset.val)===val);
+  });
+  updateSubmitState();
+}
+function updateSubmitState(){
+  const btn=document.getElementById('submit-btn');
+  if(!btn) return;
+  const allSet=RATINGS.every(([k])=>selected[k]);
+  const name=document.getElementById('fb-name')?.value.trim();
+  const designation=document.getElementById('fb-designation')?.value.trim();
+  btn.disabled=!(allSet&&name&&designation);
+  updateScoreBox(allSet);
+}
+
+function updateScoreBox(allSet){
+  const box=document.getElementById('score-box');
+  if(!box) return;
+  if(!allSet){ box.className='score-box'; return; }
+  const vals=RATINGS.map(([k])=>selected[k]);
+  const pct=Math.round((vals.reduce((a,b)=>a+b,0)/(vals.length*10))*100);
+  const avg=vals.reduce((a,b)=>a+b,0)/vals.length;
+  const word=avg>=9?'Excellent':avg>=7?'Good':avg>=5?'Satisfactory':avg>=3?'Needs Improvement':'Unsatisfactory';
+  const tier=pct>=70?'good':pct>=50?'mid':'low';
+  box.className=`score-box show ${tier}`;
+  box.innerHTML=`<div class="sb-label">Your Score</div><div class="sb-pct">${pct}%</div><div class="sb-word">${word}</div>`;
+}
+
+async function init(){
+  const app=document.getElementById('app');
+  if(!token){ app.innerHTML='<div class="err">Invalid feedback link.</div>'; return; }
+  let res;
+  try{ res=await fetch(`/api/public/feedback/${encodeURIComponent(token)}`); }
+  catch(e){ app.innerHTML='<div class="err">Could not reach the server. Please check your connection and reload.</div>'; return; }
+  if(res.status===410){ showAlreadySubmitted(); return; }
+  if(!res.ok){ app.innerHTML='<div class="err">This feedback link is invalid or has expired.</div>'; return; }
+  const data=await res.json();
+  renderForm(data.customerName||'', data.reviewPeriod||'');
+}
+
+function renderForm(customerName, reviewPeriod){
+  const app=document.getElementById('app');
+  app.innerHTML=`
+    <h1>Hi${customerName?', '+esc(customerName):''} 👋</h1>
+    <p class="lead">We'd value a minute of your time to rate your recent experience with us. Tap a rating for each category below.</p>
+    ${reviewPeriod?`<div class="q" style="margin-bottom:16px"><div class="muted" style="font-size:12px">This feedback is for the period:</div><div style="font-weight:700;color:var(--navy);font-size:14px">${esc(reviewPeriod)}</div></div>`:''}
+    <div class="q"><label>Your Name *</label>
+      <input type="text" id="fb-name" placeholder="e.g. Rohan Mehta" oninput="updateSubmitState()"></div>
+    <div class="q"><label>Your Designation *</label>
+      <input type="text" id="fb-designation" placeholder="e.g. Purchase Manager" oninput="updateSubmitState()"></div>
+    ${RATINGS.map(([k,l])=>`<div class="q"><label>${l}</label>${scaleHtml(k)}</div>`).join('')}
+    <div class="q"><label>Comments (optional)</label>
+      <textarea id="fb-comments" placeholder="Anything you'd like us to know?"></textarea></div>
+    <div class="score-box" id="score-box"></div>
+    <div id="fb-err"></div>
+    <button class="btn" id="submit-btn" disabled onclick="submitFeedback()">Submit Feedback</button>
+  `;
+}
+
+async function submitFeedback(){
+  const btn=document.getElementById('submit-btn');
+  btn.disabled=true; btn.textContent='Submitting…';
+  const body={
+    ratings:selected,
+    comments:document.getElementById('fb-comments').value.trim(),
+    respondentName:document.getElementById('fb-name').value.trim(),
+    respondentDesignation:document.getElementById('fb-designation').value.trim(),
+  };
+  try{
+    const res=await fetch(`/api/public/feedback/${encodeURIComponent(token)}`,{
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)
+    });
+    if(res.status===410){ showAlreadySubmitted(); return; }
+    if(!res.ok){
+      const d=await res.json().catch(()=>({}));
+      document.getElementById('fb-err').innerHTML=`<div class="err">${esc(d.error||'Something went wrong. Please try again.')}</div>`;
+      btn.disabled=false; btn.textContent='Submit Feedback';
+      return;
+    }
+    showThanks();
+  }catch(e){
+    document.getElementById('fb-err').innerHTML='<div class="err">Could not reach the server. Please try again.</div>';
+    btn.disabled=false; btn.textContent='Submit Feedback';
+  }
+}
+
+function showThanks(){
+  document.getElementById('app').innerHTML=`
+    <div class="center">
+      <div class="thanks-ic">✅</div>
+      <h1>Thank you!</h1>
+      <p class="lead">Your feedback has been recorded. We appreciate you taking the time.</p>
+    </div>`;
+}
+function showAlreadySubmitted(){
+  document.getElementById('app').innerHTML=`
+    <div class="center">
+      <div class="thanks-ic">🙏</div>
+      <h1>Already submitted</h1>
+      <p class="lead">This feedback link has already been used. Thank you for your response.</p>
+    </div>`;
+}
+
+init();
+</script>
+</body>
+</html>
