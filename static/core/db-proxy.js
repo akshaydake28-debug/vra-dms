@@ -285,6 +285,9 @@ const db = {
   settings:       settingsTable,
   dirHandles:     dirHandlesTable,
   parts:          makeTable('parts'),
+  // Production
+  prodLogs:       makeTable('prodLogs'),
+  prodDefects:    makeTable('prodDefects'),
   // Quality
   complaints:     makeTable('complaints'),
   qualAlerts:     makeTable('qualAlerts'),
