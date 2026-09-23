@@ -468,6 +468,8 @@ def backup():
 
 @app.route('/api/restore', methods=['POST'])
 def restore():
+    err = require_admin()
+    if err: return err
     data = request.json
     if not data: return jsonify({'error':'No data'}),400
 
@@ -662,6 +664,8 @@ def delete_generic_one(module, rid):
 
 @app.route('/api/admin/dedup/all', methods=['POST'])
 def dedup_all():
+    err = require_admin()
+    if err: return err
     modules_to_dedup = ['hrSkillDefs','mktFeasQns','calGauges']
     results = {}
     for module in modules_to_dedup:
@@ -685,6 +689,8 @@ def dedup_all():
 
 @app.route('/api/admin/dedup/<module>', methods=['POST'])
 def dedup_module(module):
+    err = require_admin()
+    if err: return err
     records = GenericRecord.query.filter_by(module=module).order_by(GenericRecord.id.asc()).all()
     seen = set()
     deleted = 0
@@ -926,6 +932,8 @@ def seed_qms2():
 @app.route('/api/qms2/admin/clear-cp', methods=['POST'])
 def qms2_clear_cp():
     """Delete all CP parts, rows, revisions and checksheet records for a fresh start."""
+    err = require_admin()
+    if err: return err
     for mod in ['qms2_cp_parts','qms2_cp_rows','qms2_cp_revisions','qms2_cs_records','qms2_cs_results']:
         GenericRecord.query.filter_by(module=mod).delete()
     db.session.commit()

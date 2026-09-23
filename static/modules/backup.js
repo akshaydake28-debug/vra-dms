@@ -19,6 +19,26 @@ async function renderBackup() {
   } catch(e) { counts = {documents: 0, versions: 0, total: 0}; }
 
   let _importData = null;
+  const isAdmin = Auth.user?.role === 'APPROVER';
+  const restorePanel = isAdmin ? `
+        <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:10px;font-size:12px;margin-bottom:12px">
+          <strong>Note:</strong> Restore clears existing data and replaces with backup contents.
+        </div>
+        <div id="drop-zone" style="border:2px dashed #d1d5db;border-radius:8px;padding:32px;text-align:center;cursor:pointer;margin-bottom:12px;transition:all .15s"
+          onclick="document.getElementById('import-file').click()"
+          ondragover="event.preventDefault();this.style.borderColor='#0d2f6e'"
+          ondragleave="this.style.borderColor='#d1d5db'"
+          ondrop="event.preventDefault();this.style.borderColor='#d1d5db';handleImportFile(event.dataTransfer.files[0])">
+          <div style="font-size:28px;margin-bottom:8px">📁</div>
+          <div style="font-size:13px;font-weight:600;color:#374151">Click or drag backup file here</div>
+          <div style="font-size:11px;color:#9ca3af;margin-top:4px">.json backup file</div>
+        </div>
+        <input type="file" id="import-file" accept=".json" style="display:none" onchange="handleImportFile(this.files[0])">
+        <div id="import-info" style="display:none;font-size:12px;color:#374151;margin-bottom:8px"></div>
+        <button class="btn btn-g" id="import-btn" style="width:100%;display:none" onclick="doImport()">📥 Restore All Data</button>` : `
+        <div style="background:#f3f4f6;border:1px solid #d1d5db;border-radius:6px;padding:14px;font-size:12px;color:#4b5563">
+          Restoring replaces <strong>all</strong> company data and can only be done by an admin (Akshay). Ask them if you need a backup restored.
+        </div>`;
 
   setC(`
   <div class="ph"><h2>💾 Backup & Restore</h2></div>
@@ -39,23 +59,7 @@ async function renderBackup() {
     </div>
     <div class="card">
       <div class="ch"><h5>📥 Import & Restore</h5></div>
-      <div class="cb">
-        <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:10px;font-size:12px;margin-bottom:12px">
-          <strong>Note:</strong> Restore clears existing data and replaces with backup contents.
-        </div>
-        <div id="drop-zone" style="border:2px dashed #d1d5db;border-radius:8px;padding:32px;text-align:center;cursor:pointer;margin-bottom:12px;transition:all .15s"
-          onclick="document.getElementById('import-file').click()"
-          ondragover="event.preventDefault();this.style.borderColor='#0d2f6e'"
-          ondragleave="this.style.borderColor='#d1d5db'"
-          ondrop="event.preventDefault();this.style.borderColor='#d1d5db';handleImportFile(event.dataTransfer.files[0])">
-          <div style="font-size:28px;margin-bottom:8px">📁</div>
-          <div style="font-size:13px;font-weight:600;color:#374151">Click or drag backup file here</div>
-          <div style="font-size:11px;color:#9ca3af;margin-top:4px">.json backup file</div>
-        </div>
-        <input type="file" id="import-file" accept=".json" style="display:none" onchange="handleImportFile(this.files[0])">
-        <div id="import-info" style="display:none;font-size:12px;color:#374151;margin-bottom:8px"></div>
-        <button class="btn btn-g" id="import-btn" style="width:100%;display:none" onclick="doImport()">📥 Restore All Data</button>
-      </div>
+      <div class="cb">${restorePanel}</div>
     </div>
   </div>`);
 
