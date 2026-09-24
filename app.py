@@ -145,13 +145,22 @@ def is_hashed(pw):
 
 def safe_json_loads(raw, default):
     """Parse stored JSON, tolerating a corrupted row instead of raising —
-    one bad record must never take down a whole listing endpoint."""
+    one bad record must never take down a whole listing endpoint.
+    Also falls back to `default` if the value parses but isn't the expected
+    type (e.g. a row that somehow got stored as the JSON literal `null`,
+    or a list) — callers rely on getting back the same shape as `default`,
+    and callers like list_versions/qms2_flat do `d['id'] = ...` on the
+    result, which crashes with a TypeError on anything that isn't a dict.
+    """
     if not raw:
         return default
     try:
-        return json.loads(raw)
+        parsed = json.loads(raw)
     except (TypeError, ValueError):
         return default
+    if default is not None and not isinstance(parsed, type(default)):
+        return default
+    return parsed
 
 @app.before_request
 def require_login():
@@ -887,6 +896,8 @@ def qms2_delete(module, rid):
 @app.route('/api/qms2/<module>/bulk-delete', methods=['POST'])
 def qms2_bulk_delete(module):
     """Delete all records of a module (for clean restart)."""
+    err = require_admin()
+    if err: return err
     if module not in QMS2_MODULES:
         prefixed = 'qms2_' + module
         if prefixed in QMS2_MODULES:
