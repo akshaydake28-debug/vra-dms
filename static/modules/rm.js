@@ -87,9 +87,10 @@ function rmRenderLabels(){
     </div>
     <div class="rm-card">
       <div class="rm-ct">Supplier & Invoice</div>
-      <div class="rm-fg">
+      <div class="rm-fg3">
         <div class="rm-fg-item"><label>Supplier Name</label><input type="text" id="rm-sup" placeholder="e.g. XYZ Metals Ltd"></div>
         <div class="rm-fg-item"><label>Invoice Number</label><input type="text" id="rm-inv" placeholder="e.g. INV-2025-0047"></div>
+        <div class="rm-fg-item"><label>Net Weight Received (kg)</label><input type="number" min="0" step="0.1" id="rm-wt" placeholder="e.g. 1000"></div>
       </div>
     </div>
     <div class="rm-card">
@@ -143,12 +144,12 @@ function rmRefLot(){const d=document.getElementById('rm-date')?.value;if(!d)retu
 function rmChgQty(d){window._rmQty=Math.max(1,Math.min(20,(window._rmQty||4)+d));const e=document.getElementById('rm-qty');if(e)e.textContent=window._rmQty;}
 
 function rmVal(){
-  const fields=[{id:'rm-sup',label:'Supplier Name'},{id:'rm-inv',label:'Invoice Number'},{id:'rm-appr',label:'Approved By'},{id:'rm-date',label:'Received Date'}];
+  const fields=[{id:'rm-sup',label:'Supplier Name'},{id:'rm-inv',label:'Invoice Number'},{id:'rm-wt',label:'Net Weight Received (kg)'},{id:'rm-appr',label:'Approved By'},{id:'rm-date',label:'Received Date'}];
   for(const f of fields){if(!document.getElementById(f.id)?.value?.trim()){const m=document.getElementById('rm-msg');if(m){m.textContent='⚠ Please fill in: '+f.label;m.style.display='block';m.style.color='#dc2626';}return false;}}
   const m=document.getElementById('rm-msg');if(m)m.style.display='none';return true;
 }
 
-function rmCollect(){return{lotNumber:document.getElementById('rm-lot').value,date:document.getElementById('rm-date').value,grade:document.getElementById('rm-grade').value,supplier:document.getElementById('rm-sup').value.trim(),invoice:document.getElementById('rm-inv').value.trim(),approvedBy:document.getElementById('rm-appr').value,spectro:document.getElementById('rm-spec').value,bundles:window._rmQty||4};}
+function rmCollect(){return{lotNumber:document.getElementById('rm-lot').value,date:document.getElementById('rm-date').value,grade:document.getElementById('rm-grade').value,supplier:document.getElementById('rm-sup').value.trim(),invoice:document.getElementById('rm-inv').value.trim(),weightKg:parseFloat(document.getElementById('rm-wt').value)||null,approvedBy:document.getElementById('rm-appr').value,spectro:document.getElementById('rm-spec').value,bundles:window._rmQty||4};}
 
 async function rmSave(){
   if(!rmVal())return;
@@ -205,7 +206,7 @@ function rmBuildLabel(lot,idx,total){
 
 function rmClear(){
   const today=new Date().toISOString().split('T')[0];
-  ['rm-sup','rm-inv'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
+  ['rm-sup','rm-inv','rm-wt'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
   const a=document.getElementById('rm-appr');if(a)a.value='';
   const s=document.getElementById('rm-spec');if(s)s.value='Done';
   const d=document.getElementById('rm-date');if(d){d.value=today;}
@@ -222,29 +223,47 @@ function rmRenderML(){const items=rmGetList(window._rmAddTarget);const el=docume
 async function rmRenderRegister(){
   const lots=await rmGetLots();
   const now=new Date(),tm=lots.filter(l=>{const d=new Date(l.date);return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear();}),pend=lots.filter(l=>l.spectro==='Pending');
+  const tmKg=tm.reduce((s,l)=>s+(+l.weightKg||0),0),noWt=lots.filter(l=>!(+l.weightKg)).length;
   setC(`<div class="ph"><h2>Raw Material — Lot Register</h2><button class="btn btn-p" onclick="nav('rm-labels')">➕ New Lot</button></div>
-  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
     <div class="kpi-card"><div class="kpi-n">${lots.length}</div><div class="kpi-l">Total Lots</div></div>
     <div class="kpi-card"><div class="kpi-n">${tm.length}</div><div class="kpi-l">This Month</div></div>
+    <div class="kpi-card"><div class="kpi-n">${tmKg.toLocaleString('en-IN',{maximumFractionDigits:0})} kg</div><div class="kpi-l">Received This Month</div></div>
     <div class="kpi-card"><div class="kpi-n" style="color:${pend.length>0?'#d97706':'#16a34a'}">${pend.length}</div><div class="kpi-l">Spectro Pending</div></div>
   </div>
+  ${noWt?`<div class="alert al-w">⚠️ ${noWt} lot${noWt>1?'s have':' has'} no weight — click ✏️ in the Weight column to add it, otherwise ${noWt>1?'they are':'it is'} not counted in raw material stock.</div>`:''}
   <div class="card"><div class="tw"><table class="tbl">
-    <thead><tr><th>Lot Number</th><th>Date</th><th>Grade</th><th>Supplier</th><th>Invoice</th><th>Spectro</th><th>Approved By</th><th>Bundles</th><th></th></tr></thead>
+    <thead><tr><th>Lot Number</th><th>Date</th><th>Grade</th><th>Supplier</th><th>Invoice</th><th style="text-align:right">Weight (kg)</th><th>Spectro</th><th>Approved By</th><th>Bundles</th><th></th></tr></thead>
     <tbody>${lots.map(l=>`<tr>
       <td style="font-family:monospace;font-weight:700;color:#27500A">${l.lotNumber}</td>
       <td>${rmFmtDate(l.date)}</td>
       <td><span class="badge" style="background:#FAEEDA;color:#BA7517">${l.grade}</span></td>
-      <td>${l.supplier}</td><td style="font-family:monospace;font-size:12px">${l.invoice}</td>
+      <td>${esc(l.supplier)}</td><td style="font-family:monospace;font-size:12px">${esc(l.invoice)}</td>
+      <td style="text-align:right;white-space:nowrap;font-family:monospace">${+l.weightKg?(+l.weightKg).toLocaleString('en-IN',{maximumFractionDigits:1}):'<span style="color:#d97706">—</span>'}
+        <button class="btn btn-o btn-xs" title="Edit weight" onclick="rmEditWeight(${l.id},${+l.weightKg||0})">✏️</button></td>
       <td><span class="badge ${l.spectro==='Done'?'ba':'bp'}">${l.spectro}</span></td>
       <td>${l.approvedBy}</td><td style="text-align:center">${l.bundles}</td>
       <td><div style="display:flex;gap:5px">
         <button class="btn btn-sm" style="background:#FAEEDA;color:#BA7517" onclick="rmPrintReg(${l.id})">🖨</button>
         <button class="btn btn-r btn-sm" onclick="rmDelLot(${l.id})">✕</button>
       </div></td>
-    </tr>`).join('')||'<tr><td colspan="9" style="text-align:center;padding:28px;color:#9ca3af">No lots yet.</td></tr>'}
+    </tr>`).join('')||'<tr><td colspan="10" style="text-align:center;padding:28px;color:#9ca3af">No lots yet.</td></tr>'}
     </tbody>
   </table></div></div>
 `);
+}
+
+async function rmEditWeight(id,cur){
+  const v=prompt('Net weight received for this lot (kg):',cur||'');
+  if(v===null) return;
+  const kg=parseFloat(v);
+  if(!(kg>=0)){toast('Enter a valid weight','d');return;}
+  try{
+    const r=await fetch(window.location.origin+'/api/rm/lots/'+id,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({weightKg:kg})});
+    if(!r.ok) throw new Error(r.status);
+    toast('✅ Weight saved');
+  }catch(e){toast('Save failed','d');}
+  rmRenderRegister();
 }
 
 async function rmDelLot(id){if(!confirm('Delete this lot?'))return;await fetch(window.location.origin+'/api/rm/lots/'+id,{method:'DELETE'});toast('Lot deleted','s');rmRenderRegister();}
