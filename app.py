@@ -1490,4 +1490,7 @@ with app.app_context():
         print(f"Startup warning: {e}")
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    # Defaults to off so a stray `python app.py` never exposes the
+    # Werkzeug debugger (arbitrary code execution) outside local dev.
+    # Set FLASK_DEBUG=1 to opt in when developing locally.
+    app.run(debug=os.environ.get('FLASK_DEBUG') == '1')
