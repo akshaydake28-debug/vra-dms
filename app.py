@@ -129,6 +129,16 @@ ADMIN_ROLE = 'APPROVER'
 def is_hashed(pw):
     return bool(pw) and pw.startswith(HASH_PREFIXES)
 
+def safe_json_loads(raw, default):
+    """Parse stored JSON, tolerating a corrupted row instead of raising —
+    one bad record must never take down a whole listing endpoint."""
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return default
+
 @app.before_request
 def require_login():
     path = request.path
@@ -248,7 +258,7 @@ def list_documents():
         'docType':d.doc_type,'revision':d.revision,'status':d.status,
         'content':d.content,'createdBy':d.created_by,'approvedBy':d.approved_by,
         'createdDate':d.created_date,'approvedDate':d.approved_date,
-        'extra':json.loads(d.extra) if d.extra else {}
+        'extra':safe_json_loads(d.extra, {})
     } for d in docs])
 
 @app.route('/api/documents', methods=['POST'])
@@ -297,7 +307,7 @@ def list_versions():
     records = GenericRecord.query.filter_by(module='versions').order_by(GenericRecord.id.asc()).all()
     result = []
     for r in records:
-        d = json.loads(r.data)
+        d = safe_json_loads(r.data, {})
         d['id'] = r.id
         if doc_id is None or d.get('docId') == doc_id:
             result.append(d)
@@ -313,7 +323,7 @@ def save_version():
 @app.route('/api/versions/<int:rid>', methods=['POST'])
 def update_version(rid):
     r = GenericRecord.query.get_or_404(rid)
-    existing = json.loads(r.data)
+    existing = safe_json_loads(r.data, {})
     existing.update(request.json)
     r.data = json.dumps(existing)
     r.updated_at = datetime.utcnow()
@@ -356,7 +366,7 @@ def post_audit_log():
 @app.route('/api/settings/<key>', methods=['GET'])
 def get_setting(key):
     r = GenericRecord.query.filter_by(module='setting_'+key).first()
-    return jsonify({'value': json.loads(r.data) if r else None})
+    return jsonify({'value': safe_json_loads(r.data, default=None) if r else None})
 
 @app.route('/api/settings/<key>', methods=['POST'])
 def save_setting(key):
@@ -601,7 +611,7 @@ def public_feedback_submit(token):
 @app.route('/api/<module>', methods=['GET'])
 def list_generic(module):
     records = GenericRecord.query.filter_by(module=module).order_by(GenericRecord.id.desc()).all()
-    return jsonify([{'id':r.id,'data':json.loads(r.data),'createdAt':str(r.created_at)} for r in records])
+    return jsonify([{'id':r.id,'data':safe_json_loads(r.data, {}),'createdAt':str(r.created_at)} for r in records])
 
 @app.route('/api/<module>', methods=['POST'])
 def save_generic(module):
@@ -627,7 +637,7 @@ def save_generic(module):
 def get_generic_one(module, rid):
     r = GenericRecord.query.get(rid)
     if not r: return jsonify(None), 404
-    return jsonify({'id':r.id,'data':json.loads(r.data),'createdAt':str(r.created_at)})
+    return jsonify({'id':r.id,'data':safe_json_loads(r.data, {}),'createdAt':str(r.created_at)})
 
 @app.route('/api/<module>/<int:rid>', methods=['POST'])
 def update_generic_one(module, rid):
@@ -793,7 +803,7 @@ QMS2_MODULES = [
 
 def qms2_flat(r):
     """Return a GenericRecord as flat dict with id."""
-    d = json.loads(r.data)
+    d = safe_json_loads(r.data, {})
     d['id'] = r.id
     d['_createdAt'] = str(r.created_at)
     return d
@@ -877,15 +887,15 @@ def qms2_bulk_delete(module):
 def qms2_impact(pfmea_part_id):
     """Return impact analysis for a PFMEA part change."""
     cp_parts = [qms2_flat(r) for r in GenericRecord.query.filter_by(module='qms2_cp_parts').all()
-                if json.loads(r.data).get('pfmeaPartId') == pfmea_part_id]
+                if safe_json_loads(r.data, {}).get('pfmeaPartId') == pfmea_part_id]
     cp_ids = [c['id'] for c in cp_parts]
     cp_rows = []
     cs_records = []
     for cp_id in cp_ids:
         cp_rows += [qms2_flat(r) for r in GenericRecord.query.filter_by(module='qms2_cp_rows').all()
-                    if json.loads(r.data).get('cpId') == cp_id]
+                    if safe_json_loads(r.data, {}).get('cpId') == cp_id]
         cs_records += [qms2_flat(r) for r in GenericRecord.query.filter_by(module='qms2_cs_records').all()
-                       if json.loads(r.data).get('cpId') == cp_id]
+                       if safe_json_loads(r.data, {}).get('cpId') == cp_id]
     return jsonify({
         'pfmeaPartId': pfmea_part_id,
         'controlPlans': len(cp_parts),
