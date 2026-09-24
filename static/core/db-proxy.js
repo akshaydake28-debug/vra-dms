@@ -286,8 +286,12 @@ const db = {
   dirHandles:     dirHandlesTable,
   parts:          makeTable('parts'),
   // Production
-  prodLogs:       makeTable('prodLogs'),
-  prodDefects:    makeTable('prodDefects'),
+  prodMachines:   makeTable('prodMachines'),
+  prodParts:      makeTable('prodParts'),
+  prodDefectCodes:makeTable('prodDefectCodes'),
+  prodShifts:     makeTable('prodShifts'),
+  prodDispatch:   makeTable('prodDispatch'),
+  prodStockAdj:   makeTable('prodStockAdj'),
   // Quality
   complaints:     makeTable('complaints'),
   qualAlerts:     makeTable('qualAlerts'),

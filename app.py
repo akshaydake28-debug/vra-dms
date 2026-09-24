@@ -66,7 +66,21 @@ class RMLot(db.Model):
     approved_by = db.Column(db.String(100))
     spectro = db.Column(db.String(20))
     bundles = db.Column(db.Integer)
+    weight_kg = db.Column(db.Float)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {'id':self.id,'lotNumber':self.lot_number,'date':self.date,
+            'grade':self.grade,'supplier':self.supplier,'invoice':self.invoice,
+            'approvedBy':self.approved_by,'spectro':self.spectro,'bundles':self.bundles,
+            'weightKg':self.weight_kg}
+
+def _to_float(v):
+    try:
+        f = float(v)
+        return f if f >= 0 else None
+    except (TypeError, ValueError):
+        return None
 
 class GenericRecord(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -392,11 +406,7 @@ def save_setting(key):
 @app.route('/api/rm/lots', methods=['GET'])
 def list_rm_lots():
     lots = RMLot.query.order_by(RMLot.id.desc()).all()
-    return jsonify([{
-        'id':l.id,'lotNumber':l.lot_number,'date':l.date,
-        'grade':l.grade,'supplier':l.supplier,'invoice':l.invoice,
-        'approvedBy':l.approved_by,'spectro':l.spectro,'bundles':l.bundles
-    } for l in lots])
+    return jsonify([l.to_dict() for l in lots])
 
 @app.route('/api/rm/lots', methods=['POST'])
 def save_rm_lot():
@@ -408,11 +418,23 @@ def save_rm_lot():
         lot_number=d.get('lotNumber'), date=d.get('date',''),
         grade=d.get('grade',''), supplier=d.get('supplier',''),
         invoice=d.get('invoice',''), approved_by=d.get('approvedBy',''),
-        spectro=d.get('spectro',''), bundles=d.get('bundles',1)
+        spectro=d.get('spectro',''), bundles=d.get('bundles',1),
+        weight_kg=_to_float(d.get('weightKg'))
     )
     db.session.add(lot)
     db.session.commit()
     return jsonify({'id': lot.id})
+
+@app.route('/api/rm/lots/<int:lid>', methods=['POST'])
+def update_rm_lot(lid):
+    # Only the received weight is editable — lot identity fields stay as printed on the labels.
+    l = RMLot.query.get(lid)
+    if not l:
+        return jsonify({'error': 'Not found'}), 404
+    d = request.get_json(silent=True) or {}
+    l.weight_kg = _to_float(d.get('weightKg'))
+    db.session.commit()
+    return jsonify(l.to_dict())
 
 @app.route('/api/rm/lots/<int:lid>', methods=['DELETE'])
 def delete_rm_lot(lid):
@@ -452,9 +474,7 @@ def backup():
             'user':l.user,'notes':l.notes,'timestamp':str(l.timestamp)})
     for u in User.query.all():
         data['users'].append({'id':u.id,'username':u.username,'role':u.role,'name':u.name})
-    data['rm_lots'] = [{'lotNumber':l.lot_number,'date':l.date,'grade':l.grade,
-        'supplier':l.supplier,'invoice':l.invoice,'approvedBy':l.approved_by,
-        'spectro':l.spectro,'bundles':l.bundles} for l in RMLot.query.all()]
+    data['rm_lots'] = [{k:v for k,v in l.to_dict().items() if k != 'id'} for l in RMLot.query.all()]
     # All generic modules
     modules = {}
     for r in GenericRecord.query.all():
@@ -533,7 +553,8 @@ def restore():
                 lot_number=l.get('lotNumber'), date=l.get('date',''),
                 grade=l.get('grade',''), supplier=l.get('supplier',''),
                 invoice=l.get('invoice',''), approved_by=l.get('approvedBy',''),
-                spectro=l.get('spectro',''), bundles=l.get('bundles',1)
+                spectro=l.get('spectro',''), bundles=l.get('bundles',1),
+                weight_kg=_to_float(l.get('weightKg'))
             )
             db.session.add(lot)
 
@@ -1475,9 +1496,20 @@ def seed_pq_grades():
     db.session.commit()
     print("Grade Master seeded (8 grades from VRA-SOP-001 / VRA-SOP-017)")
 
+def migrate_columns():
+    """create_all() never alters existing tables — add columns introduced after first deploy."""
+    insp = db.inspect(db.engine)
+    table = RMLot.__table__.name
+    if table in insp.get_table_names():
+        cols = {c['name'] for c in insp.get_columns(table)}
+        if 'weight_kg' not in cols:
+            with db.engine.begin() as conn:
+                conn.execute(db.text(f'ALTER TABLE {table} ADD COLUMN weight_kg FLOAT'))
+
 with app.app_context():
     try:
         db.create_all()
+        migrate_columns()
         seed_users()
         seed_qms2()
         seed_pq()
