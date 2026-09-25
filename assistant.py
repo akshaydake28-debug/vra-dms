@@ -23,7 +23,9 @@ import urllib.request
 from datetime import date, datetime, timedelta
 
 GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent'
-DEFAULT_MODEL = 'gemini-2.5-flash'
+MODELS_URL = 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000'
+DEFAULT_MODEL = 'gemini-flash-latest'   # Google's alias for the current Flash model
+_picked_model = {}                      # key -> model found via ListModels after a 404
 MAX_TOOL_ROUNDS = 6
 
 # ══════════════════════════════════════════════════════
@@ -847,17 +849,38 @@ def _gemini(key, model, body):
         return json.loads(r.read().decode())
 
 
+def _list_models(key):
+    req = urllib.request.Request(MODELS_URL, headers={'x-goog-api-key': key})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        data = json.loads(r.read().decode())
+    return [m['name'].split('/', 1)[-1] for m in data.get('models', [])
+            if 'generateContent' in (m.get('supportedGenerationMethods') or [])]
+
+
+def pick_model(names):
+    """Best general chat model the key can use: newest stable Flash, then Flash previews, then Pro."""
+    skip = ('image', 'tts', 'audio', 'live', 'embed', 'vision', 'learnlm', 'gemma', 'computer', 'robotics', 'exp')
+    def rank(n):
+        m = re.match(r'gemini-(\d+(?:\.\d+)?)', n)
+        ver = float(m.group(1)) if m else 0.0
+        return ('flash' in n, 'lite' not in n, 'preview' not in n, ver, n.endswith('latest'))
+    cands = [n for n in names if n.startswith('gemini') and not any(x in n for x in skip)]
+    return max(cands, key=rank) if cands else None
+
+
 class AssistantError(Exception):
     pass
 
 
-def answer(messages, load, key=None, model=None, call=None):
+def answer(messages, load, key=None, model=None, call=None, lister=None):
     """messages: [{'role': 'user'|'assistant', 'text': str}], oldest first. Returns (reply, tools_used)."""
     key = key or os.environ.get('GEMINI_API_KEY', '').strip()
     if not key:
         raise AssistantError('The assistant is not set up: add GEMINI_API_KEY in Railway → Variables and redeploy.')
-    model = model or os.environ.get('GEMINI_MODEL', '').strip() or DEFAULT_MODEL
+    model = model or os.environ.get('GEMINI_MODEL', '').strip() or _picked_model.get(key) or DEFAULT_MODEL
     call = call or _gemini
+    lister = lister or _list_models
+    rediscovered = False
     ctx = build_ctx(load)
     contents = [{'role': 'model' if m.get('role') == 'assistant' else 'user', 'parts': [{'text': str(m.get('text', ''))[:4000]}]}
                 for m in messages[-12:] if str(m.get('text', '')).strip()]
@@ -865,7 +888,8 @@ def answer(messages, load, key=None, model=None, call=None):
             'tools': [{'functionDeclarations': tool_declarations()}],
             'generationConfig': {'temperature': 0.2}}
     used = []
-    for _ in range(MAX_TOOL_ROUNDS):
+    rounds = 0
+    while rounds < MAX_TOOL_ROUNDS:
         try:
             res = call(key, model, dict(body, contents=contents))
         except urllib.error.HTTPError as e:
@@ -876,6 +900,20 @@ def answer(messages, load, key=None, model=None, call=None):
                 pass
             if e.code in (401, 403) or 'API key' in detail:
                 raise AssistantError('Gemini rejected the API key — check GEMINI_API_KEY in Railway.')
+            if e.code == 404 and not rediscovered:
+                # Model names change over time: ask Google which models this key can use and switch.
+                rediscovered = True
+                try:
+                    names = lister(key)
+                except Exception:
+                    names = []
+                best = pick_model(names)
+                if best and best != model:
+                    model = _picked_model[key] = best
+                    continue
+                raise AssistantError(f'Gemini model "{model}" is not available for this key'
+                                     + (f' (available: {", ".join(sorted(names)[:8])})' if names else '')
+                                     + ' — set GEMINI_MODEL in Railway.')
             if e.code == 404:
                 raise AssistantError(f'Gemini model "{model}" not found — set GEMINI_MODEL in Railway to a current model name.')
             if e.code == 429:
@@ -883,6 +921,7 @@ def answer(messages, load, key=None, model=None, call=None):
             raise AssistantError(f'Gemini error {e.code}: {detail or e.reason}')
         except (urllib.error.URLError, TimeoutError) as e:
             raise AssistantError(f'Could not reach Gemini: {getattr(e, "reason", e)}')
+        rounds += 1
         cands = res.get('candidates') or []
         if not cands:
             reason = (res.get('promptFeedback') or {}).get('blockReason')
