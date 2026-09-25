@@ -1535,7 +1535,7 @@ async function prodRenderSetup(){
   </div>
   <div class="card" style="margin-top:14px"><div class="ch"><h5>Sample data</h5></div><div class="cb" style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
     <div style="flex:1;min-width:280px;font-size:12.5px;color:#374151">
-      Fill the last 10 days with made-up shift entries so you can see how the reports look. They use their own
+      Fill the last 10 days with made-up shift and fettling entries so you can see how the reports look. They use their own
       <b>SAMPLE-</b> parts (Sample Customer A/B/C), so your real parts and their stock are not touched.
       <span id="pdemo-status" style="color:#6b7280"></span>
     </div>
@@ -1553,16 +1553,16 @@ const PROD_DEMO_PARTS=[
   {partNumber:'SAMPLE-202', partName:'Cover (sample)',         customer:'Sample Customer A', grade:'A380',  netWeightKg:0.50, cavities:2, ct:[70,64], sched:20000, mi:1},
 ];
 async function prodDemoStatus(){
-  const [shifts,parts]=await Promise.all([db.prodShifts.toArray().catch(()=>[]),db.prodParts.toArray().catch(()=>[])]);
-  const n=shifts.filter(s=>s.demo).length, p=parts.filter(x=>x.demo).length;
+  const [shifts,parts,fet]=await Promise.all([db.prodShifts.toArray().catch(()=>[]),db.prodParts.toArray().catch(()=>[]),db.prodFettling.toArray().catch(()=>[])]);
+  const n=shifts.filter(s=>s.demo).length, p=parts.filter(x=>x.demo).length, f=fet.filter(x=>x.demo).length;
   const el=document.getElementById('pdemo-status');
-  if(el) el.textContent=n||p? ` Currently: ${n} sample shift entries, ${p} sample parts.` : ' No sample data at the moment.';
+  if(el) el.textContent=n||p||f? ` Currently: ${n} sample shift entries, ${f} sample fettling entries, ${p} sample parts.` : ' No sample data at the moment.';
 }
 async function prodDemoGenerate(){
   const ctx=await prodCtx();
   const machines=ctx.machines.filter(m=>m.active!==false).slice(0,2);
   if(!machines.length){ toast('Add a machine first','d'); return; }
-  if(!confirm('Create 10 days of sample shift entries on '+machines.map(m=>m.code).join(' & ')+'? Shifts that already have a real entry are skipped.')) return;
+  if(!confirm('Create 10 days of sample shift and fettling entries on '+machines.map(m=>m.code).join(' & ')+'? Shifts that already have a real entry are skipped.')) return;
   toast('Generating sample data…');
   // sample parts (re-used if already there)
   const parts=await db.prodParts.toArray();
@@ -1613,16 +1613,44 @@ async function prodDemoGenerate(){
       made++;
     }
   }
-  toast(`✅ Created ${made} sample shift entries — see Production Reports`);
+  // Fettling: a fixed crew fettles roughly the previous day's OK castings (skips dates with a real entry)
+  const fetDates=new Set((await db.prodFettling.toArray().catch(()=>[])).map(e=>e.date));
+  const crew=['Ramesh','Suresh','Mahesh','Ganesh','Dinesh','Prakash','Santosh','Vijay'];
+  const skill=Object.fromEntries(crew.map(c=>[c,.8+rnd()*.4]));       // some people are quicker than others
+  const care=Object.fromEntries(crew.map(c=>[c,.003+rnd()*.02]));     // …and some more careful
+  const partIds=PROD_DEMO_PARTS.map(d=>pid[d.partNumber]);
+  let fetMade=0;
+  for(let d=9; d>=0; d--){
+    const date=prodDaysAgo(d);
+    if(fetDates.has(date)) continue;
+    const present=crew.filter(()=>rnd()>.1);                          // someone is usually absent
+    const rows=[];
+    for(const person of present){
+      const nParts=rnd()<.3?2:1;
+      for(let k=0;k<nParts;k++){
+        const partId=partIds[Math.floor(rnd()*partIds.length)], def=defById[partId];
+        const base=def.netWeightKg>.6?160:def.netWeightKg>.3?260:420;   // heavier parts take longer
+        const qty=Math.round(base*skill[person]*(nParts===2?.55:1)*(.85+rnd()*.3));
+        const rej=Math.round(qty*care[person]*(.5+rnd()));
+        rows.push({person, partId, qty, rej, reason:rej?PROD_FET_REASONS[Math.floor(rnd()*rnd()*PROD_FET_REASONS.length)]:''});
+      }
+    }
+    await db.prodFettling.add({date, rows, remarks:'Sample data', demo:true,
+      createdAt:new Date().toISOString(), createdBy:Auth.user?.name||''});
+    fetMade++;
+  }
+  toast(`✅ Created ${made} sample shift entries and ${fetMade} fettling entries — see Production Reports`);
   prodDemoStatus();
 }
 async function prodDemoDelete(){
-  const [shifts,parts]=await Promise.all([db.prodShifts.toArray(),db.prodParts.toArray()]);
-  const ds=shifts.filter(s=>s.demo), dp=parts.filter(p=>p.demo);
-  if(!ds.length&&!dp.length){ toast('No sample data to delete'); return; }
-  if(!confirm(`Delete ${ds.length} sample shift entries and ${dp.length} sample parts? Real entries are not touched.`)) return;
+  const [shifts,parts,fet]=await Promise.all([db.prodShifts.toArray(),db.prodParts.toArray(),db.prodFettling.toArray().catch(()=>[])]);
+  const ds=shifts.filter(s=>s.demo), dp=parts.filter(p=>p.demo), df=fet.filter(e=>e.demo);
+  if(!ds.length&&!dp.length&&!df.length){ toast('No sample data to delete'); return; }
+  if(!confirm(`Delete ${ds.length} sample shift entries, ${df.length} sample fettling entries and ${dp.length} sample parts? Real entries are not touched.`)) return;
   for(const s of ds) await db.prodShifts.delete(s.id);
-  const stillUsed=new Set(shifts.filter(s=>!s.demo).flatMap(s=>(s.runs||[]).map(r=>String(r.partId))));
+  for(const e of df) await db.prodFettling.delete(e.id);
+  const stillUsed=new Set([...shifts.filter(s=>!s.demo).flatMap(s=>(s.runs||[]).map(r=>String(r.partId))),
+    ...fet.filter(e=>!e.demo).flatMap(e=>(e.rows||[]).map(r=>String(r.partId)))]);
   for(const p of dp) if(!stillUsed.has(String(p.id))) await db.prodParts.delete(p.id);
   toast('🗑️ Sample data deleted');
   prodDemoStatus();
