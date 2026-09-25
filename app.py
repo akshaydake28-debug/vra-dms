@@ -26,6 +26,13 @@ app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=30)
 db_url = os.environ.get('DATABASE_URL', 'sqlite:///vra_dms.db')
 if db_url.startswith('postgres://'):
     db_url = db_url.replace('postgres://', 'postgresql://', 1)
+if db_url.startswith('postgresql://'):
+    # Force the psycopg2 driver explicitly (only one installed, per
+    # requirements.txt). Newer SQLAlchemy versions default a bare
+    # "postgresql://" URL to the psycopg (v3) driver instead, which isn't
+    # installed — that took production down with a ModuleNotFoundError
+    # the moment a routine dependency install picked up a newer SQLAlchemy.
+    db_url = db_url.replace('postgresql://', 'postgresql+psycopg2://', 1)
 app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
