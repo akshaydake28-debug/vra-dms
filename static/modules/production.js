@@ -41,7 +41,8 @@ const PROD_DEFAULT_DEFECTS = [
   {code:'DIM',     description:'Dimensional NG',        onSheet:false, order:9},
   {code:'OTHER',   description:'Other',                 onSheet:false, order:10},
 ];
-const PROD_CFG_DEFAULT = {meltLossPct:6, consumptionBasis:'all', plannedMinutes:720};
+const PROD_CFG_DEFAULT = {meltLossPct:6, consumptionBasis:'all', plannedMinutes:720,
+  workDays:26, shiftsPerDay:2, hoursPerShift:12, targetOeePct:75};   // capacity planning
 const PROD_ADJ_REASONS = ['Opening Stock','Physical Count Correction','Scrap / Write-off','Return / Rework','Other'];
 
 // ── small helpers ────────────────────────────────────
@@ -50,7 +51,11 @@ function prodToday(){ return prodDate(); }
 function prodDaysAgo(n){ const d=new Date(); d.setDate(d.getDate()-n); return prodDate(d); }
 function prodAddDays(ds,n){ const d=new Date(ds+'T00:00:00'); d.setDate(d.getDate()+n); return prodDate(d); }
 function prodN(v){ const n=parseFloat(v); return isFinite(n)?n:0; }
-function prodFmt(n,dp=0){ return isFinite(n)? Number(n).toLocaleString('en-IN',{minimumFractionDigits:dp,maximumFractionDigits:dp}) : '—'; }
+function prodFmt(n,dp=0){
+  if(!isFinite(n)) return '—';
+  if(Math.abs(n)<0.5*10**-dp) n=0;                       // no "-0"
+  return Number(n).toLocaleString('en-IN',{minimumFractionDigits:dp,maximumFractionDigits:dp});
+}
 function prodPct(x,dp=1){ return isFinite(x)? (x*100).toFixed(dp)+'%' : '—'; }
 function prodHrs(min){ return isFinite(min)? (min/60).toFixed(1)+' h' : '—'; }
 function prodTier(x,hi,lo){ return x>=hi?'#16a34a':x>=lo?'#d97706':'#dc2626'; }
@@ -663,6 +668,7 @@ const PROD_REPORT_TABS=[
   {k:'rej', l:'Rejection'},
   {k:'mat', l:'Material'},
   {k:'cust', l:'Customer Mix'},
+  {k:'cap',  l:'Capacity'},
 ];
 const PROD_PERIODS=[
   {k:'today', l:'Today',      range:()=>[prodToday(),prodToday()]},
@@ -740,15 +746,20 @@ async function prodRenderReports(opts={}){
   if(f.period){ const p=PROD_PERIODS.find(x=>x.k===f.period); if(p) [f.from,f.to]=p.range(); }
   const ctx=await prodCtx();
   const partFilter=tab==='rej'||tab==='mat'? f.partId : '';
-  const rows=await prodLoadShifts(ctx,{from:f.from,to:f.to,machineId:f.machineId,shift:f.shift,partId:partFilter});
-  const body = tab==='oee'? prodRepOEE(ctx,rows) : tab==='rej'? prodRepRejection(ctx,rows) : tab==='mat'? prodRepMaterial(ctx,rows) : prodRepCustomers(ctx,rows);
+  let body;
+  if(tab==='cap') body=await prodRepCapacity(ctx);
+  else {
+    const rows=await prodLoadShifts(ctx,{from:f.from,to:f.to,machineId:f.machineId,shift:f.shift,partId:partFilter});
+    body = tab==='oee'? prodRepOEE(ctx,rows) : tab==='rej'? prodRepRejection(ctx,rows) : tab==='mat'? prodRepMaterial(ctx,rows) : prodRepCustomers(ctx,rows);
+  }
   setC(`${PROD_REPORT_CSS}
   <div class="pr-top">
     <h2 style="font-size:16px;font-weight:700;color:var(--navy)">📊 Production Reports</h2>
     <div class="pr-tabs">${PROD_REPORT_TABS.map(t=>`<button class="pr-tab ${t.k===tab?'on':''}" onclick="prodRepTab('${t.k}')">${t.l}</button>`).join('')}</div>
   </div>
-  ${prodRepFilters(ctx)}
+  ${tab==='cap'?'':prodRepFilters(ctx)}
   ${body}`);
+  if(tab==='cap') prodCapCalc();
 }
 
 // With a part filter, keep only that part's runs (a shift may run several parts)
@@ -946,6 +957,109 @@ function prodRepCustomers(ctx,rows){
       <td class="n mono">${prodFmt(x.kg,1)}</td><td class="n mono" style="font-weight:700">${prodPct(share(x,'kg'))}</td>
       <td class="n mono">${prodFmt(x.hrs,1)}</td><td class="n mono" style="font-weight:700">${prodPct(share(x,'hrs'))}</td></tr>`).join('')}</tbody></table>
     <div class="pr-note" style="padding-top:10px">Machine time = shots × target cycle time — how much of the machines' productive time each customer's parts took.</div>`)}`;
+}
+
+// ── Capacity ─────────────────────────────────────────
+// Available  = working days × shifts × hours (per machine, per month).
+// Load       = hours the machine needs for the work, at a given OEE:
+//              ideal hours (good shots × target cycle time) ÷ OEE.
+//   • Schedule: monthly pcs per part (Part Master) ÷ cavities × CT.
+//   • Last 30 days: OK shots actually made × CT (from shift entries),
+//     averaged per day with entries and scaled to the working days.
+// Free       = Available − Load; sellable = free hours × OEE ÷ CT × cavities.
+async function prodCapData(ctx){
+  const cfg=ctx.cfg;
+  const avail=prodN(cfg.workDays)*prodN(cfg.shiftsPerDay)*prodN(cfg.hoursPerShift);
+  const target=Math.min(1,Math.max(.01,prodN(cfg.targetOeePct)/100));
+  const rows=await prodLoadShifts(ctx,{from:prodDaysAgo(29),to:prodToday()});
+  const days=new Set(rows.map(r=>r.s.date)).size;
+  const mcs=ctx.machines.filter(m=>m.active!==false).map(m=>{
+    const mine=rows.filter(r=>String(r.s.machineId)===String(m.id));
+    const t=prodAgg(mine.map(r=>r.c)).t;
+    // good-part hours at target cycle time over the last 30 days
+    let histIdeal=0;
+    for(const {c} of mine) for(const r of c.runs) if(r.ct) histIdeal+=r.okShots*r.ct/3600;
+    if(days) histIdeal=histIdeal/days*prodN(cfg.workDays);          // per-day average → one month
+    const actual=t.oee>0? t.oee : null;
+    const sched=ctx.parts.filter(p=>p.active!==false&&prodN(p.monthlySchedule)>0&&String(prodSchedMachine(p,ctx))===String(m.id));
+    let schedIdeal=0, noCT=0;
+    for(const p of sched){ const ct=prodCT(p,m.id); if(!ct){ noCT++; continue; } schedIdeal+=prodN(p.monthlySchedule)/(prodN(p.cavities)||1)*ct/3600; }
+    return {m, actual, schedIdeal, histIdeal, noCT, sched};
+  });
+  return {avail, target, days, mcs};
+}
+// Machine a scheduled part is planned on: chosen one, else the first machine with a cycle time
+function prodSchedMachine(p,ctx){
+  if(p.scheduleMachineId) return p.scheduleMachineId;
+  const m=ctx.machines.find(m=>m.active!==false&&prodCT(p,m.id)); return m?.id||'';
+}
+
+async function prodRepCapacity(ctx){
+  const d=await prodCapData(ctx); window._prodCap=d;
+  const {avail,target}=d;
+  const free=(ideal,oee)=>oee? avail-ideal/oee : null;
+  const cell=(ideal,oee)=>{ if(!oee) return `<td class="n" style="color:#9ca3af">no data</td>`;
+    const load=ideal/oee, f=avail-load, u=avail?load/avail:0;
+    return `<td class="n"><div class="mono" style="font-weight:700;color:${f<0?'#dc2626':u>.85?'#d97706':'#16a34a'}">${prodFmt(f)} h free</div>
+      <div style="font-size:11.5px;color:#6b7280">${prodPct(u,0)} loaded · ${prodFmt(load)} h</div></td>`; };
+  const bar=(ideal,oee)=>{ if(!oee) return ''; const u=Math.min(1.2,ideal/oee/avail);
+    return `<div style="height:8px;background:#eef1f7;border-radius:4px;overflow:hidden;margin-top:6px"><div style="width:${Math.min(100,u*100)}%;height:8px;background:${u>1?'#dc2626':u>.85?'#d97706':'var(--navy)'}"></div></div>`; };
+  const totAvail=avail*d.mcs.length;
+  const totFree=(k,oeeFn)=>d.mcs.reduce((s,x)=>{ const o=oeeFn(x); return s+(o? avail-x[k]/o : 0); },0);
+  const schedParts=ctx.parts.filter(p=>p.active!==false);
+  const machineOpts=p=>ctx.machines.filter(m=>m.active!==false).map(m=>`<option value="${m.id}" ${String(prodSchedMachine(p,ctx))===String(m.id)?'selected':''}>${esc(m.code)}${prodCT(p,m.id)?'':' (no CT)'}</option>`).join('');
+
+  return `
+  <div class="pr-kpis">
+    ${prodKpi('Machine hours / month',prodFmt(totAvail),`${d.mcs.length} machines × ${prodFmt(avail)} h (${prodFmt(ctx.cfg.workDays)} d × ${prodFmt(ctx.cfg.shiftsPerDay)} × ${prodFmt(ctx.cfg.hoursPerShift)} h)`)}
+    ${prodKpi('Free — by schedule',prodFmt(totFree('schedIdeal',()=>target))+' h',`at target OEE ${prodPct(target,0)}`)}
+    ${prodKpi('Free — last 30 days',prodFmt(totFree('histIdeal',x=>x.actual))+' h',`at actual OEE · ${d.days} day${d.days===1?'':'s'} with entries`)}
+    ${prodKpi('Target OEE',prodPct(target,0),`<a href="#" onclick="event.preventDefault();nav('prod-setup')">change in Settings</a>`)}
+  </div>
+  ${d.mcs.some(x=>x.noCT)?`<div class="pr-warn">Some scheduled parts have no target cycle time on their machine and are not counted — set it in <a href="#" onclick="event.preventDefault();nav('prod-parts')">Part Master</a>.</div>`:''}
+  ${prodCard('Free capacity per machine',`<table class="pr-tbl"><thead><tr><th>Machine</th><th>Based on</th><th class="n">At actual OEE</th><th class="n">At target OEE (${prodPct(target,0)})</th></tr></thead>
+    <tbody>${d.mcs.map(x=>`
+      <tr class="grp"><td rowspan="2" style="vertical-align:top"><b style="font-size:14px">${esc(x.m.code)}</b><div style="font-size:11.5px;color:#6b7280">${prodFmt(avail)} h / month<br>actual OEE ${x.actual?prodPct(x.actual,0):'—'}</div></td>
+        <td>Monthly schedule<div style="font-size:11.5px;color:#6b7280">${x.sched.length} part${x.sched.length===1?'':'s'} · ${prodFmt(x.schedIdeal,1)} h at target CT</div>${bar(x.schedIdeal,target)}</td>
+        ${cell(x.schedIdeal,x.actual)}${cell(x.schedIdeal,target)}</tr>
+      <tr><td>Last 30 days actual<div style="font-size:11.5px;color:#6b7280">${prodFmt(x.histIdeal,1)} h good-part time / month (avg of ${d.days} day${d.days===1?'':'s'})</div>${bar(x.histIdeal,x.actual)}</td>
+        ${cell(x.histIdeal,x.actual)}${cell(x.histIdeal,target)}</tr>`).join('')}</tbody></table>
+    <div class="pr-note" style="padding-top:10px">Load = good-part time at target cycle time ÷ OEE. Free = available − load. Green = room to spare, amber = over 85% loaded, red = overloaded.</div>`)}
+  ${prodCard('Can I take on a new part?',`<div class="b">
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end">
+      <div class="fg" style="margin:0"><label class="lbl">Machine</label><select class="fc" id="pcap-m" onchange="prodCapCalc()" style="width:140px">${d.mcs.map(x=>`<option value="${x.m.id}">${esc(x.m.code)}</option>`).join('')}</select></div>
+      <div class="fg" style="margin:0"><label class="lbl">Cycle time (s / shot)</label><input class="fc" type="number" min="1" id="pcap-ct" value="60" oninput="prodCapCalc()" style="width:130px"></div>
+      <div class="fg" style="margin:0"><label class="lbl">Cavities</label><input class="fc" type="number" min="1" id="pcap-cav" value="1" oninput="prodCapCalc()" style="width:90px"></div>
+      <div class="fg" style="margin:0"><label class="lbl">Customer wants (pcs / month)</label><input class="fc" type="number" min="0" id="pcap-need" placeholder="optional" oninput="prodCapCalc()" style="width:170px"></div>
+    </div>
+    <div id="pcap-out" style="margin-top:12px"></div></div>`)}
+  ${prodCard('Monthly schedule',`<table class="pr-tbl"><thead><tr><th>Part</th><th>Customer</th><th>Machine</th><th class="n">Cav.</th><th class="n">CT (s)</th><th class="n" style="width:150px">Pcs / month</th><th class="n">Machine h at target OEE</th></tr></thead>
+    <tbody>${schedParts.map(p=>{ const mid=prodSchedMachine(p,ctx), ct=prodCT(p,mid), q=prodN(p.monthlySchedule);
+      const h=ct&&q? q/(prodN(p.cavities)||1)*ct/3600/target : 0;
+      return `<tr><td><b>${esc(p.partNumber)}</b> <span style="color:#6b7280;font-size:12px">${esc(p.partName||'')}</span></td><td>${esc(p.customer||'')}</td>
+      <td><select class="fc" style="height:30px;padding:0 6px;width:120px" onchange="prodCapSave(${p.id},{scheduleMachineId:+this.value})">${machineOpts(p)}</select></td>
+      <td class="n mono">${prodN(p.cavities)||1}</td><td class="n mono">${ct||'<span style="color:#d97706">—</span>'}</td>
+      <td class="n"><input class="fc mono" style="height:30px;text-align:right" type="number" min="0" value="${q||''}" placeholder="0" onchange="prodCapSave(${p.id},{monthlySchedule:prodN(this.value)})"></td>
+      <td class="n mono">${h?prodFmt(h,1):'—'}</td></tr>`; }).join('')||`<tr><td colspan="7" class="pr-empty">No parts in Part Master yet.</td></tr>`}</tbody></table>
+    <div class="pr-note" style="padding-top:10px">Enter each customer's expected monthly quantity (OK parts). Saved as you type — the capacity above updates.</div>`)}`;
+}
+async function prodCapSave(id,ch){
+  await db.prodParts.update(id,ch);
+  const y=window.scrollY; await prodRenderReports(); window.scrollTo(0,y);
+}
+function prodCapCalc(){
+  const d=window._prodCap, out=document.getElementById('pcap-out'); if(!d||!out) return;
+  const x=d.mcs.find(v=>String(v.m.id)===document.getElementById('pcap-m').value); if(!x) return;
+  const ct=prodN(document.getElementById('pcap-ct').value), cav=prodN(document.getElementById('pcap-cav').value)||1, need=prodN(document.getElementById('pcap-need').value);
+  if(!ct){ out.innerHTML=''; return; }
+  const cases=[['Schedule','at target OEE',x.schedIdeal,d.target],['Schedule','at actual OEE',x.schedIdeal,x.actual],['Last 30 days','at target OEE',x.histIdeal,d.target],['Last 30 days','at actual OEE',x.histIdeal,x.actual]];
+  const needH=need? need/cav*ct/3600 : 0;
+  out.innerHTML=`<table class="pr-tbl"><thead><tr><th>Load based on</th><th>Efficiency</th><th class="n">Free hours</th><th class="n">Pcs / month you can add</th>${need?'<th class="n">Hours needed</th><th>Fits?</th>':''}</tr></thead><tbody>${
+    cases.map(([b,e,ideal,oee])=>{ if(!oee) return `<tr><td>${b}</td><td>${e}</td><td class="n" colspan="${need?4:2}" style="color:#9ca3af">no production data yet</td></tr>`;
+      const f=d.avail-ideal/oee, pcs=Math.max(0,Math.floor(f*oee*3600/ct*cav)), nh=needH/oee;
+      return `<tr><td>${b}</td><td>${e} (${prodPct(oee,0)})</td><td class="n mono">${prodFmt(f)} h</td><td class="n mono" style="font-weight:700;color:var(--navy)">${prodFmt(pcs)}</td>
+        ${need?`<td class="n mono">${prodFmt(nh)} h</td><td style="font-weight:700;color:${nh<=f?'#16a34a':'#dc2626'}">${nh<=f?'✔ Yes':'✖ No'}${nh<=f?` <span style="font-weight:400;color:#6b7280">(${prodPct(f?nh/f:0,0)} of free time)</span>`:''}</td>`:''}</tr>`; }).join('')
+  }</tbody></table>`;
 }
 
 // ══════════════════════════════════════════════════════
@@ -1186,6 +1300,12 @@ async function prodRenderSetup(){
       <option value="ok" ${cfg.consumptionBasis==='ok'?'selected':''}>OK parts only (rejects are remelted)</option></select></div>
     <div class="fg" style="margin:0"><label class="lbl">Default planned min / shift</label><input class="fc" type="number" min="1" id="pcfg-plan" value="${esc(cfg.plannedMinutes)}"></div>
     <button class="btn btn-p" onclick="prodSaveCfg()">💾 Save</button>
+    <div class="fg" style="margin:0"><label class="lbl">Working days / month</label><input class="fc" type="number" min="1" max="31" id="pcfg-days" value="${esc(cfg.workDays)}"></div>
+    <div class="fg" style="margin:0"><label class="lbl">Shifts / day × hours / shift</label><div style="display:flex;gap:6px;align-items:center">
+      <input class="fc" type="number" min="1" max="3" id="pcfg-shifts" value="${esc(cfg.shiftsPerDay)}"><span>×</span>
+      <input class="fc" type="number" min="1" max="24" id="pcfg-hrs" value="${esc(cfg.hoursPerShift)}"><span style="white-space:nowrap;font-size:12px;color:#6b7280">= ${prodFmt(prodN(cfg.workDays)*prodN(cfg.shiftsPerDay)*prodN(cfg.hoursPerShift))} h / machine / month</span></div></div>
+    <div class="fg" style="margin:0"><label class="lbl">Target OEE % (capacity planning)</label><input class="fc" type="number" min="1" max="100" id="pcfg-oee" value="${esc(cfg.targetOeePct)}"></div>
+    <div></div>
   </div></div>
   <div style="display:grid;grid-template-columns:1fr 1.3fr;gap:14px;align-items:start">
     <div class="card"><div class="ch"><h5>Machines</h5><button class="btn btn-o btn-sm" onclick="prodOpenMachine()">➕ Add</button></div><div class="tw"><table>
@@ -1215,10 +1335,10 @@ async function prodRenderSetup(){
 
 // ── Sample data: tagged demo:true so it can be removed exactly ──
 const PROD_DEMO_PARTS=[
-  {partNumber:'SAMPLE-101', partName:'Spacer Heater (sample)', customer:'Sample Customer A', grade:'A380',  netWeightKg:0.15, cavities:2, ct:[55,50]},
-  {partNumber:'SAMPLE-102', partName:'Bracket (sample)',       customer:'Sample Customer B', grade:'ADC12', netWeightKg:0.42, cavities:1, ct:[62,58]},
-  {partNumber:'SAMPLE-201', partName:'Housing (sample)',       customer:'Sample Customer C', grade:'ADC12', netWeightKg:0.85, cavities:1, ct:[80,72]},
-  {partNumber:'SAMPLE-202', partName:'Cover (sample)',         customer:'Sample Customer A', grade:'A380',  netWeightKg:0.50, cavities:2, ct:[70,64]},
+  {partNumber:'SAMPLE-101', partName:'Spacer Heater (sample)', customer:'Sample Customer A', grade:'A380',  netWeightKg:0.15, cavities:2, ct:[55,50], sched:30000, mi:0},
+  {partNumber:'SAMPLE-102', partName:'Bracket (sample)',       customer:'Sample Customer B', grade:'ADC12', netWeightKg:0.42, cavities:1, ct:[62,58], sched:5000,  mi:0},
+  {partNumber:'SAMPLE-201', partName:'Housing (sample)',       customer:'Sample Customer C', grade:'ADC12', netWeightKg:0.85, cavities:1, ct:[80,72], sched:6000,  mi:1},
+  {partNumber:'SAMPLE-202', partName:'Cover (sample)',         customer:'Sample Customer A', grade:'A380',  netWeightKg:0.50, cavities:2, ct:[70,64], sched:20000, mi:1},
 ];
 async function prodDemoStatus(){
   const [shifts,parts]=await Promise.all([db.prodShifts.toArray().catch(()=>[]),db.prodParts.toArray().catch(()=>[])]);
@@ -1239,7 +1359,8 @@ async function prodDemoGenerate(){
     const ex=parts.find(p=>p.demo&&p.partNumber===d.partNumber);
     const cycleTimes={}; machines.forEach((m,i)=>cycleTimes[m.id]=d.ct[i]??d.ct[0]);
     pid[d.partNumber]=ex? ex.id : await db.prodParts.add({partNumber:d.partNumber, partName:d.partName, customer:d.customer, grade:d.grade,
-      netWeightKg:d.netWeightKg, cavities:d.cavities, cycleTimes, active:true, demo:true});
+      netWeightKg:d.netWeightKg, cavities:d.cavities, cycleTimes, active:true, demo:true,
+      monthlySchedule:d.sched, scheduleMachineId:(machines[d.mi]||machines[0]).id});
   }
   const plan=[[pid['SAMPLE-101'],pid['SAMPLE-102']],[pid['SAMPLE-201'],pid['SAMPLE-202']]];   // parts per machine
   const defById=Object.fromEntries(PROD_DEMO_PARTS.map(d=>[pid[d.partNumber],d]));
@@ -1296,7 +1417,9 @@ async function prodDemoDelete(){
 }
 async function prodSaveCfg(){
   const v=x=>document.getElementById(x).value;
-  await DB.setSetting('prodConfig',{meltLossPct:prodN(v('pcfg-loss')), consumptionBasis:v('pcfg-basis'), plannedMinutes:prodN(v('pcfg-plan'))||720});
+  await DB.setSetting('prodConfig',{meltLossPct:prodN(v('pcfg-loss')), consumptionBasis:v('pcfg-basis'), plannedMinutes:prodN(v('pcfg-plan'))||720,
+    workDays:prodN(v('pcfg-days'))||26, shiftsPerDay:prodN(v('pcfg-shifts'))||2, hoursPerShift:prodN(v('pcfg-hrs'))||12,
+    targetOeePct:Math.min(100,prodN(v('pcfg-oee'))||75)});
   toast('✅ Settings saved'); prodRenderSetup();
 }
 async function prodOpenMachine(id=null){
