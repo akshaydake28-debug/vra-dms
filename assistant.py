@@ -18,6 +18,7 @@ import json
 import math
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from datetime import date, datetime, timedelta
@@ -845,7 +846,7 @@ Rules:
 def _gemini(key, model, body):
     req = urllib.request.Request(GEMINI_URL.format(model=model), data=json.dumps(body).encode(),
                                  headers={'Content-Type': 'application/json', 'x-goog-api-key': key}, method='POST')
-    with urllib.request.urlopen(req, timeout=60) as r:
+    with urllib.request.urlopen(req, timeout=40) as r:
         return json.loads(r.read().decode())
 
 
@@ -857,22 +858,40 @@ def _list_models(key):
             if 'generateContent' in (m.get('supportedGenerationMethods') or [])]
 
 
-def pick_model(names):
-    """Best general chat model the key can use: newest stable Flash, then Flash previews, then Pro."""
+def rank_models(names):
+    """Usable chat models, best first: newest stable Flash, then Flash previews, then Pro."""
     skip = ('image', 'tts', 'audio', 'live', 'embed', 'vision', 'learnlm', 'gemma', 'computer', 'robotics', 'exp')
     def rank(n):
         m = re.match(r'gemini-(\d+(?:\.\d+)?)', n)
         ver = float(m.group(1)) if m else 0.0
         return ('flash' in n, 'lite' not in n, 'preview' not in n, ver, n.endswith('latest'))
     cands = [n for n in names if n.startswith('gemini') and not any(x in n for x in skip)]
-    return max(cands, key=rank) if cands else None
+    return sorted(cands, key=rank, reverse=True)
+
+
+def pick_model(names):
+    r = rank_models(names)
+    return r[0] if r else None
+
+
+def fallback_model(names, current):
+    """A different model to try when `current` is overloaded. Skips "-latest" aliases and, when
+    `current` is an alias, the top-ranked model too — it is most likely the same one underneath."""
+    ranked = [n for n in rank_models(names) if n != current and not n.endswith('latest')]
+    if current.endswith('latest') and len(ranked) > 1:
+        ranked = ranked[1:]
+    return ranked[0] if ranked else None
+
+
+BUSY_CODES = (500, 502, 503, 504)
+BUSY_RETRIES = 2          # same model, after 1.5 s and 3 s
 
 
 class AssistantError(Exception):
     pass
 
 
-def answer(messages, load, key=None, model=None, call=None, lister=None):
+def answer(messages, load, key=None, model=None, call=None, lister=None, sleep=time.sleep):
     """messages: [{'role': 'user'|'assistant', 'text': str}], oldest first. Returns (reply, tools_used)."""
     key = key or os.environ.get('GEMINI_API_KEY', '').strip()
     if not key:
@@ -881,6 +900,7 @@ def answer(messages, load, key=None, model=None, call=None, lister=None):
     call = call or _gemini
     lister = lister or _list_models
     rediscovered = False
+    busy, fell_back = 0, False
     ctx = build_ctx(load)
     contents = [{'role': 'model' if m.get('role') == 'assistant' else 'user', 'parts': [{'text': str(m.get('text', ''))[:4000]}]}
                 for m in messages[-12:] if str(m.get('text', '')).strip()]
@@ -916,6 +936,23 @@ def answer(messages, load, key=None, model=None, call=None, lister=None):
                                      + ' — set GEMINI_MODEL in Railway.')
             if e.code == 404:
                 raise AssistantError(f'Gemini model "{model}" not found — set GEMINI_MODEL in Railway to a current model name.')
+            if e.code in BUSY_CODES:
+                # Google overloaded ("high demand"): wait and retry, then try another model once.
+                if busy < BUSY_RETRIES:
+                    busy += 1
+                    sleep(1.5 * busy)
+                    continue
+                if not fell_back:
+                    fell_back = True
+                    try:
+                        alt = fallback_model(lister(key), model)
+                    except Exception:
+                        alt = None
+                    if alt:
+                        model, busy = alt, BUSY_RETRIES - 1     # one more retry allowed on the fallback
+                        continue
+                raise AssistantError('Gemini is very busy right now (high demand on Google\'s side) — '
+                                     'please try again in a minute.')
             if e.code == 429:
                 raise AssistantError('Gemini usage limit reached — try again in a minute (or move the key to the paid tier).')
             raise AssistantError(f'Gemini error {e.code}: {detail or e.reason}')
