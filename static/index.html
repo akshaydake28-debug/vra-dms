@@ -230,6 +230,7 @@ select.fc{cursor:pointer}
     <a class="sl-item" data-view="audit" onclick="nav('audit')"><span class="ic">🔍</span>Audit Trail</a>
     <div class="sl-sec">Production</div>
     <a class="sl-item" data-view="prod-shifts" onclick="nav('prod-shifts')"><span class="ic">🏭</span>Shift Production</a>
+    <a class="sl-item" data-view="prod-fettling" onclick="nav('prod-fettling')"><span class="ic">🔨</span>Fettling</a>
     <a class="sl-item" data-view="prod-reports" onclick="nav('prod-reports')"><span class="ic">📊</span>Production Reports</a>
     <a class="sl-item" data-view="prod-stock" onclick="nav('prod-stock')"><span class="ic">📦</span>Stock (RM &amp; Parts)</a>
     <a class="sl-item" data-view="prod-dispatch" onclick="nav('prod-dispatch')"><span class="ic">🚚</span>Dispatch Register</a>
@@ -653,6 +654,7 @@ const db = {
   prodParts:      makeTable('prodParts'),
   prodDefectCodes:makeTable('prodDefectCodes'),
   prodShifts:     makeTable('prodShifts'),
+  prodFettling:   makeTable('prodFettling'),
   prodDispatch:   makeTable('prodDispatch'),
   prodStockAdj:   makeTable('prodStockAdj'),
   // Quality
@@ -900,6 +902,7 @@ function nav(view,params=''){
   'pq-cs':'Process Quality — Check Sheets',
   'pq-grades':'Process Quality — Grade Master',
   'prod-shifts':'Shift Production',
+  'prod-fettling':'Fettling',
   'prod-reports':'Production Reports',
   'prod-stock':'Stock — Raw Material & Parts',
   'prod-dispatch':'Dispatch Register',
@@ -942,6 +945,7 @@ function nav(view,params=''){
 'pq-cs':    ()=>PQ.renderCsRegistry(),
 'pq-grades':()=>PQ.renderGradeMaster(),
 'prod-shifts':    prodRenderShifts,
+'prod-fettling':  prodRenderFettling,
 'prod-reports':   prodRenderReports,
 'prod-stock':     prodRenderStock,
 'prod-dispatch':  prodRenderDispatch,
