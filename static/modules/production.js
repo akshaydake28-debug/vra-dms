@@ -662,6 +662,7 @@ const PROD_REPORT_TABS=[
   {k:'oee', l:'OEE & Losses'},
   {k:'rej', l:'Rejection'},
   {k:'mat', l:'Material'},
+  {k:'cust', l:'Customer Mix'},
 ];
 const PROD_PERIODS=[
   {k:'today', l:'Today',      range:()=>[prodToday(),prodToday()]},
@@ -669,7 +670,7 @@ const PROD_PERIODS=[
   {k:'30d',   l:'30 days',    range:()=>[prodDaysAgo(29),prodToday()]},
   {k:'month', l:'This month', range:()=>[prodToday().slice(0,8)+'01',prodToday()]},
 ];
-const _prodRep={tab:'oee', f:{period:'7d', from:prodDaysAgo(6), to:prodToday(), machineId:'', shift:'', partId:'', off:false}};
+const _prodRep={tab:'oee', f:{period:'7d', from:prodDaysAgo(6), to:prodToday(), machineId:'', shift:'', partId:'', off:false, basis:'pcs'}};
 
 const PROD_REPORT_CSS=`<style>
 .pr-top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
@@ -726,7 +727,7 @@ function prodRepFilters(ctx){
     <span class="pr-sep"></span>
     <select onchange="prodRepSet({machineId:this.value})">${prodOpts(ctx.machines,f.machineId,{val:m=>m.id,label:prodMachineLabel,blank:'All machines'})}</select>
     <select onchange="prodRepSet({shift:this.value})">${prodOpts(Object.keys(PROD_SHIFTS),f.shift,{blank:'Both shifts',label:k=>'Shift '+k})}</select>
-    ${tab!=='oee'?`<select onchange="prodRepSet({partId:this.value})" style="max-width:240px">${prodOpts(ctx.parts,f.partId,{val:p=>p.id,label:prodPartLabel,blank:'All parts'})}</select>`:''}
+    ${tab==='rej'||tab==='mat'?`<select onchange="prodRepSet({partId:this.value})" style="max-width:240px">${prodOpts(ctx.parts,f.partId,{val:p=>p.id,label:prodPartLabel,blank:'All parts'})}</select>`:''}
   </div>`;
 }
 function prodRepPeriod(k){ const p=PROD_PERIODS.find(x=>x.k===k); const [from,to]=p.range(); prodRepSet({period:k,from,to}); }
@@ -738,8 +739,9 @@ async function prodRenderReports(opts={}){
   const tab=_prodRep.tab, f=_prodRep.f;
   if(f.period){ const p=PROD_PERIODS.find(x=>x.k===f.period); if(p) [f.from,f.to]=p.range(); }
   const ctx=await prodCtx();
-  const rows=await prodLoadShifts(ctx,{from:f.from,to:f.to,machineId:f.machineId,shift:f.shift,partId:tab==='oee'?'':f.partId});
-  const body = tab==='oee'? prodRepOEE(ctx,rows) : tab==='rej'? prodRepRejection(ctx,rows) : prodRepMaterial(ctx,rows);
+  const partFilter=tab==='rej'||tab==='mat'? f.partId : '';
+  const rows=await prodLoadShifts(ctx,{from:f.from,to:f.to,machineId:f.machineId,shift:f.shift,partId:partFilter});
+  const body = tab==='oee'? prodRepOEE(ctx,rows) : tab==='rej'? prodRepRejection(ctx,rows) : tab==='mat'? prodRepMaterial(ctx,rows) : prodRepCustomers(ctx,rows);
   setC(`${PROD_REPORT_CSS}
   <div class="pr-top">
     <h2 style="font-size:16px;font-weight:700;color:var(--navy)">📊 Production Reports</h2>
@@ -886,6 +888,64 @@ function prodRepMaterial(ctx,rows){
       <td class="n mono" title="${r.wt?`${prodFmt(r.wt,3)} kg net + ${loss}`:''}">${r.wt?prodFmt(prodMetalPerPc(r.wt,cfg),3)+' kg':'—'}</td>
       <td class="n mono" style="font-weight:700">${prodFmt(r.totalKg,1)}</td></tr>`;}).join('')}</tbody></table>
     <div class="pr-note" style="padding-top:10px">Metal per part = net weight + ${loss} melting loss (e.g. 0.500 kg → ${prodFmt(prodMetalPerPc(0.5,cfg),3)} kg). Counted on ${basis} — change in <a href="#" onclick="event.preventDefault();nav('prod-setup')">Machines &amp; Settings</a>.</div>`)}`;
+}
+
+// ── Customer Mix ─────────────────────────────────────
+// Share of production per customer (customer comes from the Part Master).
+// Three ways to weigh it: OK parts, metal used, or machine time at target
+// cycle time (the fairest when parts differ a lot in size / cycle).
+const PROD_MIX_BASES=[
+  {k:'pcs', l:'OK parts',     unit:'pcs', dp:0},
+  {k:'kg',  l:'Metal used',   unit:'kg',  dp:1},
+  {k:'hrs', l:'Machine time', unit:'h',   dp:1},
+];
+function prodRepCustomers(ctx,rows){
+  if(!rows.length) return PROD_EMPTY;
+  const f=_prodRep.f, basis=PROD_MIX_BASES.find(b=>b.k===f.basis)||PROD_MIX_BASES[0];
+  const by={};
+  for(const {c} of rows) for(const r of c.runs){
+    if(!r.shots) continue;
+    const name=(r.part?.customer||'').trim()||'(no customer set)';
+    const x=by[name]||(by[name]={name,pcs:0,kg:0,hrs:0,parts:new Set()});
+    x.pcs+=r.okPcs; x.kg+=r.totalKg; x.hrs+=r.idealMin/60;
+    if(r.part) x.parts.add(r.part.partNumber);
+  }
+  const list=Object.values(by);
+  const tot={pcs:0,kg:0,hrs:0}; list.forEach(x=>{ tot.pcs+=x.pcs; tot.kg+=x.kg; tot.hrs+=x.hrs; });
+  list.sort((a,b)=>b[basis.k]-a[basis.k]);
+  const share=(x,k)=>tot[k]? x[k]/tot[k] : 0;
+  const top=list[0], top2=list.slice(0,2).reduce((s,x)=>s+share(x,basis.k),0);
+  const palette=['#0d2f6e','#2f5fb3','#5b8bd6','#8fb1e6','#b9cdef','#d7e2f5'];
+  const col=i=>palette[Math.min(i,palette.length-1)];
+
+  return `
+  ${list.some(x=>x.name==='(no customer set)')?`<div class="pr-warn">Some parts have no customer — add it in <a href="#" onclick="event.preventDefault();nav('prod-parts')">Part Master</a> so they're counted under the right customer.</div>`:''}
+  ${basis.k==='hrs'&&!tot.hrs?`<div class="pr-warn">Machine time needs target cycle times in Part Master.</div>`:''}
+  <div class="pr-kpis">
+    ${prodKpi('Top customer',top?esc(top.name):'—',top?`${prodPct(share(top,basis.k))} of ${basis.l.toLowerCase()}`:'')}
+    ${prodKpi('Top 2 customers',prodPct(top2,0),`of ${basis.l.toLowerCase()}`)}
+    ${prodKpi('Customers',String(list.length),`${list.reduce((s,x)=>s+x.parts.size,0)} parts produced`)}
+    ${prodKpi('OK parts',prodFmt(tot.pcs),`${prodFmt(tot.kg,0)} kg metal · ${prodFmt(tot.hrs,0)} machine h`)}
+  </div>
+  ${prodCard('Customer share',`<div class="b">
+    <div style="display:flex;height:26px;gap:2px;border-radius:6px;overflow:hidden;margin-bottom:14px">
+      ${list.filter(x=>x[basis.k]>0).map((x,i)=>`<div title="${esc(x.name)}: ${prodPct(share(x,basis.k))}" style="width:${share(x,basis.k)*100}%;background:${col(i)}"></div>`).join('')}
+    </div>
+    ${list.map((x,i)=>`<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px" title="${esc(x.name)}: ${prodFmt(x[basis.k],basis.dp)} ${basis.unit}">
+      <div style="width:190px;font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><span class="pr-dot" style="background:${col(i)}"></span>${esc(x.name)}</div>
+      <div style="flex:1;height:12px;background:#f0f3f9;border-radius:0 4px 4px 0"><div style="width:${share(x,basis.k)*100}%;height:12px;border-radius:0 4px 4px 0;background:${col(i)}"></div></div>
+      <div class="mono" style="width:60px;text-align:right;font-weight:700;color:var(--navy)">${prodPct(share(x,basis.k))}</div>
+      <div class="mono" style="width:110px;text-align:right;color:#6b7280">${prodFmt(x[basis.k],basis.dp)} ${basis.unit}</div>
+    </div>`).join('')}
+  </div>`,
+  `<span style="display:inline-flex;gap:2px">${PROD_MIX_BASES.map(b=>`<button class="pr-chip ${b.k===basis.k?'on':''}" onclick="prodRepSet({basis:'${b.k}'})">${b.l}</button>`).join('')}</span>`)}
+  ${prodCard('By customer',`<table class="pr-tbl"><thead><tr><th>Customer</th><th>Parts</th>
+      <th class="n">OK parts</th><th class="n">%</th><th class="n">Metal kg</th><th class="n">%</th><th class="n">Machine h</th><th class="n">%</th></tr></thead>
+    <tbody>${list.map(x=>`<tr><td><b>${esc(x.name)}</b></td><td style="color:#6b7280;font-size:12px">${esc([...x.parts].join(', '))}</td>
+      <td class="n mono">${prodFmt(x.pcs)}</td><td class="n mono" style="font-weight:700">${prodPct(share(x,'pcs'))}</td>
+      <td class="n mono">${prodFmt(x.kg,1)}</td><td class="n mono" style="font-weight:700">${prodPct(share(x,'kg'))}</td>
+      <td class="n mono">${prodFmt(x.hrs,1)}</td><td class="n mono" style="font-weight:700">${prodPct(share(x,'hrs'))}</td></tr>`).join('')}</tbody></table>
+    <div class="pr-note" style="padding-top:10px">Machine time = shots × target cycle time — how much of the machines' productive time each customer's parts took.</div>`)}`;
 }
 
 // ══════════════════════════════════════════════════════
@@ -1140,7 +1200,99 @@ async function prodRenderSetup(){
         <td style="white-space:nowrap"><button class="btn btn-o btn-xs" onclick="prodOpenDefect(${d.id})">✏️</button>
           <button class="btn btn-r btn-xs" onclick="prodDelDefect(${d.id})">🗑️</button></td></tr>`).join('')}</tbody>
     </table></div></div>
-  </div>`);
+  </div>
+  <div class="card" style="margin-top:14px"><div class="ch"><h5>Sample data</h5></div><div class="cb" style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+    <div style="flex:1;min-width:280px;font-size:12.5px;color:#374151">
+      Fill the last 10 days with made-up shift entries so you can see how the reports look. They use their own
+      <b>SAMPLE-</b> parts (Sample Customer A/B/C), so your real parts and their stock are not touched.
+      <span id="pdemo-status" style="color:#6b7280"></span>
+    </div>
+    <button class="btn btn-o" onclick="prodDemoGenerate()">🧪 Generate 10 days of sample data</button>
+    <button class="btn btn-r" onclick="prodDemoDelete()">🗑️ Delete sample data</button>
+  </div></div>`);
+  prodDemoStatus();
+}
+
+// ── Sample data: tagged demo:true so it can be removed exactly ──
+const PROD_DEMO_PARTS=[
+  {partNumber:'SAMPLE-101', partName:'Spacer Heater (sample)', customer:'Sample Customer A', grade:'A380',  netWeightKg:0.15, cavities:2, ct:[55,50]},
+  {partNumber:'SAMPLE-102', partName:'Bracket (sample)',       customer:'Sample Customer B', grade:'ADC12', netWeightKg:0.42, cavities:1, ct:[62,58]},
+  {partNumber:'SAMPLE-201', partName:'Housing (sample)',       customer:'Sample Customer C', grade:'ADC12', netWeightKg:0.85, cavities:1, ct:[80,72]},
+  {partNumber:'SAMPLE-202', partName:'Cover (sample)',         customer:'Sample Customer A', grade:'A380',  netWeightKg:0.50, cavities:2, ct:[70,64]},
+];
+async function prodDemoStatus(){
+  const [shifts,parts]=await Promise.all([db.prodShifts.toArray().catch(()=>[]),db.prodParts.toArray().catch(()=>[])]);
+  const n=shifts.filter(s=>s.demo).length, p=parts.filter(x=>x.demo).length;
+  const el=document.getElementById('pdemo-status');
+  if(el) el.textContent=n||p? ` Currently: ${n} sample shift entries, ${p} sample parts.` : ' No sample data at the moment.';
+}
+async function prodDemoGenerate(){
+  const ctx=await prodCtx();
+  const machines=ctx.machines.filter(m=>m.active!==false).slice(0,2);
+  if(!machines.length){ toast('Add a machine first','d'); return; }
+  if(!confirm('Create 10 days of sample shift entries on '+machines.map(m=>m.code).join(' & ')+'? Shifts that already have a real entry are skipped.')) return;
+  toast('Generating sample data…');
+  // sample parts (re-used if already there)
+  const parts=await db.prodParts.toArray();
+  const pid={};
+  for(const d of PROD_DEMO_PARTS){
+    const ex=parts.find(p=>p.demo&&p.partNumber===d.partNumber);
+    const cycleTimes={}; machines.forEach((m,i)=>cycleTimes[m.id]=d.ct[i]??d.ct[0]);
+    pid[d.partNumber]=ex? ex.id : await db.prodParts.add({partNumber:d.partNumber, partName:d.partName, customer:d.customer, grade:d.grade,
+      netWeightKg:d.netWeightKg, cavities:d.cavities, cycleTimes, active:true, demo:true});
+  }
+  const plan=[[pid['SAMPLE-101'],pid['SAMPLE-102']],[pid['SAMPLE-201'],pid['SAMPLE-202']]];   // parts per machine
+  const defById=Object.fromEntries(PROD_DEMO_PARTS.map(d=>[pid[d.partNumber],d]));
+  const existing=new Set((await db.prodShifts.toArray()).map(s=>`${s.date}|${s.machineId}|${s.shift}`));
+  const onSheet=ctx.defects.filter(d=>d.onSheet).map(d=>d.code);
+  const weights=[.45,.2,.15,.12,.08];                       // makes a realistic Pareto
+  let seed=20260925; const rnd=()=>{ seed=(seed*1103515245+12345)%2147483648; return seed/2147483648; };
+  const pickDefect=()=>{ let x=rnd(),i=0; while(i<weights.length-1&&x>weights[i]){ x-=weights[i]; i++; } return onSheet[i]||onSheet[0]; };
+  const cats=['Die Loading / Unloading','Die Maintenance','Melting / Metal Not Ready','Power Cut','Machine & Furnace Maintenance','Spray Gun / Die Coat','Manpower'];
+  const names=[['Swayam','Irfan'],['Vinayak','Lakhan']];
+  let made=0;
+  for(let d=9; d>=0; d--){
+    const date=prodDaysAgo(d);
+    for(const [mi,m] of machines.entries()) for(const sh of ['A','B']){
+      if(existing.has(`${date}|${m.id}|${sh}`)) continue;
+      const main=plan[mi][Math.floor(rnd()*plan[mi].length)], alt=plan[mi].find(x=>x!==main);
+      const change=rnd()<.25? 5+Math.floor(rnd()*5) : 0;
+      const runs=[{partId:main, grade:'', cavities:'', fromSlot:0}];
+      if(change&&alt) runs.push({partId:alt, grade:'', cavities:'', fromSlot:change});
+      const downtime=[];
+      const nDown=rnd()<.25?0:1+Math.floor(rnd()*2);
+      for(let k=0;k<nDown;k++) downtime.push({category:cats[Math.floor(rnd()*rnd()*cats.length)], slot:Math.floor(rnd()*12), minutes:10+Math.round(rnd()*50), remark:''});
+      if(change) downtime.push({category:'Die Loading / Unloading', slot:change, minutes:25+Math.round(rnd()*20), remark:'Part change'});
+      const cavDropFrom=rnd()<.12? 6+Math.floor(rnd()*4) : 99;
+      const hours=Array.from({length:12},(_,i)=>{
+        const run=i>=change&&change? alt : main, dp=defById[run]||PROD_DEMO_PARTS[0];
+        const ct=dp.ct[mi]??dp.ct[0], down=downtime.filter(x=>x.slot===i).reduce((s,x)=>s+x.minutes,0);
+        const avail=Math.max(0,60-down), speed=.84+rnd()*.14;
+        const total=Math.max(0,Math.round(avail*60/ct*speed*(i===0?.7:1)));
+        const rej={}; const nRej=Math.round(total*(.004+rnd()*.03));
+        for(let k=0;k<nRej;k++){ const c=pickDefect(); rej[c]=(rej[c]||0)+1; }
+        const off=i===0||i===change? Math.round(2+rnd()*6) : '';
+        return {total, cav:i>=cavDropFrom&&dp.cavities>1? 1 : '', off:off===''?'':Math.min(off,total), rej};
+      });
+      await db.prodShifts.add({date, shift:sh, machineId:m.id, operator1:names[mi][0], operator2:names[mi][1], supervisor:'',
+        plannedMinutes:720, dieCoatL:4, hours, runs, downtime, remarks:'Sample data', demo:true,
+        createdAt:new Date().toISOString(), createdBy:Auth.user?.name||''});
+      made++;
+    }
+  }
+  toast(`✅ Created ${made} sample shift entries — see Production Reports`);
+  prodDemoStatus();
+}
+async function prodDemoDelete(){
+  const [shifts,parts]=await Promise.all([db.prodShifts.toArray(),db.prodParts.toArray()]);
+  const ds=shifts.filter(s=>s.demo), dp=parts.filter(p=>p.demo);
+  if(!ds.length&&!dp.length){ toast('No sample data to delete'); return; }
+  if(!confirm(`Delete ${ds.length} sample shift entries and ${dp.length} sample parts? Real entries are not touched.`)) return;
+  for(const s of ds) await db.prodShifts.delete(s.id);
+  const stillUsed=new Set(shifts.filter(s=>!s.demo).flatMap(s=>(s.runs||[]).map(r=>String(r.partId))));
+  for(const p of dp) if(!stillUsed.has(String(p.id))) await db.prodParts.delete(p.id);
+  toast('🗑️ Sample data deleted');
+  prodDemoStatus();
 }
 async function prodSaveCfg(){
   const v=x=>document.getElementById(x).value;
