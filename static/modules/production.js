@@ -1063,6 +1063,211 @@ function prodCapCalc(){
 }
 
 // ══════════════════════════════════════════════════════
+//  3b. FETTLING — person-wise daily record
+//  One entry per date + shift; one row per person × part:
+//  qty fettled, qty rejected (+ optional reason) → OK = fettled − rejected.
+//  Fettling rejections also come off part stock.
+// ══════════════════════════════════════════════════════
+const PROD_FET_REASONS=['Fettling damage','Crack','Porosity / blow hole','Non fill','Cold shut','Dimension NG','Other'];
+const _prodFet={tab:'entries', f:{period:'7d', from:prodDaysAgo(6), to:prodToday(), person:'', partId:''}};
+
+function prodFetTotals(rows){
+  const t={qty:0,rej:0};
+  for(const r of rows){ t.qty+=prodN(r.qty); t.rej+=Math.min(prodN(r.rej),prodN(r.qty)); }
+  t.ok=t.qty-t.rej; t.rejPct=t.qty? t.rej/t.qty : 0;
+  return t;
+}
+async function prodFetLoad(){ return (await db.prodFettling.toArray().catch(()=>[])).sort((a,b)=>b.date.localeCompare(a.date)||String(b.shift).localeCompare(String(a.shift))); }
+
+async function prodRenderFettling(opts={}){
+  if(opts.tab) _prodFet.tab=opts.tab;
+  const f=_prodFet.f;
+  if(f.period){ const p=PROD_PERIODS.find(x=>x.k===f.period); if(p) [f.from,f.to]=p.range(); }
+  const [ctx,all]=await Promise.all([prodCtx(),prodFetLoad()]);
+  const inRange=all.filter(e=>e.date>=f.from&&e.date<=f.to);
+  const people=[...new Set(all.flatMap(e=>(e.rows||[]).map(r=>r.person)).filter(Boolean))].sort();
+  const tab=_prodFet.tab;
+  setC(`${PROD_REPORT_CSS}
+  <div class="pr-top">
+    <h2 style="font-size:16px;font-weight:700;color:var(--navy)">🔨 Fettling</h2>
+    <div style="display:flex;gap:10px;align-items:center">
+      <div class="pr-tabs">${[['entries','Entries'],['person','Person report']].map(([k,l])=>`<button class="pr-tab ${k===tab?'on':''}" onclick="prodRenderFettling({tab:'${k}'})">${l}</button>`).join('')}</div>
+      <button class="btn btn-p" onclick="prodOpenFettling()">➕ New Fettling Entry</button>
+    </div>
+  </div>
+  <div class="pr-filters">
+    ${PROD_PERIODS.map(p=>`<button class="pr-chip ${f.period===p.k?'on':''}" onclick="prodFetSet({period:'${p.k}'})">${p.l}</button>`).join('')}
+    <span class="pr-sep"></span>
+    <input type="date" value="${f.from}" onchange="prodFetSet({from:this.value,period:''})">
+    <span style="color:#9ca3af">–</span>
+    <input type="date" value="${f.to}" onchange="prodFetSet({to:this.value,period:''})">
+    ${tab==='person'?`<span class="pr-sep"></span>
+    <select onchange="prodFetSet({person:this.value})">${prodOpts(people,f.person,{blank:'All people'})}</select>
+    <select onchange="prodFetSet({partId:this.value})" style="max-width:240px">${prodOpts(ctx.parts,f.partId,{val:p=>p.id,label:prodPartLabel,blank:'All parts'})}</select>`:''}
+  </div>
+  ${tab==='entries'? prodFetEntries(ctx,inRange) : prodFetPersonReport(ctx,inRange)}`);
+}
+function prodFetSet(ch){
+  Object.assign(_prodFet.f,ch);
+  if(ch.period){ const p=PROD_PERIODS.find(x=>x.k===ch.period); [_prodFet.f.from,_prodFet.f.to]=p.range(); }
+  prodRenderFettling();
+}
+
+function prodFetEntries(ctx,entries){
+  const t=prodFetTotals(entries.flatMap(e=>e.rows||[]));
+  return `
+  <div class="pr-kpis">
+    ${prodKpi('Parts fettled',prodFmt(t.qty),`${entries.length} entr${entries.length===1?'y':'ies'}`)}
+    ${prodKpi('OK',prodFmt(t.ok),'',  '#16a34a')}
+    ${prodKpi('Rejected',prodFmt(t.rej),`${prodPct(t.rejPct)} of fettled`,t.rej?'#dc2626':'')}
+    ${prodKpi('People',String(new Set(entries.flatMap(e=>(e.rows||[]).map(r=>r.person)).filter(Boolean)).size),'worked in this period')}
+  </div>
+  ${prodCard('Entries',`<table class="pr-tbl"><thead><tr><th>Date</th><th>Shift</th><th>People</th><th class="n">Fettled</th><th class="n">OK</th><th class="n">Rejected</th><th class="n">Rej %</th><th>Entered by</th><th></th></tr></thead>
+    <tbody>${entries.map(e=>{ const x=prodFetTotals(e.rows||[]);
+      return `<tr><td class="mono">${esc(e.date)}</td><td><b>${esc(e.shift||'')}</b></td>
+      <td style="font-size:12px;color:#374151">${esc([...new Set((e.rows||[]).map(r=>r.person).filter(Boolean))].join(', '))}</td>
+      <td class="n mono">${prodFmt(x.qty)}</td><td class="n mono" style="color:#16a34a;font-weight:600">${prodFmt(x.ok)}</td>
+      <td class="n mono" style="color:${x.rej?'#dc2626':''}">${prodFmt(x.rej)}</td><td class="n mono">${prodPct(x.rejPct)}</td>
+      <td style="font-size:12px;color:#6b7280">${esc(e.updatedBy||e.createdBy||'')}</td>
+      <td style="white-space:nowrap;text-align:right"><button class="btn btn-o btn-xs" onclick="prodOpenFettling(${e.id})">✏️</button>
+        <button class="btn btn-r btn-xs" onclick="prodDeleteFettling(${e.id})">🗑️</button></td></tr>`;}).join('')
+      ||`<tr><td colspan="9" class="pr-empty">No fettling entries in this period.</td></tr>`}</tbody></table>`)}`;
+}
+
+function prodFetPersonReport(ctx,entries){
+  const f=_prodFet.f;
+  const rows=entries.flatMap(e=>(e.rows||[]).map(r=>({...r,date:e.date,shift:e.shift})))
+    .filter(r=>(!f.person||r.person===f.person)&&(!f.partId||String(r.partId)===String(f.partId))&&prodN(r.qty)>0);
+  if(!rows.length) return `<div class="pr-empty">No fettling recorded for this selection.</div>`;
+  const t=prodFetTotals(rows);
+  const byPerson={};
+  rows.forEach(r=>{ const p=byPerson[r.person||'(no name)']||(byPerson[r.person||'(no name)']={rows:[],parts:{}});
+    p.rows.push(r); (p.parts[r.partId]=p.parts[r.partId]||[]).push(r); });
+  const persons=Object.entries(byPerson).map(([name,v])=>({name,v,t:prodFetTotals(v.rows)})).sort((a,b)=>b.t.qty-a.t.qty);
+  const days=new Set(rows.map(r=>r.date)).size;
+  const byPart={};
+  rows.forEach(r=>(byPart[r.partId]=byPart[r.partId]||[]).push(r));
+  const reasons={};
+  rows.forEach(r=>{ if(prodN(r.rej)>0){ const k=r.reason||'Not specified'; reasons[k]=(reasons[k]||0)+Math.min(prodN(r.rej),prodN(r.qty)); } });
+  const pn=id=>ctx.partById[id]?.partNumber||'?';
+  return `
+  <div class="pr-kpis">
+    ${prodKpi('Parts fettled',prodFmt(t.qty),`${persons.length} ${persons.length===1?'person':'people'} · ${days} day${days===1?'':'s'}`)}
+    ${prodKpi('OK',prodFmt(t.ok),'','#16a34a')}
+    ${prodKpi('Rejected',prodFmt(t.rej),`${prodPct(t.rejPct)} of fettled`,t.rej?'#dc2626':'')}
+    ${prodKpi('Top output',persons[0]?esc(persons[0].name):'—',persons[0]?`${prodFmt(persons[0].t.qty)} parts`:'')}
+  </div>
+  ${prodCard('Person-wise',`<table class="pr-tbl"><thead><tr><th>Person</th><th>Part</th><th class="n">Fettled</th><th class="n">OK</th><th class="n">Rejected</th><th class="n">Rej %</th><th class="n">Avg / shift</th></tr></thead>
+    <tbody>${persons.map(({name,v,t:pt})=>{
+      const shifts=new Set(v.rows.map(r=>r.date+r.shift)).size;
+      return `<tr class="grp" style="background:#f6f8fc"><td><b>${esc(name)}</b></td><td style="color:#6b7280;font-size:12px">${Object.keys(v.parts).length} part${Object.keys(v.parts).length===1?'':'s'} · ${shifts} shift${shifts===1?'':'s'}</td>
+        <td class="n mono" style="font-weight:700">${prodFmt(pt.qty)}</td><td class="n mono" style="font-weight:700;color:#16a34a">${prodFmt(pt.ok)}</td>
+        <td class="n mono" style="font-weight:700;color:${pt.rej?'#dc2626':''}">${prodFmt(pt.rej)}</td><td class="n mono" style="font-weight:700">${prodPct(pt.rejPct)}</td>
+        <td class="n mono">${prodFmt(shifts?pt.qty/shifts:0)}</td></tr>`+
+      Object.entries(v.parts).map(([pid,rs])=>{ const x=prodFetTotals(rs);
+        return `<tr><td></td><td>${esc(pn(pid))} <span style="color:#6b7280;font-size:12px">${esc(ctx.partById[pid]?.partName||'')}</span></td>
+          <td class="n mono">${prodFmt(x.qty)}</td><td class="n mono" style="color:#16a34a">${prodFmt(x.ok)}</td>
+          <td class="n mono" style="color:${x.rej?'#dc2626':''}">${prodFmt(x.rej)}</td><td class="n mono">${prodPct(x.rejPct)}</td><td></td></tr>`;}).join('');
+    }).join('')}</tbody></table>`)}
+  <div class="pr-grid">
+    ${prodCard('By part',`<table class="pr-tbl"><thead><tr><th>Part</th><th class="n">Fettled</th><th class="n">OK</th><th class="n">Rejected</th><th class="n">Rej %</th></tr></thead>
+      <tbody>${Object.entries(byPart).map(([pid,rs])=>({pid,x:prodFetTotals(rs)})).sort((a,b)=>b.x.qty-a.x.qty).map(({pid,x})=>`<tr>
+        <td><b>${esc(pn(pid))}</b></td><td class="n mono">${prodFmt(x.qty)}</td><td class="n mono" style="color:#16a34a">${prodFmt(x.ok)}</td>
+        <td class="n mono">${prodFmt(x.rej)}</td><td class="n mono">${prodPct(x.rejPct)}</td></tr>`).join('')}</tbody></table>`)}
+    ${prodCard('Rejection reasons',`<div class="b">${Object.keys(reasons).length?prodBars(Object.entries(reasons).map(([k,v])=>({label:k,value:v})).sort((a,b)=>b.value-a.value)):'<div class="pr-empty">No fettling rejections.</div>'}</div>`)}
+  </div>`;
+}
+
+// ── Entry form ───────────────────────────────────────
+async function prodOpenFettling(id=null){
+  const [ctx,all,emps]=await Promise.all([prodCtx(),prodFetLoad(),db.hrEmployees.toArray().catch(()=>[])]);
+  let rec=id? all.find(e=>e.id===id) : null;
+  if(id&&!rec){ toast('Entry not found','d'); return; }
+  if(rec) rec=JSON.parse(JSON.stringify(rec));
+  else {
+    // Same crew usually works every day: start from the latest entry's people and parts, quantities blank
+    const last=all[0];
+    rec={date:prodToday(), shift:'A', remarks:'',
+      rows:(last?.rows||[]).map(r=>({person:r.person,partId:r.partId,qty:'',rej:'',reason:''}))};
+    if(!rec.rows.length) rec.rows=Array.from({length:5},()=>({person:'',partId:'',qty:'',rej:'',reason:''}));
+  }
+  const names=new Set(all.flatMap(e=>(e.rows||[]).map(r=>r.person)).filter(Boolean));
+  emps.forEach(e=>e.name&&names.add(e.name));
+  window._pf={id,rec,ctx,all,names:[...names].sort()};
+  prodFetRenderForm();
+}
+function prodFetRenderForm(){
+  const {rec,ctx,names,id}=window._pf;
+  setC(`
+  <div class="ph"><h2>🔨 ${id?'Edit':'New'} Fettling Entry</h2><button class="btn btn-o" onclick="prodRenderFettling()">← Back</button></div>
+  <datalist id="pf-names">${names.map(n=>`<option value="${esc(n)}">`).join('')}</datalist>
+  <div style="max-width:1100px">
+  <div class="card"><div class="ch"><h5>1 · Date &amp; shift</h5></div><div class="cb" style="display:grid;grid-template-columns:1fr 1fr;gap:0 16px;max-width:760px">
+    <div class="fg"><label class="lbl">Date *</label><input class="fc" type="date" value="${esc(rec.date)}" onchange="window._pf.rec.date=this.value;prodFetRefresh()"></div>
+    <div class="fg"><label class="lbl">Shift *</label><select class="fc" onchange="window._pf.rec.shift=this.value;prodFetRefresh()">${prodOpts(Object.keys(PROD_SHIFTS),rec.shift,{label:k=>PROD_SHIFTS[k].label})}</select></div>
+  </div></div>
+  <div class="card"><div class="ch"><h5>2 · Work done by each person</h5>
+    <button class="btn btn-o btn-sm" onclick="window._pf.rec.rows.push({person:'',partId:'',qty:'',rej:'',reason:''});prodFetRenderForm()">➕ Add row</button></div>
+    <div class="tw"><table>
+      <thead><tr><th style="width:26%">Person *</th><th style="width:30%">Part *</th><th style="text-align:right;width:110px">Fettled qty</th><th style="text-align:right;width:110px">Rejected</th><th style="width:170px">Rejection reason</th><th style="text-align:right;width:80px">OK</th><th style="width:40px"></th></tr></thead>
+      <tbody>${rec.rows.map((r,i)=>`<tr>
+        <td><input class="fc" list="pf-names" value="${esc(r.person)}" oninput="prodFetRow(${i},'person',this.value)"></td>
+        <td><select class="fc" onchange="prodFetRow(${i},'partId',this.value?+this.value:'')">${prodOpts(ctx.parts.filter(p=>p.active!==false||String(p.id)===String(r.partId)),r.partId,{val:p=>p.id,label:prodPartLabel,blank:'— select part —'})}</select></td>
+        <td><input class="fc mono" style="text-align:right" type="number" min="0" value="${esc(r.qty)}" oninput="prodFetRow(${i},'qty',this.value)"></td>
+        <td><input class="fc mono" style="text-align:right" type="number" min="0" value="${esc(r.rej)}" oninput="prodFetRow(${i},'rej',this.value)"></td>
+        <td><select class="fc" onchange="prodFetRow(${i},'reason',this.value)">${prodOpts(PROD_FET_REASONS,r.reason,{blank:'—'})}</select></td>
+        <td class="mono" style="text-align:right;font-weight:700;color:#16a34a" id="pf-ok-${i}"></td>
+        <td><button class="btn btn-r btn-xs" onclick="window._pf.rec.rows.splice(${i},1);prodFetRenderForm()">✕</button></td></tr>`).join('')}
+      </tbody>
+      <tfoot><tr style="font-weight:700;background:#f6f8fc"><td colspan="2">TOTAL</td><td class="mono" style="text-align:right" id="pf-tq"></td><td class="mono" style="text-align:right;color:#dc2626" id="pf-tr"></td><td></td><td class="mono" style="text-align:right;color:#16a34a" id="pf-to"></td><td></td></tr></tfoot>
+    </table></div>
+    <div style="font-size:11px;color:#6b7280;padding:6px 12px">OK = fettled − rejected. Rows without a quantity are ignored when saving. Fettling rejections are taken off part stock.</div></div>
+  <div class="card"><div class="cb"><div class="fg" style="margin:0"><label class="lbl">Remarks</label><input class="fc" value="${esc(rec.remarks||'')}" oninput="window._pf.rec.remarks=this.value"></div></div></div>
+  <div id="pf-warn"></div>
+  <div style="display:flex;gap:8px;justify-content:flex-end;margin:4px 0 30px">
+    <button class="btn btn-o" onclick="prodRenderFettling()">Cancel</button>
+    <button class="btn btn-p" onclick="prodSaveFettling()">💾 Save</button>
+  </div></div>`);
+  prodFetRefresh();
+}
+function prodFetRow(i,k,v){ window._pf.rec.rows[i][k]=v; prodFetRefresh(); }
+function prodFetRefresh(){
+  const {rec,all,id}=window._pf;
+  const set=(i,h)=>{ const e=document.getElementById(i); if(e) e.innerHTML=h; };
+  rec.rows.forEach((r,i)=>set(`pf-ok-${i}`, r.qty===''?'':prodFmt(Math.max(0,prodN(r.qty)-prodN(r.rej)))));
+  const t=prodFetTotals(rec.rows);
+  set('pf-tq',prodFmt(t.qty)); set('pf-tr',prodFmt(t.rej)); set('pf-to',prodFmt(t.ok));
+  const warn=[];
+  if(rec.rows.some(r=>prodN(r.rej)>prodN(r.qty))) warn.push('A row has more rejected than fettled.');
+  if(all.some(e=>e.id!==id&&e.date===rec.date&&e.shift===rec.shift)) warn.push('There is already a fettling entry for this date and shift — edit that one instead.');
+  set('pf-warn',warn.map(w=>`<div class="alert al-w">⚠️ ${w}</div>`).join(''));
+}
+async function prodSaveFettling(){
+  const {rec,all,id}=window._pf;
+  if(!rec.date||!rec.shift){ toast('Date and shift are required','d'); return; }
+  const rows=rec.rows.filter(r=>prodN(r.qty)>0||prodN(r.rej)>0);
+  if(!rows.length){ toast('Enter at least one quantity','d'); return; }
+  if(rows.some(r=>!String(r.person||'').trim()||!r.partId)){ toast('Every row with a quantity needs a person and a part','d'); return; }
+  if(rows.some(r=>prodN(r.rej)>prodN(r.qty))){ toast('Rejected can\'t be more than fettled','d'); return; }
+  if(all.some(e=>e.id!==id&&e.date===rec.date&&e.shift===rec.shift)){ toast('A fettling entry already exists for this date and shift','d'); return; }
+  const clean={date:rec.date, shift:rec.shift, remarks:(rec.remarks||'').trim(),
+    rows:rows.map(r=>({person:String(r.person).trim(), partId:+r.partId, qty:prodN(r.qty), rej:prodN(r.rej), reason:prodN(r.rej)>0?(r.reason||''):''})),
+    updatedAt:new Date().toISOString(), updatedBy:Auth.user?.name||''};
+  let ok;
+  if(id) ok=await db.prodFettling.update(id,clean);
+  else { clean.createdAt=clean.updatedAt; clean.createdBy=clean.updatedBy; ok=await db.prodFettling.add(clean); }
+  if(!ok){ toast('Save failed — check your connection and try again','d'); return; }
+  toast('✅ Fettling entry saved');
+  prodRenderFettling({tab:'entries'});
+}
+async function prodDeleteFettling(id){
+  if(!confirm('Delete this fettling entry?')) return;
+  await db.prodFettling.delete(id);
+  toast('🗑️ Fettling entry deleted');
+  prodRenderFettling();
+}
+
+// ══════════════════════════════════════════════════════
 //  4. STOCK — raw material (by grade) and parts
 //  RM:    opening / adjustments + lots received (kg) − metal consumed
 //  Parts: opening / adjustments + OK parts produced − dispatched
@@ -1070,8 +1275,9 @@ function prodCapCalc(){
 async function prodRenderStock(f={}){
   const ctx=await prodCtx();
   const asOn=f.asOn||prodToday();
-  const [shiftRows,disp,adj]=await Promise.all([
-    prodLoadShifts(ctx,{to:asOn}), db.prodDispatch.toArray().catch(()=>[]), db.prodStockAdj.toArray().catch(()=>[])]);
+  const [shiftRows,disp,adj,fet]=await Promise.all([
+    prodLoadShifts(ctx,{to:asOn}), db.prodDispatch.toArray().catch(()=>[]), db.prodStockAdj.toArray().catch(()=>[]),
+    db.prodFettling.toArray().catch(()=>[])]);
   const agg=prodAgg(shiftRows.map(r=>r.c));
   const lots=ctx.lots.filter(l=>(l.date||'')<=asOn);
   const noWt=lots.filter(l=>!prodN(l.weightKg));
@@ -1084,10 +1290,11 @@ async function prodRenderStock(f={}){
   Object.entries(agg.byGrade).forEach(([k,v])=>g(k).used+=v.totalKg);
 
   const pt={};
-  const p=k=>pt[k]||(pt[k]={adj:0,made:0,disp:0});
+  const p=k=>pt[k]||(pt[k]={adj:0,made:0,disp:0,fet:0,fetRej:0});
   Object.entries(agg.byPart).forEach(([k,v])=>p(k).made+=v.okPcs);
   disp.filter(d=>(d.date||'')<=asOn).forEach(d=>p(d.partId).disp+=prodN(d.qty));
   adjIn.filter(a=>a.kind==='part').forEach(a=>p(a.partId).adj+=prodN(a.qty));
+  fet.filter(e=>(e.date||'')<=asOn).forEach(e=>(e.rows||[]).forEach(r=>{ const x=p(r.partId); x.fet+=prodN(r.qty); x.fetRej+=Math.min(prodN(r.rej),prodN(r.qty)); }));
 
   const bal=(v,unit,dp)=>`<td class="mono" style="text-align:right;font-weight:700;color:${v<0?'#dc2626':'#0d2f6e'}">${prodFmt(v,dp)}${unit}</td>`;
   setC(`
@@ -1105,11 +1312,13 @@ async function prodRenderStock(f={}){
       <td class="mono" style="text-align:right">${prodFmt(v.used,1)}</td>${bal(v.adj+v.recv-v.used,' kg',1)}</tr>`).join('')||prodEmpty(5,'No raw material data yet.')}</tbody>
   </table><div style="font-size:11px;color:#6b7280;padding:6px 12px">Consumed = metal used per shift entries (net weight + ${prodFmt(ctx.cfg.meltLossPct,1)}% melting loss). Start with an "Opening Stock" adjustment per grade from your last physical count.</div></div></div>
   <div class="card"><div class="ch"><h5>Part stock (castings, pcs)</h5></div><div class="tw"><table>
-    <thead><tr><th>Part</th><th>Grade</th><th style="text-align:right">Opening / adj.</th><th style="text-align:right">+ OK produced</th><th style="text-align:right">− Dispatched</th><th style="text-align:right">= Balance</th></tr></thead>
+    <thead><tr><th>Part</th><th>Grade</th><th style="text-align:right">Opening / adj.</th><th style="text-align:right">+ OK produced</th><th style="text-align:right">− Fettling rejected</th><th style="text-align:right">− Dispatched</th><th style="text-align:right">= Balance</th><th style="text-align:right" title="OK castings produced but not yet fettled">of which not fettled</th></tr></thead>
     <tbody>${Object.entries(pt).map(([k,v])=>({part:ctx.partById[k],v})).sort((a,b)=>String(a.part?.partNumber).localeCompare(String(b.part?.partNumber))).map(({part,v})=>`<tr>
       <td>${esc(prodPartLabel(part))}</td><td>${esc(part?.grade||'')}</td>
       <td class="mono" style="text-align:right">${prodFmt(v.adj)}</td><td class="mono" style="text-align:right">${prodFmt(v.made)}</td>
-      <td class="mono" style="text-align:right">${prodFmt(v.disp)}</td>${bal(v.adj+v.made-v.disp,'',0)}</tr>`).join('')||prodEmpty(6,'No part movements yet.')}</tbody>
+      <td class="mono" style="text-align:right">${prodFmt(v.fetRej)}</td>
+      <td class="mono" style="text-align:right">${prodFmt(v.disp)}</td>${bal(v.adj+v.made-v.fetRej-v.disp,'',0)}
+      <td class="mono" style="text-align:right;color:#6b7280">${prodFmt(Math.max(0,v.made-v.fet))}</td></tr>`).join('')||prodEmpty(8,'No part movements yet.')}</tbody>
   </table></div></div>
   <div class="card"><div class="ch"><h5>Stock adjustments</h5></div><div class="tw"><table>
     <thead><tr><th>Date</th><th>Type</th><th>Item</th><th style="text-align:right">Qty</th><th>Reason</th><th>Remark</th><th>By</th><th></th></tr></thead>

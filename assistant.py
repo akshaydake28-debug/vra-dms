@@ -413,13 +413,19 @@ def t_stock_status(ctx, as_on=None):
     for d in ctx['load']('prodDispatch'):
         if (d.get('date') or '') <= as_on:
             pt.setdefault(_key(d.get('partId')), {'adj': 0, 'made': 0, 'disp': 0})['disp'] += num(d.get('qty'))
+    for e in ctx['load']('prodFettling'):                 # fettling rejections come off part stock
+        if (e.get('date') or '') <= as_on:
+            for r in e.get('rows') or []:
+                x = pt.setdefault(_key(r.get('partId')), {'adj': 0, 'made': 0, 'disp': 0})
+                x['fet_rej'] = x.get('fet_rej', 0) + min(num(r.get('rej')), num(r.get('qty')))
     return {'as_on': as_on,
             'raw_material_kg': [{'grade': g, 'opening_and_adjustments': r0(v['adj'], 1), 'received': r0(v['recv'], 1),
                                  'consumed': r0(v['used'], 1), 'balance': r0(v['adj'] + v['recv'] - v['used'], 1)}
                                 for g, v in sorted(rm.items())],
             'parts_pcs': [{'part': (ctx['parts'].get(k) or {}).get('partNumber', '?'),
                            'opening_and_adjustments': r0(v['adj']), 'ok_produced': r0(v['made']),
-                           'dispatched': r0(v['disp']), 'balance': r0(v['adj'] + v['made'] - v['disp'])}
+                           'fettling_rejected': r0(v.get('fet_rej', 0)), 'dispatched': r0(v['disp']),
+                           'balance': r0(v['adj'] + v['made'] - v.get('fet_rej', 0) - v['disp'])}
                           for k, v in pt.items()],
             'lots_without_weight': no_wt[:20]}
 
@@ -564,6 +570,7 @@ AREA_INFO = {
     # production
     'prodShifts': 'Production — shift entries (raw hourly shots, rejections, downtime per machine/shift). Use production_summary for figures.',
     'prodParts': 'Production — part master (weight, cavities, cycle times, customer, monthly schedule)',
+    'prodFettling': 'Production — fettling entries (per date/shift: person, part, qty fettled, rejected, reason)',
     'prodMachines': 'Production — machines', 'prodDefectCodes': 'Production — rejection/defect codes',
     'prodDispatch': 'Production — dispatch register (parts sent to customers)', 'prodStockAdj': 'Production — stock adjustments / opening stock',
     # quality

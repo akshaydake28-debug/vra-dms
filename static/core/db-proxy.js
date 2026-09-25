@@ -290,6 +290,7 @@ const db = {
   prodParts:      makeTable('prodParts'),
   prodDefectCodes:makeTable('prodDefectCodes'),
   prodShifts:     makeTable('prodShifts'),
+  prodFettling:   makeTable('prodFettling'),
   prodDispatch:   makeTable('prodDispatch'),
   prodStockAdj:   makeTable('prodStockAdj'),
   // Quality
