@@ -667,6 +667,7 @@ const PROD_REPORT_TABS=[
   {k:'oee', l:'OEE & Losses'},
   {k:'rej', l:'Rejection'},
   {k:'mat', l:'Material'},
+  {k:'fet',  l:'Fettling'},
   {k:'cust', l:'Customer Mix'},
   {k:'cap',  l:'Capacity'},
 ];
@@ -676,7 +677,7 @@ const PROD_PERIODS=[
   {k:'30d',   l:'30 days',    range:()=>[prodDaysAgo(29),prodToday()]},
   {k:'month', l:'This month', range:()=>[prodToday().slice(0,8)+'01',prodToday()]},
 ];
-const _prodRep={tab:'oee', f:{period:'7d', from:prodDaysAgo(6), to:prodToday(), machineId:'', shift:'', partId:'', off:false, basis:'pcs'}};
+const _prodRep={tab:'oee', f:{period:'7d', from:prodDaysAgo(6), to:prodToday(), machineId:'', shift:'', partId:'', person:'', off:false, basis:'pcs'}};
 
 const PROD_REPORT_CSS=`<style>
 .pr-top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
@@ -722,8 +723,8 @@ function prodCard(title,body,right=''){ return `<div class="pr-card"><div class=
 const PROD_EMPTY=`<div class="pr-empty">No production entries for this selection.</div>`;
 
 // Filters: period chips + custom dates, machine, shift, (part on Rejection / Material). Every change applies at once.
-function prodRepFilters(ctx){
-  const f=_prodRep.f, tab=_prodRep.tab;
+function prodRepFilters(ctx,tab,people=[]){
+  const f=_prodRep.f, fet=tab==='fet';
   return `<div class="pr-filters">
     ${PROD_PERIODS.map(p=>`<button class="pr-chip ${f.period===p.k?'on':''}" onclick="prodRepPeriod('${p.k}')">${p.l}</button>`).join('')}
     <span class="pr-sep"></span>
@@ -731,33 +732,43 @@ function prodRepFilters(ctx){
     <span style="color:#9ca3af">–</span>
     <input type="date" value="${f.to}" onchange="prodRepSet({to:this.value,period:''})" title="To">
     <span class="pr-sep"></span>
+    ${fet?`<select onchange="prodRepSet({person:this.value})">${prodOpts(people,f.person,{blank:'All people'})}</select>`:`
     <select onchange="prodRepSet({machineId:this.value})">${prodOpts(ctx.machines,f.machineId,{val:m=>m.id,label:prodMachineLabel,blank:'All machines'})}</select>
-    <select onchange="prodRepSet({shift:this.value})">${prodOpts(Object.keys(PROD_SHIFTS),f.shift,{blank:'Both shifts',label:k=>'Shift '+k})}</select>
-    ${tab==='rej'||tab==='mat'?`<select onchange="prodRepSet({partId:this.value})" style="max-width:240px">${prodOpts(ctx.parts,f.partId,{val:p=>p.id,label:prodPartLabel,blank:'All parts'})}</select>`:''}
+    <select onchange="prodRepSet({shift:this.value})">${prodOpts(Object.keys(PROD_SHIFTS),f.shift,{blank:'Both shifts',label:k=>'Shift '+k})}</select>`}
+    ${tab==='rej'||tab==='mat'||fet?`<select onchange="prodRepSet({partId:this.value})" style="max-width:240px">${prodOpts(ctx.parts,f.partId,{val:p=>p.id,label:prodPartLabel,blank:'All parts'})}</select>`:''}
   </div>`;
 }
 function prodRepPeriod(k){ const p=PROD_PERIODS.find(x=>x.k===k); const [from,to]=p.range(); prodRepSet({period:k,from,to}); }
 function prodRepSet(ch){ Object.assign(_prodRep.f,ch); prodRenderReports(); }
 function prodRepTab(k){ _prodRep.tab=k; prodRenderReports(); }
 
+let _prodRepSeq=0;
 async function prodRenderReports(opts={}){
   if(opts.tab) _prodRep.tab=opts.tab;
+  const seq=++_prodRepSeq;          // a slower, older render must not overwrite a newer one
   const tab=_prodRep.tab, f=_prodRep.f;
   if(f.period){ const p=PROD_PERIODS.find(x=>x.k===f.period); if(p) [f.from,f.to]=p.range(); }
   const ctx=await prodCtx();
   const partFilter=tab==='rej'||tab==='mat'? f.partId : '';
-  let body;
+  let body, people=[];
   if(tab==='cap') body=await prodRepCapacity(ctx);
+  else if(tab==='fet'){
+    const all=await prodFetLoad();
+    people=[...new Set(all.flatMap(e=>(e.rows||[]).map(r=>r.person)).filter(Boolean))].sort();
+    body=prodFetPersonReport(ctx,all.filter(e=>e.date>=f.from&&e.date<=f.to),f)
+      +`<div style="text-align:right;margin-top:-4px"><a href="#" onclick="event.preventDefault();nav('prod-fettling')" style="font-size:12px">Enter or edit fettling →</a></div>`;
+  }
   else {
     const rows=await prodLoadShifts(ctx,{from:f.from,to:f.to,machineId:f.machineId,shift:f.shift,partId:partFilter});
     body = tab==='oee'? prodRepOEE(ctx,rows) : tab==='rej'? prodRepRejection(ctx,rows) : tab==='mat'? prodRepMaterial(ctx,rows) : prodRepCustomers(ctx,rows);
   }
+  if(seq!==_prodRepSeq) return;
   setC(`${PROD_REPORT_CSS}
   <div class="pr-top">
     <h2 style="font-size:16px;font-weight:700;color:var(--navy)">📊 Production Reports</h2>
     <div class="pr-tabs">${PROD_REPORT_TABS.map(t=>`<button class="pr-tab ${t.k===tab?'on':''}" onclick="prodRepTab('${t.k}')">${t.l}</button>`).join('')}</div>
   </div>
-  ${tab==='cap'?'':prodRepFilters(ctx)}
+  ${tab==='cap'?'':prodRepFilters(ctx,tab,people)}
   ${body}`);
   if(tab==='cap') prodCapCalc();
 }
@@ -1064,12 +1075,12 @@ function prodCapCalc(){
 
 // ══════════════════════════════════════════════════════
 //  3b. FETTLING — person-wise daily record
-//  One entry per date + shift; one row per person × part:
+//  Fettling runs in a single shift: one entry per date; one row per person × part:
 //  qty fettled, qty rejected (+ optional reason) → OK = fettled − rejected.
 //  Fettling rejections also come off part stock.
 // ══════════════════════════════════════════════════════
 const PROD_FET_REASONS=['Fettling damage','Crack','Porosity / blow hole','Non fill','Cold shut','Dimension NG','Other'];
-const _prodFet={tab:'entries', f:{period:'7d', from:prodDaysAgo(6), to:prodToday(), person:'', partId:''}};
+const _prodFet={f:{period:'7d', from:prodDaysAgo(6), to:prodToday()}};
 
 function prodFetTotals(rows){
   const t={qty:0,rej:0};
@@ -1077,21 +1088,18 @@ function prodFetTotals(rows){
   t.ok=t.qty-t.rej; t.rejPct=t.qty? t.rej/t.qty : 0;
   return t;
 }
-async function prodFetLoad(){ return (await db.prodFettling.toArray().catch(()=>[])).sort((a,b)=>b.date.localeCompare(a.date)||String(b.shift).localeCompare(String(a.shift))); }
+async function prodFetLoad(){ return (await db.prodFettling.toArray().catch(()=>[])).sort((a,b)=>b.date.localeCompare(a.date)||b.id-a.id); }
 
-async function prodRenderFettling(opts={}){
-  if(opts.tab) _prodFet.tab=opts.tab;
+async function prodRenderFettling(){
   const f=_prodFet.f;
   if(f.period){ const p=PROD_PERIODS.find(x=>x.k===f.period); if(p) [f.from,f.to]=p.range(); }
   const [ctx,all]=await Promise.all([prodCtx(),prodFetLoad()]);
   const inRange=all.filter(e=>e.date>=f.from&&e.date<=f.to);
-  const people=[...new Set(all.flatMap(e=>(e.rows||[]).map(r=>r.person)).filter(Boolean))].sort();
-  const tab=_prodFet.tab;
   setC(`${PROD_REPORT_CSS}
   <div class="pr-top">
     <h2 style="font-size:16px;font-weight:700;color:var(--navy)">🔨 Fettling</h2>
     <div style="display:flex;gap:10px;align-items:center">
-      <div class="pr-tabs">${[['entries','Entries'],['person','Person report']].map(([k,l])=>`<button class="pr-tab ${k===tab?'on':''}" onclick="prodRenderFettling({tab:'${k}'})">${l}</button>`).join('')}</div>
+      <button class="btn btn-o" onclick="_prodRep.tab='fet';nav('prod-reports')">📊 Person-wise report</button>
       <button class="btn btn-p" onclick="prodOpenFettling()">➕ New Fettling Entry</button>
     </div>
   </div>
@@ -1101,11 +1109,8 @@ async function prodRenderFettling(opts={}){
     <input type="date" value="${f.from}" onchange="prodFetSet({from:this.value,period:''})">
     <span style="color:#9ca3af">–</span>
     <input type="date" value="${f.to}" onchange="prodFetSet({to:this.value,period:''})">
-    ${tab==='person'?`<span class="pr-sep"></span>
-    <select onchange="prodFetSet({person:this.value})">${prodOpts(people,f.person,{blank:'All people'})}</select>
-    <select onchange="prodFetSet({partId:this.value})" style="max-width:240px">${prodOpts(ctx.parts,f.partId,{val:p=>p.id,label:prodPartLabel,blank:'All parts'})}</select>`:''}
   </div>
-  ${tab==='entries'? prodFetEntries(ctx,inRange) : prodFetPersonReport(ctx,inRange)}`);
+  ${prodFetEntries(ctx,inRange)}`);
 }
 function prodFetSet(ch){
   Object.assign(_prodFet.f,ch);
@@ -1122,21 +1127,20 @@ function prodFetEntries(ctx,entries){
     ${prodKpi('Rejected',prodFmt(t.rej),`${prodPct(t.rejPct)} of fettled`,t.rej?'#dc2626':'')}
     ${prodKpi('People',String(new Set(entries.flatMap(e=>(e.rows||[]).map(r=>r.person)).filter(Boolean)).size),'worked in this period')}
   </div>
-  ${prodCard('Entries',`<table class="pr-tbl"><thead><tr><th>Date</th><th>Shift</th><th>People</th><th class="n">Fettled</th><th class="n">OK</th><th class="n">Rejected</th><th class="n">Rej %</th><th>Entered by</th><th></th></tr></thead>
+  ${prodCard('Entries',`<table class="pr-tbl"><thead><tr><th>Date</th><th>People</th><th class="n">Fettled</th><th class="n">OK</th><th class="n">Rejected</th><th class="n">Rej %</th><th>Entered by</th><th></th></tr></thead>
     <tbody>${entries.map(e=>{ const x=prodFetTotals(e.rows||[]);
-      return `<tr><td class="mono">${esc(e.date)}</td><td><b>${esc(e.shift||'')}</b></td>
+      return `<tr><td class="mono">${esc(e.date)}</td>
       <td style="font-size:12px;color:#374151">${esc([...new Set((e.rows||[]).map(r=>r.person).filter(Boolean))].join(', '))}</td>
       <td class="n mono">${prodFmt(x.qty)}</td><td class="n mono" style="color:#16a34a;font-weight:600">${prodFmt(x.ok)}</td>
       <td class="n mono" style="color:${x.rej?'#dc2626':''}">${prodFmt(x.rej)}</td><td class="n mono">${prodPct(x.rejPct)}</td>
       <td style="font-size:12px;color:#6b7280">${esc(e.updatedBy||e.createdBy||'')}</td>
       <td style="white-space:nowrap;text-align:right"><button class="btn btn-o btn-xs" onclick="prodOpenFettling(${e.id})">✏️</button>
         <button class="btn btn-r btn-xs" onclick="prodDeleteFettling(${e.id})">🗑️</button></td></tr>`;}).join('')
-      ||`<tr><td colspan="9" class="pr-empty">No fettling entries in this period.</td></tr>`}</tbody></table>`)}`;
+      ||`<tr><td colspan="8" class="pr-empty">No fettling entries in this period.</td></tr>`}</tbody></table>`)}`;
 }
 
-function prodFetPersonReport(ctx,entries){
-  const f=_prodFet.f;
-  const rows=entries.flatMap(e=>(e.rows||[]).map(r=>({...r,date:e.date,shift:e.shift})))
+function prodFetPersonReport(ctx,entries,f){
+  const rows=entries.flatMap(e=>(e.rows||[]).map(r=>({...r,date:e.date})))
     .filter(r=>(!f.person||r.person===f.person)&&(!f.partId||String(r.partId)===String(f.partId))&&prodN(r.qty)>0);
   if(!rows.length) return `<div class="pr-empty">No fettling recorded for this selection.</div>`;
   const t=prodFetTotals(rows);
@@ -1157,13 +1161,13 @@ function prodFetPersonReport(ctx,entries){
     ${prodKpi('Rejected',prodFmt(t.rej),`${prodPct(t.rejPct)} of fettled`,t.rej?'#dc2626':'')}
     ${prodKpi('Top output',persons[0]?esc(persons[0].name):'—',persons[0]?`${prodFmt(persons[0].t.qty)} parts`:'')}
   </div>
-  ${prodCard('Person-wise',`<table class="pr-tbl"><thead><tr><th>Person</th><th>Part</th><th class="n">Fettled</th><th class="n">OK</th><th class="n">Rejected</th><th class="n">Rej %</th><th class="n">Avg / shift</th></tr></thead>
+  ${prodCard('Person-wise',`<table class="pr-tbl"><thead><tr><th>Person</th><th>Part</th><th class="n">Fettled</th><th class="n">OK</th><th class="n">Rejected</th><th class="n">Rej %</th><th class="n">Avg / day</th></tr></thead>
     <tbody>${persons.map(({name,v,t:pt})=>{
-      const shifts=new Set(v.rows.map(r=>r.date+r.shift)).size;
-      return `<tr class="grp" style="background:#f6f8fc"><td><b>${esc(name)}</b></td><td style="color:#6b7280;font-size:12px">${Object.keys(v.parts).length} part${Object.keys(v.parts).length===1?'':'s'} · ${shifts} shift${shifts===1?'':'s'}</td>
+      const days=new Set(v.rows.map(r=>r.date)).size;
+      return `<tr class="grp" style="background:#f6f8fc"><td><b>${esc(name)}</b></td><td style="color:#6b7280;font-size:12px">${Object.keys(v.parts).length} part${Object.keys(v.parts).length===1?'':'s'} · ${days} day${days===1?'':'s'}</td>
         <td class="n mono" style="font-weight:700">${prodFmt(pt.qty)}</td><td class="n mono" style="font-weight:700;color:#16a34a">${prodFmt(pt.ok)}</td>
         <td class="n mono" style="font-weight:700;color:${pt.rej?'#dc2626':''}">${prodFmt(pt.rej)}</td><td class="n mono" style="font-weight:700">${prodPct(pt.rejPct)}</td>
-        <td class="n mono">${prodFmt(shifts?pt.qty/shifts:0)}</td></tr>`+
+        <td class="n mono">${prodFmt(days?pt.qty/days:0)}</td></tr>`+
       Object.entries(v.parts).map(([pid,rs])=>{ const x=prodFetTotals(rs);
         return `<tr><td></td><td>${esc(pn(pid))} <span style="color:#6b7280;font-size:12px">${esc(ctx.partById[pid]?.partName||'')}</span></td>
           <td class="n mono">${prodFmt(x.qty)}</td><td class="n mono" style="color:#16a34a">${prodFmt(x.ok)}</td>
@@ -1187,7 +1191,7 @@ async function prodOpenFettling(id=null){
   else {
     // Same crew usually works every day: start from the latest entry's people and parts, quantities blank
     const last=all[0];
-    rec={date:prodToday(), shift:'A', remarks:'',
+    rec={date:prodToday(), remarks:'',
       rows:(last?.rows||[]).map(r=>({person:r.person,partId:r.partId,qty:'',rej:'',reason:''}))};
     if(!rec.rows.length) rec.rows=Array.from({length:5},()=>({person:'',partId:'',qty:'',rej:'',reason:''}));
   }
@@ -1202,9 +1206,8 @@ function prodFetRenderForm(){
   <div class="ph"><h2>🔨 ${id?'Edit':'New'} Fettling Entry</h2><button class="btn btn-o" onclick="prodRenderFettling()">← Back</button></div>
   <datalist id="pf-names">${names.map(n=>`<option value="${esc(n)}">`).join('')}</datalist>
   <div style="max-width:1100px">
-  <div class="card"><div class="ch"><h5>1 · Date &amp; shift</h5></div><div class="cb" style="display:grid;grid-template-columns:1fr 1fr;gap:0 16px;max-width:760px">
-    <div class="fg"><label class="lbl">Date *</label><input class="fc" type="date" value="${esc(rec.date)}" onchange="window._pf.rec.date=this.value;prodFetRefresh()"></div>
-    <div class="fg"><label class="lbl">Shift *</label><select class="fc" onchange="window._pf.rec.shift=this.value;prodFetRefresh()">${prodOpts(Object.keys(PROD_SHIFTS),rec.shift,{label:k=>PROD_SHIFTS[k].label})}</select></div>
+  <div class="card"><div class="ch"><h5>1 · Date</h5></div><div class="cb" style="max-width:380px">
+    <div class="fg" style="margin:0"><label class="lbl">Date *</label><input class="fc" type="date" value="${esc(rec.date)}" onchange="window._pf.rec.date=this.value;prodFetRefresh()"></div>
   </div></div>
   <div class="card"><div class="ch"><h5>2 · Work done by each person</h5>
     <button class="btn btn-o btn-sm" onclick="window._pf.rec.rows.push({person:'',partId:'',qty:'',rej:'',reason:''});prodFetRenderForm()">➕ Add row</button></div>
@@ -1239,18 +1242,18 @@ function prodFetRefresh(){
   set('pf-tq',prodFmt(t.qty)); set('pf-tr',prodFmt(t.rej)); set('pf-to',prodFmt(t.ok));
   const warn=[];
   if(rec.rows.some(r=>prodN(r.rej)>prodN(r.qty))) warn.push('A row has more rejected than fettled.');
-  if(all.some(e=>e.id!==id&&e.date===rec.date&&e.shift===rec.shift)) warn.push('There is already a fettling entry for this date and shift — edit that one instead.');
+  if(!id&&all.some(e=>e.date===rec.date)) warn.push('There is already a fettling entry for this date — edit that one instead.');
   set('pf-warn',warn.map(w=>`<div class="alert al-w">⚠️ ${w}</div>`).join(''));
 }
 async function prodSaveFettling(){
   const {rec,all,id}=window._pf;
-  if(!rec.date||!rec.shift){ toast('Date and shift are required','d'); return; }
+  if(!rec.date){ toast('Date is required','d'); return; }
   const rows=rec.rows.filter(r=>prodN(r.qty)>0||prodN(r.rej)>0);
   if(!rows.length){ toast('Enter at least one quantity','d'); return; }
   if(rows.some(r=>!String(r.person||'').trim()||!r.partId)){ toast('Every row with a quantity needs a person and a part','d'); return; }
   if(rows.some(r=>prodN(r.rej)>prodN(r.qty))){ toast('Rejected can\'t be more than fettled','d'); return; }
-  if(all.some(e=>e.id!==id&&e.date===rec.date&&e.shift===rec.shift)){ toast('A fettling entry already exists for this date and shift','d'); return; }
-  const clean={date:rec.date, shift:rec.shift, remarks:(rec.remarks||'').trim(),
+  if(!id&&all.some(e=>e.date===rec.date)){ toast('A fettling entry already exists for this date — edit that one instead','d'); return; }
+  const clean={date:rec.date, remarks:(rec.remarks||'').trim(),
     rows:rows.map(r=>({person:String(r.person).trim(), partId:+r.partId, qty:prodN(r.qty), rej:prodN(r.rej), reason:prodN(r.rej)>0?(r.reason||''):''})),
     updatedAt:new Date().toISOString(), updatedBy:Auth.user?.name||''};
   let ok;
@@ -1258,7 +1261,7 @@ async function prodSaveFettling(){
   else { clean.createdAt=clean.updatedAt; clean.createdBy=clean.updatedBy; ok=await db.prodFettling.add(clean); }
   if(!ok){ toast('Save failed — check your connection and try again','d'); return; }
   toast('✅ Fettling entry saved');
-  prodRenderFettling({tab:'entries'});
+  prodRenderFettling();
 }
 async function prodDeleteFettling(id){
   if(!confirm('Delete this fettling entry?')) return;
