@@ -813,7 +813,7 @@ function showApp(){
   document.getElementById('tb-user').textContent=u.name;
   document.getElementById('tb-role').textContent=u.role;
   document.getElementById('nav-users').style.display=u.role==='APPROVER'?'flex':'none';
-  document.getElementById('ai-fab').style.display='flex';
+  if(typeof aiInit==='function') aiInit();
   loadAllTypes().then(()=>{
     nav('dashboard'); updatePcount(); startAutoBackup();
     if(typeof updateQcount!=='undefined') updateQcount();

@@ -14,6 +14,18 @@ const AI_SUGGESTIONS=[
 ];
 let _aiBusy=false;
 
+// The button only appears when the server has the assistant switched on
+// (ASSISTANT_ENABLED=1 in Railway).
+async function aiInit(){
+  const fab=document.getElementById('ai-fab'); if(!fab) return;
+  fab.style.display='none';
+  try{
+    const r=await fetch(window.location.origin+'/api/assistant/status');
+    const d=r.ok? await r.json() : {};
+    if(d.enabled) fab.style.display='flex';
+  }catch(e){}
+}
+
 function aiHistory(){ try{ return JSON.parse(sessionStorage.getItem('vra_ai'))||[]; }catch(e){ return []; } }
 function aiSaveHistory(h){ try{ sessionStorage.setItem('vra_ai',JSON.stringify(h.slice(-30))); }catch(e){} }
 
