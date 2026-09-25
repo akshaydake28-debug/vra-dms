@@ -82,6 +82,9 @@ tr:last-child td{border-bottom:none}
 label.lbl{display:block;font-size:11.5px;font-weight:600;color:var(--navy);margin-bottom:3px}
 .fc{width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:7px;font-size:13px;background:#fff;font-family:'Inter',sans-serif;transition:border-color .15s}
 .fc:focus{outline:none;border-color:var(--navy-l);box-shadow:0 0 0 3px rgba(13,47,110,.08)}
+/* Number boxes: no spinner arrows (value changes only by typing) */
+input[type=number]{-moz-appearance:textfield;appearance:textfield}
+input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
 select.fc{cursor:pointer}
 /* ALERTS */
 .alert{padding:9px 12px;border-radius:8px;font-size:12.5px;margin-bottom:11px;display:flex;align-items:center;gap:7px}
@@ -779,6 +782,17 @@ const Auth = {
   },
   logout(){fetch(window.location.origin+'/api/auth/logout',{method:'POST'}).catch(()=>{});sessionStorage.removeItem('vra_u');showLogin();}
 };
+// Number boxes must only change by typing: a mouse-wheel scroll over a
+// focused box (or an arrow key) used to silently alter the entered value.
+// Blurring on wheel cancels the change and lets the page scroll instead.
+document.addEventListener('wheel',e=>{
+  const el=e.target;
+  if(el instanceof HTMLInputElement&&el.type==='number'&&document.activeElement===el) el.blur();
+},{passive:true});
+document.addEventListener('keydown',e=>{
+  const el=e.target;
+  if((e.key==='ArrowUp'||e.key==='ArrowDown')&&el instanceof HTMLInputElement&&el.type==='number') e.preventDefault();
+});
 document.addEventListener('keydown',e=>{
   if(e.key==='Enter'&&document.getElementById('login-page').style.display!=='none') Auth.login();
   if(e.key==='Enter'&&!e.shiftKey&&document.activeElement.id==='ai-input'){e.preventDefault();sendAI();}
