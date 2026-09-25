@@ -682,8 +682,18 @@ def _assistant_loader():
         return rows
     return load
 
+def _assistant_enabled():
+    # Switched off by default; set ASSISTANT_ENABLED=1 in Railway to turn it on.
+    return os.environ.get('ASSISTANT_ENABLED', '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+@app.route('/api/assistant/status', methods=['GET'])
+def assistant_status():
+    return jsonify({'enabled': _assistant_enabled()})
+
 @app.route('/api/assistant', methods=['POST'])
 def ask_assistant():
+    if not _assistant_enabled():
+        return jsonify({'error': 'The assistant is switched off.'}), 403
     body = request.get_json(silent=True) or {}
     msgs = body.get('messages')
     if not isinstance(msgs, list) or not msgs:
