@@ -645,6 +645,56 @@ def public_feedback_submit(token):
     db.session.commit()
     return jsonify({'ok': True})
 
+# ══════════════════════════════════════════════════════
+#  AI ASSISTANT — read-only questions about any data in the app
+#  (Gemini + lookup tools in assistant.py; key from GEMINI_API_KEY)
+# ══════════════════════════════════════════════════════
+import assistant
+
+def _assistant_loader():
+    cache = {}
+    def load(module):
+        if module in cache:
+            return cache[module]
+        if module == '_modules':
+            rows = [{'module': m, 'count': c} for m, c in
+                    db.session.query(GenericRecord.module, db.func.count(GenericRecord.id)).group_by(GenericRecord.module).all()]
+        elif module == '_rm_lots':
+            rows = [l.to_dict() for l in RMLot.query.all()]
+        elif module == '_documents':
+            rows = [{'id': d.id, 'docNumber': d.doc_number, 'title': d.title, 'docType': d.doc_type,
+                     'revision': d.revision, 'status': d.status, 'content': d.content or '',
+                     'createdBy': d.created_by, 'approvedBy': d.approved_by,
+                     'createdDate': d.created_date, 'approvedDate': d.approved_date} for d in Document.query.all()]
+        elif module == '_audit':
+            rows = [{'id': a.id, 'timestamp': str(a.timestamp), 'user': a.user, 'action': a.action,
+                     'docNumber': a.doc_number, 'module': a.module, 'notes': a.notes or a.detail}
+                    for a in AuditLog.query.order_by(AuditLog.id.desc()).limit(300).all()]
+        elif module == '_users':
+            rows = [{'id': u.id, 'name': u.name, 'role': u.role} for u in User.query.all()]
+        else:
+            rows = []
+            for r in GenericRecord.query.filter_by(module=module).all():
+                d = safe_json_loads(r.data, {})
+                d['id'] = r.id
+                rows.append(d)
+        cache[module] = rows
+        return rows
+    return load
+
+@app.route('/api/assistant', methods=['POST'])
+def ask_assistant():
+    body = request.get_json(silent=True) or {}
+    msgs = body.get('messages')
+    if not isinstance(msgs, list) or not msgs:
+        return jsonify({'error': 'No question'}), 400
+    msgs = [{'role': str(m.get('role', 'user')), 'text': str(m.get('text', ''))} for m in msgs if isinstance(m, dict)]
+    try:
+        reply, used = assistant.answer(msgs, _assistant_loader())
+    except assistant.AssistantError as e:
+        return jsonify({'error': str(e)}), 503
+    return jsonify({'reply': reply, 'tools': used})
+
 @app.route('/api/<module>', methods=['GET'])
 def list_generic(module):
     records = GenericRecord.query.filter_by(module=module).order_by(GenericRecord.id.desc()).all()
