@@ -58,6 +58,8 @@ function prodPad(h){ return String(h).padStart(2,'0'); }
 function prodSlotLabel(shift,i){ const h=(PROD_SHIFTS[shift]?.start??8)+i; return prodPad(h%24)+'–'+prodPad((h+1)%24); }
 function prodPartLabel(p){ return p? `${p.partNumber||''} — ${p.partName||''}` : '—'; }
 function prodMachineLabel(m){ return m? (m.code||m.name||'') : '—'; }
+// Metal needed per part: net weight + melting loss on that metal (0.5 kg @ 6% → 0.53 kg)
+function prodMetalPerPc(wt,cfg){ return prodN(wt)*(1+prodN(cfg.meltLossPct)/100); }
 function prodCT(part,machineId){ return prodN((part?.cycleTimes||{})[machineId]); }
 function prodOpts(items,sel,{val=x=>x,label=x=>x,blank=null}={}){
   return (blank!==null?`<option value="">${esc(blank)}</option>`:'')+
@@ -425,7 +427,7 @@ function prodPsRenderRuns(){
   const {rec,ctx}=window._ps;
   const ordered=prodRunRanges(rec.runs);
   document.getElementById('ps-runs').innerHTML=`<table>
-    <thead><tr><th>Part *</th><th style="width:150px">Grade</th><th style="width:100px">Cavities</th><th style="width:170px">From hour</th><th>Target CT · net wt</th><th style="width:40px"></th></tr></thead>
+    <thead><tr><th>Part *</th><th style="width:150px">Grade</th><th style="width:100px">Cavities</th><th style="width:170px">From hour</th><th>Target CT · metal per part</th><th style="width:40px"></th></tr></thead>
     <tbody>${ordered.map((r,k)=>{ const i=r._i, p=ctx.partById[r.partId], ct=prodCT(p,rec.machineId);
       return `<tr>
       <td><select class="fc" onchange="prodPsRunPart(${i},this.value)">${prodOpts(ctx.parts.filter(x=>x.active!==false||String(x.id)===String(r.partId)),r.partId,{val:x=>x.id,label:prodPartLabel,blank:'— select part —'})}</select></td>
@@ -433,10 +435,10 @@ function prodPsRenderRuns(){
       <td><input class="fc" type="number" min="1" value="${esc(r.cavities)}" oninput="prodPsRun(${i},'cavities',this.value)"></td>
       <td>${k===0?`<input class="fc" disabled value="${prodSlotLabel(rec.shift,0)} (start)">`:
         `<select class="fc" onchange="prodPsRun(${i},'fromSlot',+this.value,true)">${Array.from({length:PROD_SLOTS-1},(_,s)=>s+1).map(s=>`<option value="${s}" ${s===prodN(r.fromSlot)?'selected':''}>${prodSlotLabel(rec.shift,s)}</option>`).join('')}</select>`}</td>
-      <td style="font-size:12px">${p?`${ct?ct+' s/shot':'<span style="color:#d97706">CT not set</span>'} · ${prodN(p.netWeightKg)?prodFmt(p.netWeightKg,3)+' kg':'<span style="color:#d97706">weight not set</span>'}`:''}</td>
+      <td style="font-size:12px">${p?`${ct?ct+' s/shot':'<span style="color:#d97706">CT not set</span>'} · ${prodN(p.netWeightKg)?`${prodFmt(p.netWeightKg,3)} kg net → <b>${prodFmt(prodMetalPerPc(p.netWeightKg,ctx.cfg),3)} kg metal/pc</b>`:'<span style="color:#d97706">weight not set</span>'}`:''}</td>
       <td>${rec.runs.length>1?`<button class="btn btn-r btn-xs" title="Remove" onclick="prodPsDelRun(${i})">✕</button>`:''}</td></tr>`;}).join('')}
     </tbody></table>
-    ${ctx.parts.length?'':`<div class="alert al-w" style="margin-top:8px">No parts in the Part Master yet. <a href="#" onclick="event.preventDefault();nav('prod-parts')">Add parts →</a></div>`}`;
+    ${ctx.parts.length?'':`<div class="alert al-w" style="margin-top:8px"><span>No parts in the Part Master yet. <a href="#" onclick="event.preventDefault();nav('prod-parts')">Add parts →</a></span></div>`}`;
 }
 
 function prodPsRenderHours(){
@@ -548,8 +550,11 @@ function prodPsRefresh(){
         ${kv('Downtime',prodFmt(t.downtime)+' min')}
       </div>
       <div style="display:grid;grid-template-columns:1fr auto;gap:3px 10px;align-content:start">
-        <span style="grid-column:span 2;font-weight:600;font-size:11px;color:#6b7280">METAL USED (net + ${prodFmt(ctx.cfg.meltLossPct,1)}% melting loss)</span>
-        ${grades.length?grades.map(([g,v])=>kv(esc(g),`${prodFmt(v.netKg,1)} + ${prodFmt(v.lossKg,1)} = ${prodFmt(v.totalKg,1)} kg`)).join(''):'<span style="color:#9ca3af">—</span>'}
+        <span style="grid-column:span 2;font-weight:600;font-size:11px;color:#6b7280">METAL USED (net wt + ${prodFmt(ctx.cfg.meltLossPct,1)}% melting loss, per part)</span>
+        ${c.runs.filter(r=>r.castPcs&&r.wt).map(r=>{ const pcs=r.netKg/r.wt;
+          return `<span style="grid-column:span 2;font-size:11.5px;color:#374151">${esc(r.part?.partNumber||'')}: ${prodFmt(r.wt,3)} + ${prodFmt(ctx.cfg.meltLossPct,1)}% = <b>${prodFmt(prodMetalPerPc(r.wt,ctx.cfg),3)} kg/pc</b> × ${prodFmt(pcs)} pcs</span>`; }).join('')}
+        ${grades.length?grades.map(([g,v])=>kv(esc(g),`${prodFmt(v.totalKg,1)} kg`)).join(''):'<span style="color:#9ca3af">—</span>'}
+        ${grades.length?`<span style="grid-column:span 2;font-size:11px;color:#6b7280">of which melting loss ${prodFmt(t.lossKg,1)} kg</span>`:''}
       </div>
     </div>
   </div></div>`);
@@ -663,7 +668,7 @@ async function prodRenderOEE(f={}){
   <div class="ph"><h2>⚙️ OEE &amp; Losses</h2></div>
   ${prodFilterBar('poe',f,ctx,{onApply:'prodRenderOEE'})}
   ${prodKpiRow(t)}
-  ${t.shotsNoCT?`<div class="alert al-w">⚠️ ${prodFmt(t.shotsNoCT)} shots are for parts with no target cycle time on that machine — Performance and speed loss can't be calculated for them. Set it in <a href="#" onclick="event.preventDefault();nav('prod-parts')">Part Master</a>.</div>`:''}
+  ${t.shotsNoCT?`<div class="alert al-w"><span>⚠️ ${prodFmt(t.shotsNoCT)} shots are for parts with no target cycle time on that machine — Performance and speed loss can't be calculated for them. Set it in <a href="#" onclick="event.preventDefault();nav('prod-parts')">Part Master</a>.</span></div>`:''}
   <div class="card"><div class="ch"><h5>Where the planned time went — ${prodHrs(t.planned)} planned</h5></div><div class="cb">
     <div style="display:flex;height:26px;gap:2px;border-radius:4px;overflow:hidden">
       ${parts.filter(p=>p[1]>0).map(([l,v,c])=>`<div title="${l}: ${prodHrs(v)} (${prodPct(v/tot)})" style="width:${v/tot*100}%;background:${c}"></div>`).join('')}
@@ -785,8 +790,8 @@ async function prodRenderMaterial(f={}){
     ${prodTile('🏗️',prodFmt(agg.t.totalKg,1)+' kg','Total metal consumed',null,'#dbeafe')}
     ${prodTile('🔩',prodFmt(agg.t.castPcs),'Parts cast')}
   </div>
-  <div class="alert al-w" style="background:#f6f8fc;border-color:var(--border);color:#374151">ℹ️ Consumption = ${basis} × part net weight × (1 + ${prodFmt(ctx.cfg.meltLossPct,1)}% melting loss). Change the basis or loss % in <a href="#" onclick="event.preventDefault();nav('prod-setup')">Machines &amp; Settings</a>.</div>
-  ${agg.t.shotsNoWt?`<div class="alert al-w">⚠️ ${prodFmt(agg.t.shotsNoWt)} shots are for parts with no net weight — they are not counted. Set weights in <a href="#" onclick="event.preventDefault();nav('prod-parts')">Part Master</a>.</div>`:''}
+  <div class="alert al-w" style="background:#f6f8fc;border-color:var(--border);color:#374151"><span>ℹ️ Metal per part = net weight + ${prodFmt(ctx.cfg.meltLossPct,1)}% melting loss (e.g. 0.500 kg → ${prodFmt(prodMetalPerPc(0.5,ctx.cfg),3)} kg). Consumption = metal per part × ${basis}. Change the basis or loss % in <a href="#" onclick="event.preventDefault();nav('prod-setup')">Machines &amp; Settings</a>.</span></div>
+  ${agg.t.shotsNoWt?`<div class="alert al-w"><span>⚠️ ${prodFmt(agg.t.shotsNoWt)} shots are for parts with no net weight — they are not counted. Set weights in <a href="#" onclick="event.preventDefault();nav('prod-parts')">Part Master</a>.</span></div>`:''}
   <div class="card"><div class="ch"><h5>By grade</h5></div><div class="tw"><table>
     <thead><tr><th>Grade</th><th style="text-align:right">Parts cast</th><th style="text-align:right">OK parts</th><th style="text-align:right">Net kg</th><th style="text-align:right">Melting loss kg</th><th style="text-align:right">Total kg</th></tr></thead>
     <tbody>${grades.map(([g,v])=>`<tr><td><span class="badge" style="background:#FAEEDA;color:#BA7517">${esc(g)}</span></td>
@@ -795,11 +800,11 @@ async function prodRenderMaterial(f={}){
       <td class="mono" style="text-align:right;font-weight:700">${prodFmt(v.totalKg,1)}</td></tr>`).join('')||prodEmpty(6,'No production in this range.')}</tbody>
   </table></div></div>
   <div class="card"><div class="ch"><h5>By shift</h5></div><div class="tw"><table>
-    <thead><tr><th>Date</th><th>Shift</th><th>Machine</th><th>Part</th><th>Grade</th><th style="text-align:right">Pcs cast</th><th style="text-align:right">Net wt/pc</th><th style="text-align:right">Net kg</th><th style="text-align:right">Loss kg</th><th style="text-align:right">Total kg</th></tr></thead>
+    <thead><tr><th>Date</th><th>Shift</th><th>Machine</th><th>Part</th><th>Grade</th><th style="text-align:right">Pcs</th><th style="text-align:right">Net wt/pc</th><th style="text-align:right">Metal/pc (+${prodFmt(ctx.cfg.meltLossPct,1)}%)</th><th style="text-align:right">Total kg</th><th style="text-align:right">of which loss kg</th></tr></thead>
     <tbody>${lines.map(({s,r})=>`<tr><td class="mono">${esc(s.date)}</td><td>${esc(s.shift)}</td><td>${esc(prodMachineLabel(ctx.machineById[s.machineId]))}</td>
-      <td>${esc(r.part?.partNumber||'?')}</td><td>${esc(r.grade)}</td><td class="mono" style="text-align:right">${prodFmt(r.castPcs)}</td>
-      <td class="mono" style="text-align:right">${r.wt?prodFmt(r.wt,3):'—'}</td><td class="mono" style="text-align:right">${prodFmt(r.netKg,1)}</td>
-      <td class="mono" style="text-align:right">${prodFmt(r.lossKg,1)}</td><td class="mono" style="text-align:right;font-weight:600">${prodFmt(r.totalKg,1)}</td></tr>`).join('')||prodEmpty(10,'No data.')}</tbody>
+      <td>${esc(r.part?.partNumber||'?')}</td><td>${esc(r.grade)}</td><td class="mono" style="text-align:right">${prodFmt(r.wt?r.netKg/r.wt:0)}</td>
+      <td class="mono" style="text-align:right">${r.wt?prodFmt(r.wt,3):'—'}</td><td class="mono" style="text-align:right">${r.wt?prodFmt(prodMetalPerPc(r.wt,ctx.cfg),3):'—'}</td>
+      <td class="mono" style="text-align:right;font-weight:600">${prodFmt(r.totalKg,1)}</td><td class="mono" style="text-align:right;color:#6b7280">${prodFmt(r.lossKg,1)}</td></tr>`).join('')||prodEmpty(10,'No data.')}</tbody>
   </table></div></div>`);
 }
 
@@ -838,7 +843,7 @@ async function prodRenderStock(f={}){
       <button class="btn btn-o" onclick="prodOpenAdj()">± Stock adjustment</button>
       <button class="btn btn-p" onclick="nav('prod-dispatch')">🚚 Dispatch</button>
     </div></div>
-  ${noWt.length?`<div class="alert al-w">⚠️ ${noWt.length} raw material lot${noWt.length>1?'s have':' has'} no weight and ${noWt.length>1?'are':'is'} not counted as received: ${noWt.slice(0,8).map(l=>esc(l.lotNumber)).join(', ')}${noWt.length>8?'…':''}. Add the weight in the <a href="#" onclick="event.preventDefault();nav('rm-register')">Lot Register</a>.</div>`:''}
+  ${noWt.length?`<div class="alert al-w"><span>⚠️ ${noWt.length} raw material lot${noWt.length>1?'s have':' has'} no weight and ${noWt.length>1?'are':'is'} not counted as received: ${noWt.slice(0,8).map(l=>esc(l.lotNumber)).join(', ')}${noWt.length>8?'…':''}. Add the weight in the <a href="#" onclick="event.preventDefault();nav('rm-register')">Lot Register</a>.</span></div>`:''}
   <div class="card"><div class="ch"><h5>Raw material stock by grade (kg)</h5></div><div class="tw"><table>
     <thead><tr><th>Grade</th><th style="text-align:right">Opening / adj.</th><th style="text-align:right">+ Received (lots)</th><th style="text-align:right">− Consumed</th><th style="text-align:right">= Balance</th></tr></thead>
     <tbody>${Object.entries(rm).sort().map(([k,v])=>`<tr><td><span class="badge" style="background:#FAEEDA;color:#BA7517">${esc(k)}</span></td>
@@ -964,17 +969,18 @@ async function prodRenderParts(){
     <button class="btn btn-p" onclick="prodOpenPart()">➕ Add Part</button></div></div>
   <div class="alert al-w" style="background:#f6f8fc;border-color:var(--border);color:#374151">ℹ️ Net weight drives metal consumption; target cycle time (seconds per shot, per machine) drives Performance / OEE and hourly targets.</div>
   <div class="card"><div class="tw"><table>
-    <thead><tr><th>Part No.</th><th>Part Name</th><th>Customer</th><th>Grade</th><th style="text-align:right">Net wt (kg)</th><th style="text-align:right">Cavities</th>
+    <thead><tr><th>Part No.</th><th>Part Name</th><th>Customer</th><th>Grade</th><th style="text-align:right">Net wt (kg)</th><th style="text-align:right">Metal/pc +${prodFmt(ctx.cfg.meltLossPct,1)}% (kg)</th><th style="text-align:right">Cavities</th>
       ${mcs.map(m=>`<th style="text-align:right">CT ${esc(m.code)} (s)</th>`).join('')}<th>Status</th><th></th></tr></thead>
     <tbody>${ctx.parts.map(p=>`<tr ${p.active===false?'style="opacity:.55"':''}>
       <td class="mono" style="font-weight:700">${esc(p.partNumber)}</td><td>${esc(p.partName||'')}</td><td>${esc(p.customer||'')}</td>
       <td>${esc(p.grade||'')}</td>
       <td class="mono" style="text-align:right;${prodN(p.netWeightKg)?'':'color:#d97706'}">${prodN(p.netWeightKg)?prodFmt(p.netWeightKg,3):'not set'}</td>
+      <td class="mono" style="text-align:right">${prodN(p.netWeightKg)?prodFmt(prodMetalPerPc(p.netWeightKg,ctx.cfg),3):'—'}</td>
       <td class="mono" style="text-align:right">${prodN(p.cavities)||1}</td>
       ${mcs.map(m=>`<td class="mono" style="text-align:right">${prodCT(p,m.id)||'—'}</td>`).join('')}
       <td>${p.active===false?'Inactive':'Active'}</td>
       <td style="white-space:nowrap"><button class="btn btn-o btn-xs" onclick="prodOpenPart(${p.id})">✏️</button>
-        <button class="btn btn-r btn-xs" onclick="prodDelPart(${p.id})">🗑️</button></td></tr>`).join('')||prodEmpty(8+mcs.length,'No parts yet.')}</tbody>
+        <button class="btn btn-r btn-xs" onclick="prodDelPart(${p.id})">🗑️</button></td></tr>`).join('')||prodEmpty(9+mcs.length,'No parts yet.')}</tbody>
   </table></div></div>`);
 }
 async function prodOpenPart(id=null){
