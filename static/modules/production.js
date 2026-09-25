@@ -654,180 +654,242 @@ async function prodPsSave(next){
 }
 
 // ══════════════════════════════════════════════════════
-//  3. OEE & LOSSES
+//  3. PRODUCTION REPORTS — one page, three tabs (OEE & Losses,
+//     Rejection, Material) sharing one filter bar. Filters and the
+//     open tab are kept while you move between tabs.
 // ══════════════════════════════════════════════════════
-async function prodRenderOEE(f={}){
+const PROD_REPORT_TABS=[
+  {k:'oee', l:'OEE & Losses'},
+  {k:'rej', l:'Rejection'},
+  {k:'mat', l:'Material'},
+];
+const PROD_PERIODS=[
+  {k:'today', l:'Today',      range:()=>[prodToday(),prodToday()]},
+  {k:'7d',    l:'7 days',     range:()=>[prodDaysAgo(6),prodToday()]},
+  {k:'30d',   l:'30 days',    range:()=>[prodDaysAgo(29),prodToday()]},
+  {k:'month', l:'This month', range:()=>[prodToday().slice(0,8)+'01',prodToday()]},
+];
+const _prodRep={tab:'oee', f:{period:'7d', from:prodDaysAgo(6), to:prodToday(), machineId:'', shift:'', partId:'', off:false}};
+
+const PROD_REPORT_CSS=`<style>
+.pr-top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.pr-tabs{display:inline-flex;background:#e6ebf5;border-radius:10px;padding:3px;gap:2px}
+.pr-tab{border:none;background:none;padding:7px 18px;border-radius:8px;font:600 13px 'Inter',sans-serif;color:#5b6475;cursor:pointer}
+.pr-tab:hover{color:var(--navy)}
+.pr-tab.on{background:#fff;color:var(--navy);box-shadow:0 1px 3px rgba(13,47,110,.15)}
+.pr-filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:#fff;border:1px solid var(--border);border-radius:10px;padding:8px 10px;margin-bottom:14px}
+.pr-filters select,.pr-filters input{height:32px;border:1px solid var(--border);border-radius:7px;padding:0 8px;font:13px 'Inter',sans-serif;background:#fff;color:#1a1a2e}
+.pr-chip{border:1px solid transparent;background:none;padding:5px 11px;border-radius:7px;font:500 12.5px 'Inter',sans-serif;color:#5b6475;cursor:pointer}
+.pr-chip:hover{background:#f0f3f9}
+.pr-chip.on{background:#edf1fb;border-color:#c9d4ee;color:var(--navy);font-weight:600}
+.pr-sep{width:1px;height:22px;background:var(--border);margin:0 4px}
+.pr-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px}
+.pr-kpi{background:#fff;border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.pr-kpi .l{font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:#6b7280}
+.pr-kpi .v{font-size:26px;font-weight:700;color:var(--navy);line-height:1.2;margin-top:4px}
+.pr-kpi .s{font-size:12px;color:#6b7280;margin-top:2px}
+.pr-card{background:#fff;border:1px solid var(--border);border-radius:10px;margin-bottom:14px;overflow:hidden}
+.pr-card>.h{display:flex;align-items:baseline;justify-content:space-between;gap:10px;padding:12px 16px 4px}
+.pr-card>.h b{font-size:13.5px;color:var(--navy)}
+.pr-card>.h span{font-size:12px;color:#6b7280}
+.pr-card>.b{padding:10px 16px 14px}
+.pr-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.pr-grid>.pr-card{margin-bottom:0}
+.pr-grid+.pr-card,.pr-grid+.pr-grid{margin-top:14px}
+.pr-tbl th{background:none;color:#6b7280;font-size:10.5px;letter-spacing:.4px;text-transform:uppercase;border-bottom:1px solid var(--border);padding:6px 10px}
+.pr-tbl td{padding:8px 10px;font-size:12.5px;border-bottom:1px solid #eef1f7}
+.pr-tbl td.n,.pr-tbl th.n{text-align:right;font-variant-numeric:tabular-nums}
+.pr-tbl tr.grp td{border-top:1px solid var(--border)}
+.pr-note{font-size:11.5px;color:#6b7280;padding:0 16px 12px}
+.pr-warn{font-size:12px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:7px 12px;margin-bottom:12px}
+.pr-empty{color:#9ca3af;text-align:center;padding:22px;font-size:12.5px}
+.pr-heat td{text-align:center;font-size:12px;font-weight:600;border-radius:6px}
+.pr-dot{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:6px;vertical-align:0}
+@media (max-width:1000px){.pr-kpis{grid-template-columns:repeat(2,1fr)}.pr-grid{grid-template-columns:1fr}}
+</style>`;
+
+function prodKpi(label,value,sub='',color=''){
+  return `<div class="pr-kpi"><div class="l">${label}</div><div class="v" ${color?`style="color:${color}"`:''}>${value}</div>${sub?`<div class="s">${sub}</div>`:''}</div>`;
+}
+function prodCard(title,body,right=''){ return `<div class="pr-card"><div class="h"><b>${title}</b>${right?`<span>${right}</span>`:''}</div>${body}</div>`; }
+const PROD_EMPTY=`<div class="pr-empty">No production entries for this selection.</div>`;
+
+// Filters: period chips + custom dates, machine, shift, (part on Rejection / Material). Every change applies at once.
+function prodRepFilters(ctx){
+  const f=_prodRep.f, tab=_prodRep.tab;
+  return `<div class="pr-filters">
+    ${PROD_PERIODS.map(p=>`<button class="pr-chip ${f.period===p.k?'on':''}" onclick="prodRepPeriod('${p.k}')">${p.l}</button>`).join('')}
+    <span class="pr-sep"></span>
+    <input type="date" value="${f.from}" onchange="prodRepSet({from:this.value,period:''})" title="From">
+    <span style="color:#9ca3af">–</span>
+    <input type="date" value="${f.to}" onchange="prodRepSet({to:this.value,period:''})" title="To">
+    <span class="pr-sep"></span>
+    <select onchange="prodRepSet({machineId:this.value})">${prodOpts(ctx.machines,f.machineId,{val:m=>m.id,label:prodMachineLabel,blank:'All machines'})}</select>
+    <select onchange="prodRepSet({shift:this.value})">${prodOpts(Object.keys(PROD_SHIFTS),f.shift,{blank:'Both shifts',label:k=>'Shift '+k})}</select>
+    ${tab!=='oee'?`<select onchange="prodRepSet({partId:this.value})" style="max-width:240px">${prodOpts(ctx.parts,f.partId,{val:p=>p.id,label:prodPartLabel,blank:'All parts'})}</select>`:''}
+  </div>`;
+}
+function prodRepPeriod(k){ const p=PROD_PERIODS.find(x=>x.k===k); const [from,to]=p.range(); prodRepSet({period:k,from,to}); }
+function prodRepSet(ch){ Object.assign(_prodRep.f,ch); prodRenderReports(); }
+function prodRepTab(k){ _prodRep.tab=k; prodRenderReports(); }
+
+async function prodRenderReports(opts={}){
+  if(opts.tab) _prodRep.tab=opts.tab;
+  const tab=_prodRep.tab, f=_prodRep.f;
+  if(f.period){ const p=PROD_PERIODS.find(x=>x.k===f.period); if(p) [f.from,f.to]=p.range(); }
   const ctx=await prodCtx();
-  f={from:f.from||prodDaysAgo(6), to:f.to||prodToday(), machineId:f.machineId||'', shift:f.shift||''};
-  const rows=await prodLoadShifts(ctx,f);
-  const agg=prodAgg(rows.map(r=>r.c)), t=agg.t;
-
-  const good=Math.max(0,t.idealMin-t.qualLossMin);
-  const speed=t.shotsNoCT?0:t.perfLossMin;
-  const parts=[['Good parts',good,'#16a34a'],['Quality loss',t.qualLossMin,'#dc2626'],['Speed loss',speed,'#d97706'],['Downtime',t.downtime,'#6b7280']];
-  const tot=parts.reduce((s,p)=>s+p[1],0)||1;
-
-  const byMachine=ctx.machines.map(m=>({m,a:prodAgg(rows.filter(r=>String(r.s.machineId)===String(m.id)).map(r=>r.c))})).filter(x=>x.a.t.planned);
-  const byDate={};
-  rows.forEach(r=>{ (byDate[r.s.date]=byDate[r.s.date]||[]).push(r); });
-  const dates=Object.keys(byDate).sort().reverse();
-
-  // average hourly efficiency per slot, per shift
-  const slotEff={};
-  for(const {s,c} of rows){
-    c.hours.forEach((h,i)=>{ if(h.eff==null||(!h.shots&&!h.down)) return;
-      const k=s.shift, a=(slotEff[k]=slotEff[k]||Array.from({length:PROD_SLOTS},()=>({ideal:0,avail:0})));
-      a[i].ideal+=h.shots*h.ct/60; a[i].avail+=Math.max(0,60-h.down); });
-  }
-
-  const downRows=Object.entries(agg.byDown).sort((a,b)=>b[1]-a[1]).map(([k,v])=>({label:k,value:v,display:prodHrs(v)}));
-
-  setC(`
-  <div class="ph"><h2>⚙️ OEE &amp; Losses</h2></div>
-  ${prodFilterBar('poe',f,ctx,{onApply:'prodRenderOEE'})}
-  ${prodKpiRow(t)}
-  ${t.shotsNoCT?`<div class="alert al-w"><span>⚠️ ${prodFmt(t.shotsNoCT)} shots are for parts with no target cycle time on that machine — Performance and speed loss can't be calculated for them. Set it in <a href="#" onclick="event.preventDefault();nav('prod-parts')">Part Master</a>.</span></div>`:''}
-  <div class="card"><div class="ch"><h5>Where the planned time went — ${prodHrs(t.planned)} planned</h5></div><div class="cb">
-    <div style="display:flex;height:26px;gap:2px;border-radius:4px;overflow:hidden">
-      ${parts.filter(p=>p[1]>0).map(([l,v,c])=>`<div title="${l}: ${prodHrs(v)} (${prodPct(v/tot)})" style="width:${v/tot*100}%;background:${c}"></div>`).join('')}
-    </div>
-    <div style="display:flex;gap:22px;flex-wrap:wrap;margin-top:10px;font-size:12.5px">
-      ${parts.map(([l,v,c])=>`<div><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${c};margin-right:6px"></span>${l}: <b>${prodHrs(v)}</b> <span style="color:#6b7280">(${prodPct(v/tot)})</span></div>`).join('')}
-    </div>
-    <div style="font-size:11px;color:#6b7280;margin-top:8px">Speed loss = run time not converted to shots at target cycle time (slow cycles, small stops). Quality loss = time spent making off shots and rejected parts.</div>
-  </div></div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
-    <div class="card"><div class="ch"><h5>Downtime Pareto — ${prodHrs(t.downtime)} total</h5></div><div class="cb">
-      ${downRows.length?prodBars(downRows):'<div style="color:#9ca3af;text-align:center;padding:16px">No downtime recorded.</div>'}</div></div>
-    <div class="card"><div class="ch"><h5>By machine</h5></div><div class="tw"><table>
-      <thead><tr><th>Machine</th><th style="text-align:right">A</th><th style="text-align:right">P</th><th style="text-align:right">Q</th><th style="text-align:right">OEE</th><th style="text-align:right">Downtime</th><th style="text-align:right">Act / Tgt CT</th></tr></thead>
-      <tbody>${byMachine.map(({m,a})=>`<tr><td><b>${esc(prodMachineLabel(m))}</b></td>
-        <td class="mono" style="text-align:right">${prodPct(a.t.A)}</td><td class="mono" style="text-align:right">${prodPct(a.t.P)}</td>
-        <td class="mono" style="text-align:right">${prodPct(a.t.Q)}</td>
-        <td class="mono" style="text-align:right;font-weight:700;color:${prodTier(a.t.oee,.75,.55)}">${prodPct(a.t.oee)}</td>
-        <td class="mono" style="text-align:right">${prodHrs(a.t.downtime)}</td>
-        <td class="mono" style="text-align:right">${a.t.actCT?a.t.actCT.toFixed(0):'—'} / ${a.t.tgtCT?a.t.tgtCT.toFixed(0):'—'}s</td></tr>`).join('')||prodEmpty(7,'No data.')}</tbody>
-    </table></div></div>
+  const rows=await prodLoadShifts(ctx,{from:f.from,to:f.to,machineId:f.machineId,shift:f.shift,partId:tab==='oee'?'':f.partId});
+  const body = tab==='oee'? prodRepOEE(ctx,rows) : tab==='rej'? prodRepRejection(ctx,rows) : prodRepMaterial(ctx,rows);
+  setC(`${PROD_REPORT_CSS}
+  <div class="pr-top">
+    <h2 style="font-size:16px;font-weight:700;color:var(--navy)">📊 Production Reports</h2>
+    <div class="pr-tabs">${PROD_REPORT_TABS.map(t=>`<button class="pr-tab ${t.k===tab?'on':''}" onclick="prodRepTab('${t.k}')">${t.l}</button>`).join('')}</div>
   </div>
-  <div class="card"><div class="ch"><h5>Hourly efficiency pattern (average across the range)</h5></div><div class="tw"><table>
-    <thead><tr><th>Shift</th>${Array.from({length:PROD_SLOTS},(_,i)=>`<th style="text-align:center;font-size:10.5px">${i+1}</th>`).join('')}</tr></thead>
-    <tbody>${Object.keys(PROD_SHIFTS).filter(k=>slotEff[k]).map(k=>`<tr><td><b>${k}</b></td>${slotEff[k].map((a,i)=>{
-      const e=a.avail?a.ideal/a.avail:null;
-      return `<td class="mono" style="text-align:center;${e==null?'':`color:${prodTier(e,.9,.75)};font-weight:600`}" title="${prodSlotLabel(k,i)}">${e==null?'—':Math.round(e*100)+'%'}</td>`;}).join('')}</tr>`).join('')||prodEmpty(13,'No hourly data with target cycle times.')}</tbody>
-  </table><div style="font-size:11px;color:#6b7280;padding:6px 12px">Column n = n-th hour of the shift. Low first hours usually mean slow start-up / die heating; low hours before a break mean hand-over loss.</div></div></div>
-  <div class="card"><div class="ch"><h5>Daily trend</h5></div><div class="tw"><table>
-    <thead><tr><th>Date</th><th>Machine / shift</th><th style="text-align:right">Shots</th><th style="text-align:right">OK pcs</th><th style="text-align:right">Downtime</th><th style="text-align:right">A</th><th style="text-align:right">P</th><th style="text-align:right">Q</th><th style="text-align:right">OEE</th><th>Top downtime</th></tr></thead>
-    <tbody>${dates.map(d=>byDate[d].map(({s,c},k)=>{ const x=c.t, top=Object.entries(c.byDown).sort((a,b)=>b[1]-a[1])[0];
-      return `<tr ${k===0?'style="border-top:2px solid var(--border)"':''}><td class="mono">${k===0?d:''}</td>
-      <td>${esc(prodMachineLabel(ctx.machineById[s.machineId]))} · ${esc(s.shift)}</td>
-      <td class="mono" style="text-align:right">${prodFmt(x.shots)}</td><td class="mono" style="text-align:right">${prodFmt(x.okPcs)}</td>
-      <td class="mono" style="text-align:right">${x.downtime?prodFmt(x.downtime)+'m':'—'}</td>
-      <td class="mono" style="text-align:right">${prodPct(x.A)}</td><td class="mono" style="text-align:right">${prodPct(x.P)}</td><td class="mono" style="text-align:right">${prodPct(x.Q)}</td>
-      <td class="mono" style="text-align:right;font-weight:700;color:${prodTier(x.oee,.75,.55)}">${prodPct(x.oee)}</td>
-      <td style="font-size:12px">${top?`${esc(top[0])} (${prodFmt(top[1])}m)`:''}</td></tr>`;}).join('')).join('')||prodEmpty(10,'No data.')}</tbody>
-  </table></div></div>`);
+  ${prodRepFilters(ctx)}
+  ${body}`);
 }
 
-// ══════════════════════════════════════════════════════
-//  4. REJECTION ANALYSIS
-// ══════════════════════════════════════════════════════
-async function prodRenderRejection(f={}){
-  const ctx=await prodCtx();
-  f={from:f.from||prodDaysAgo(29), to:f.to||prodToday(), machineId:f.machineId||'', shift:f.shift||'', partId:f.partId||'', off:f.off||false};
-  const rows=await prodLoadShifts(ctx,f);
-  // With a part filter, count only that part's runs (a shift may have run several parts)
-  const pick=c=>{ if(!f.partId) return c;
-    const runs=c.runs.filter(r=>String(r.partId)===String(f.partId));
-    const x={t:{},byGrade:{},byPart:{},byDefect:{},byDown:{}};
-    for(const k of PROD_SUM_KEYS) x.t[k]=runs.reduce((s,r)=>s+(r[k]||0),0);
-    prodMergeMaps(x,runs,[]); x.t=prodRatios(x.t); return x; };
-  const calcs=rows.map(r=>pick(r.c));
-  const agg=prodAgg(calcs), t=agg.t;
+// With a part filter, keep only that part's runs (a shift may run several parts)
+function prodPickPart(c,partId){
+  if(!partId) return c;
+  const runs=c.runs.filter(r=>String(r.partId)===String(partId));
+  const x={t:{},byGrade:{},byPart:{},byDefect:{},byDown:{}};
+  for(const k of PROD_SUM_KEYS) x.t[k]=runs.reduce((s,r)=>s+(r[k]||0),0);
+  prodMergeMaps(x,runs,[]); x.t=prodRatios(x.t); return x;
+}
 
+// ── OEE & Losses ─────────────────────────────────────
+function prodRepOEE(ctx,rows){
+  if(!rows.length) return PROD_EMPTY;
+  const agg=prodAgg(rows.map(r=>r.c)), t=agg.t;
+  const good=Math.max(0,t.idealMin-t.qualLossMin), speed=t.shotsNoCT?0:t.perfLossMin;
+  const split=[['Good parts',good,'#16a34a'],['Speed loss',speed,'#d97706'],['Quality loss',t.qualLossMin,'#dc2626'],['Downtime',t.downtime,'#94a3b8']];
+  const tot=split.reduce((s,p)=>s+p[1],0)||1;
+  const downRows=Object.entries(agg.byDown).sort((a,b)=>b[1]-a[1]).map(([k,v])=>({label:k,value:v,display:prodHrs(v)}));
+  const byMachine=ctx.machines.map(m=>({m,a:prodAgg(rows.filter(r=>String(r.s.machineId)===String(m.id)).map(r=>r.c)).t})).filter(x=>x.a.planned);
+
+  // average efficiency for each hour of the shift
+  const slotEff={};
+  for(const {s,c} of rows) c.hours.forEach((h,i)=>{ if(h.eff==null||(!h.shots&&!h.down)) return;
+    const a=(slotEff[s.shift]=slotEff[s.shift]||Array.from({length:PROD_SLOTS},()=>({ideal:0,avail:0})));
+    a[i].ideal+=h.shots*h.ct/60; a[i].avail+=Math.max(0,60-h.down); });
+  const heat=e=>e==null?'background:#f6f8fc;color:#9ca3af':e>=.9?'background:#dcfce7;color:#166534':e>=.75?'background:#fef3c7;color:#92400e':'background:#fee2e2;color:#991b1b';
+
+  const topDown=downRows[0];
+  return `
+  ${t.shotsNoCT?`<div class="pr-warn">${prodFmt(t.shotsNoCT)} shots are for parts without a target cycle time on that machine, so Performance can't be measured for them — set it in <a href="#" onclick="event.preventDefault();nav('prod-parts')">Part Master</a>.</div>`:''}
+  <div class="pr-kpis">
+    ${prodKpi('OEE',prodPct(t.oee),`Availability ${prodPct(t.A,0)} · Performance ${prodPct(t.P,0)} · Quality ${prodPct(t.Q,0)}`,prodTier(t.oee,.75,.55))}
+    ${prodKpi('OK parts',prodFmt(t.okPcs),`from ${prodFmt(t.shots)} shots`)}
+    ${prodKpi('Downtime',prodHrs(t.downtime),topDown?`most: ${esc(topDown.label)}`:'none recorded')}
+    ${prodKpi('Cycle time',t.actCT?t.actCT.toFixed(1)+' s':'—',`target ${t.tgtCT?t.tgtCT.toFixed(1)+' s':'not set'}`)}
+  </div>
+  ${prodCard('Where the planned time went',`<div class="b">
+    <div style="display:flex;height:22px;gap:2px;border-radius:6px;overflow:hidden">
+      ${split.filter(p=>p[1]>0).map(([l,v,c])=>`<div title="${l}: ${prodHrs(v)} (${prodPct(v/tot)})" style="width:${v/tot*100}%;background:${c}"></div>`).join('')}
+    </div>
+    <div style="display:flex;gap:24px;flex-wrap:wrap;margin-top:10px;font-size:12.5px">
+      ${split.map(([l,v,c])=>`<div><span class="pr-dot" style="background:${c}"></span>${l} <b>${prodHrs(v)}</b> <span style="color:#6b7280">${prodPct(v/tot,0)}</span></div>`).join('')}
+    </div></div>
+    <div class="pr-note">Speed loss = running slower than target cycle time or small stops. Quality loss = time spent on off shots and rejected parts.</div>`,
+    `${prodHrs(t.planned)} planned`)}
+  <div class="pr-grid">
+    ${prodCard('Downtime by reason',`<div class="b">${downRows.length?prodBars(downRows):'<div class="pr-empty">No downtime recorded.</div>'}</div>`,prodHrs(t.downtime))}
+    ${prodCard('By machine',`<table class="pr-tbl"><thead><tr><th>Machine</th><th class="n">OEE</th><th class="n">Avail.</th><th class="n">Perf.</th><th class="n">Quality</th><th class="n">OK parts</th></tr></thead>
+      <tbody>${byMachine.map(({m,a})=>`<tr><td><b>${esc(prodMachineLabel(m))}</b></td>
+        <td class="n mono" style="font-weight:700;color:${prodTier(a.oee,.75,.55)}">${prodPct(a.oee)}</td>
+        <td class="n mono">${prodPct(a.A)}</td><td class="n mono">${prodPct(a.P)}</td><td class="n mono">${prodPct(a.Q)}</td>
+        <td class="n mono">${prodFmt(a.okPcs)}</td></tr>`).join('')}</tbody></table>`)}
+  </div>
+  ${prodCard('Efficiency through the shift',`<div class="b"><table class="pr-heat" style="border-collapse:separate;border-spacing:3px">
+    <thead><tr><th style="background:none;color:#6b7280;width:70px"></th>${Array.from({length:PROD_SLOTS},(_,i)=>`<th style="background:none;color:#6b7280;text-align:center;font-weight:500">${i+1}</th>`).join('')}</tr></thead>
+    <tbody>${Object.keys(PROD_SHIFTS).filter(k=>slotEff[k]).map(k=>`<tr><td style="text-align:left;font-weight:600;color:#374151">Shift ${k}</td>${slotEff[k].map((a,i)=>{
+      const e=a.avail?a.ideal/a.avail:null;
+      return `<td style="${heat(e)};padding:7px 0" title="${prodSlotLabel(k,i)}">${e==null?'—':Math.round(e*100)+'%'}</td>`;}).join('')}</tr>`).join('')||`<tr><td colspan="13" class="pr-empty">Needs target cycle times.</td></tr>`}</tbody>
+  </table></div><div class="pr-note">Average efficiency in each hour of the shift (1 = first hour). A weak first hour usually means slow start-up or die heating.</div>`,'hour of shift')}
+  ${prodCard('Shift by shift',`<table class="pr-tbl"><thead><tr><th>Date</th><th>Machine · Shift</th><th class="n">OK parts</th><th class="n">Downtime</th><th class="n">OEE</th><th>Biggest downtime</th></tr></thead>
+    <tbody>${rows.map(({s,c},k)=>{ const x=c.t, top=Object.entries(c.byDown).sort((a,b)=>b[1]-a[1])[0], first=k===0||rows[k-1].s.date!==s.date;
+      return `<tr class="${first&&k?'grp':''}"><td class="mono">${first?esc(s.date):''}</td>
+      <td>${esc(prodMachineLabel(ctx.machineById[s.machineId]))} · ${esc(s.shift)}</td>
+      <td class="n mono">${prodFmt(x.okPcs)}</td><td class="n mono">${x.downtime?prodFmt(x.downtime)+' min':'—'}</td>
+      <td class="n mono" style="font-weight:700;color:${prodTier(x.oee,.75,.55)}">${prodPct(x.oee)}</td>
+      <td style="color:#6b7280">${top?`${esc(top[0])} · ${prodFmt(top[1])} min`:''}</td></tr>`;}).join('')}</tbody></table>`)}`;
+}
+
+// ── Rejection ────────────────────────────────────────
+function prodRepRejection(ctx,rows){
+  if(!rows.length) return PROD_EMPTY;
+  const f=_prodRep.f;
+  const calcs=rows.map(r=>prodPickPart(r.c,f.partId));
+  const agg=prodAgg(calcs), t=agg.t;
   const defRows=Object.entries(agg.byDefect).map(([code,v])=>({label:ctx.defectByCode[code]?.description||code,value:v}));
   if(f.off&&t.offPcs) defRows.push({label:'Off shots (warm-up)',value:t.offPcs});
   defRows.sort((a,b)=>b.value-a.value);
-
   const partRows=Object.entries(agg.byPart).map(([pid,v])=>({p:ctx.partById[pid],v,ppm:(v.castPcs-v.offPcs)>0?v.rejPcs/(v.castPcs-v.offPcs)*1e6:0})).sort((a,b)=>b.v.rejPcs-a.v.rejPcs);
   const byDate={};
   rows.forEach((r,i)=>{ (byDate[r.s.date]=byDate[r.s.date]||[]).push(calcs[i]); });
   const trend=Object.entries(byDate).map(([d,cs])=>({d,a:prodAgg(cs).t})).sort((a,b)=>b.d.localeCompare(a.d));
+  const ppmCol=v=>v>20000?'#dc2626':v>5000?'#d97706':'#16a34a';
+  const top=defRows[0];
 
-  setC(`
-  <div class="ph"><h2>📉 Rejection Analysis</h2></div>
-  ${prodFilterBar('prj',f,ctx,{part:true,onApply:'prodRenderRejection'})}
-  <div class="sg" style="grid-template-columns:repeat(5,1fr)">
-    ${prodTile('🔩',prodFmt(t.castPcs),'Parts cast')}
-    ${prodTile('✅',prodFmt(t.okPcs),'OK parts',null,'#dcfce7')}
-    ${prodTile('❌',prodFmt(t.rejPcs),'Defect rejections','#dc2626','#fee2e2')}
-    ${prodTile('🔥',prodFmt(t.offPcs),'Off-shot pcs','#d97706','#fef3c7')}
-    ${prodTile('📉',prodFmt(t.ppm),`PPM · ${prodPct(t.rejPct)} total rej`,t.ppm>20000?'#dc2626':t.ppm>5000?'#d97706':'#16a34a','#fee2e2')}
+  return `
+  <div class="pr-kpis">
+    ${prodKpi('Rejection PPM',prodFmt(t.ppm),`${prodPct(t.rejPct)} of parts incl. off shots`,ppmCol(t.ppm))}
+    ${prodKpi('Rejected parts',prodFmt(t.rejPcs),`+ ${prodFmt(t.offPcs)} off-shot pcs`)}
+    ${prodKpi('Top defect',top?esc(top.label):'—',top?`${prodFmt(top.value)} pcs · ${prodPct(top.value/(defRows.reduce((s,r)=>s+r.value,0)||1),0)} of rejections`:'no rejections')}
+    ${prodKpi('OK parts',prodFmt(t.okPcs),`of ${prodFmt(t.castPcs)} cast`)}
   </div>
-  <div style="display:grid;grid-template-columns:1.1fr 1fr;gap:14px">
-    <div class="card"><div class="ch"><h5>Rejection Pareto (pcs)</h5>
-      <label style="font-size:12px;display:flex;gap:5px;align-items:center"><input type="checkbox" ${f.off?'checked':''} onchange="prodRenderRejection({...prodReadFilter('prj'),off:this.checked})"> include off shots</label></div>
-      <div class="cb">${defRows.length?prodBars(defRows):'<div style="color:#9ca3af;text-align:center;padding:16px">No rejections in this range.</div>'}</div></div>
-    <div class="card"><div class="ch"><h5>By part</h5></div><div class="tw"><table>
-      <thead><tr><th>Part</th><th style="text-align:right">Cast</th><th style="text-align:right">Rejected</th><th style="text-align:right">Off pcs</th><th style="text-align:right">PPM</th><th>Top defect</th></tr></thead>
-      <tbody>${partRows.map(({p,v,ppm})=>{ const top=Object.entries(v.rej).sort((a,b)=>b[1]-a[1])[0];
-        return `<tr><td>${esc(p?.partNumber||'?')}</td><td class="mono" style="text-align:right">${prodFmt(v.castPcs)}</td>
-        <td class="mono" style="text-align:right;color:#dc2626">${prodFmt(v.rejPcs)}</td><td class="mono" style="text-align:right">${prodFmt(v.offPcs)}</td>
-        <td class="mono" style="text-align:right;font-weight:600">${prodFmt(ppm)}</td>
-        <td style="font-size:12px">${top?esc(ctx.defectByCode[top[0]]?.description||top[0])+` (${top[1]})`:''}</td></tr>`;}).join('')||prodEmpty(6,'No data.')}</tbody>
-    </table></div></div>
+  <div class="pr-grid">
+    ${prodCard('Rejection Pareto',`<div class="b">${defRows.length?prodBars(defRows,{unit:''}):'<div class="pr-empty">No rejections in this selection.</div>'}</div>`,
+      `<label style="display:inline-flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" ${f.off?'checked':''} onchange="prodRepSet({off:this.checked})"> include off shots</label>`)}
+    ${prodCard('By part',`<table class="pr-tbl"><thead><tr><th>Part</th><th class="n">Cast</th><th class="n">Rejected</th><th class="n">PPM</th><th>Top defect</th></tr></thead>
+      <tbody>${partRows.map(({p,v,ppm})=>{ const td=Object.entries(v.rej).sort((a,b)=>b[1]-a[1])[0];
+        return `<tr><td><b>${esc(p?.partNumber||'?')}</b></td><td class="n mono">${prodFmt(v.castPcs)}</td>
+        <td class="n mono">${prodFmt(v.rejPcs)}</td><td class="n mono" style="font-weight:700;color:${ppmCol(ppm)}">${prodFmt(ppm)}</td>
+        <td style="color:#6b7280">${td?esc(ctx.defectByCode[td[0]]?.description||td[0]):''}</td></tr>`;}).join('')}</tbody></table>`)}
   </div>
-  <div class="card"><div class="ch"><h5>Daily trend</h5></div><div class="tw"><table>
-    <thead><tr><th>Date</th><th style="text-align:right">Cast</th><th style="text-align:right">OK</th><th style="text-align:right">Defect rej</th><th style="text-align:right">Off pcs</th><th style="text-align:right">Rej %</th><th style="text-align:right">PPM</th></tr></thead>
-    <tbody>${trend.map(({d,a})=>`<tr><td class="mono">${d}</td><td class="mono" style="text-align:right">${prodFmt(a.castPcs)}</td>
-      <td class="mono" style="text-align:right">${prodFmt(a.okPcs)}</td><td class="mono" style="text-align:right;color:#dc2626">${prodFmt(a.rejPcs)}</td>
-      <td class="mono" style="text-align:right">${prodFmt(a.offPcs)}</td><td class="mono" style="text-align:right">${prodPct(a.rejPct)}</td>
-      <td class="mono" style="text-align:right;font-weight:600">${prodFmt(a.ppm)}</td></tr>`).join('')||prodEmpty(7,'No data.')}</tbody>
-  </table>
-  <div style="font-size:11px;color:#6b7280;padding:6px 12px">PPM = defect rejections ÷ (parts cast − off-shot parts) × 1,000,000. Rej % includes off shots.</div></div></div>`);
+  ${prodCard('Day by day',`<table class="pr-tbl"><thead><tr><th>Date</th><th class="n">Parts cast</th><th class="n">OK parts</th><th class="n">Rejected</th><th class="n">Off-shot pcs</th><th class="n">Rej %</th><th class="n">PPM</th></tr></thead>
+    <tbody>${trend.map(({d,a})=>`<tr><td class="mono">${d}</td><td class="n mono">${prodFmt(a.castPcs)}</td><td class="n mono">${prodFmt(a.okPcs)}</td>
+      <td class="n mono">${prodFmt(a.rejPcs)}</td><td class="n mono">${prodFmt(a.offPcs)}</td><td class="n mono">${prodPct(a.rejPct)}</td>
+      <td class="n mono" style="font-weight:700;color:${ppmCol(a.ppm)}">${prodFmt(a.ppm)}</td></tr>`).join('')}</tbody></table>
+    <div class="pr-note" style="padding-top:10px">PPM = rejected parts ÷ (parts cast − off-shot parts) × 1,000,000. Rej % includes off shots.</div>`)}`;
 }
 
-// ══════════════════════════════════════════════════════
-//  5. MATERIAL CONSUMPTION
-// ══════════════════════════════════════════════════════
-async function prodRenderMaterial(f={}){
-  const ctx=await prodCtx();
-  f={from:f.from||prodToday().slice(0,8)+'01', to:f.to||prodToday(), machineId:f.machineId||'', shift:f.shift||''};
-  const rows=await prodLoadShifts(ctx,f);
-  const agg=prodAgg(rows.map(r=>r.c));
-  const grades=Object.entries(agg.byGrade).sort((a,b)=>b[1].totalKg-a[1].totalKg);
+// ── Material ─────────────────────────────────────────
+function prodRepMaterial(ctx,rows){
+  if(!rows.length) return PROD_EMPTY;
+  const f=_prodRep.f, cfg=ctx.cfg;
+  const calcs=rows.map(r=>prodPickPart(r.c,f.partId));
+  const agg=prodAgg(calcs), t=agg.t;
+  const grades=Object.entries(agg.byGrade).filter(([,v])=>v.castPcs).sort((a,b)=>b[1].totalKg-a[1].totalKg);
   const lines=[];
-  rows.forEach(({s,c})=>c.runs.forEach(r=>{ if(r.castPcs) lines.push({s,r}); }));
-  const basis=ctx.cfg.consumptionBasis==='ok'?'OK parts':'all parts cast (incl. rejections & off shots)';
+  rows.forEach(({s,c})=>c.runs.forEach(r=>{ if(r.castPcs&&(!f.partId||String(r.partId)===String(f.partId))) lines.push({s,r}); }));
+  const basis=cfg.consumptionBasis==='ok'?'OK parts':'all parts cast (incl. rejected & off shots)';
+  const loss=prodFmt(cfg.meltLossPct,1)+'%';
 
-  setC(`
-  <div class="ph"><h2>🔥 Material Consumption</h2></div>
-  ${prodFilterBar('pmt',f,ctx,{onApply:'prodRenderMaterial'})}
-  <div class="sg" style="grid-template-columns:repeat(4,1fr)">
-    ${prodTile('⚖️',prodFmt(agg.t.netKg,1)+' kg','Net casting weight')}
-    ${prodTile('🔥',prodFmt(agg.t.lossKg,1)+' kg',`Melting loss (${prodFmt(ctx.cfg.meltLossPct,1)}%)`,'#d97706','#fef3c7')}
-    ${prodTile('🏗️',prodFmt(agg.t.totalKg,1)+' kg','Total metal consumed',null,'#dbeafe')}
-    ${prodTile('🔩',prodFmt(agg.t.castPcs),'Parts cast')}
+  return `
+  ${t.shotsNoWt?`<div class="pr-warn">${prodFmt(t.shotsNoWt)} shots are for parts without a net weight and are not counted — set it in <a href="#" onclick="event.preventDefault();nav('prod-parts')">Part Master</a>.</div>`:''}
+  <div class="pr-kpis">
+    ${prodKpi('Metal consumed',prodFmt(t.totalKg,1)+' kg',`${grades.length} grade${grades.length===1?'':'s'}`)}
+    ${prodKpi('Net casting weight',prodFmt(t.netKg,1)+' kg',`${prodFmt(t.castPcs)} parts cast`)}
+    ${prodKpi('Melting loss',prodFmt(t.lossKg,1)+' kg',`${loss} of net weight`,'#b45309')}
+    ${prodKpi('Average per day',prodFmt(t.totalKg/(new Set(rows.map(r=>r.s.date)).size||1),1)+' kg',`over ${new Set(rows.map(r=>r.s.date)).size} production day${new Set(rows.map(r=>r.s.date)).size===1?'':'s'}`)}
   </div>
-  <div class="alert al-w" style="background:#f6f8fc;border-color:var(--border);color:#374151"><span>ℹ️ Metal per part = net weight + ${prodFmt(ctx.cfg.meltLossPct,1)}% melting loss (e.g. 0.500 kg → ${prodFmt(prodMetalPerPc(0.5,ctx.cfg),3)} kg). Consumption = metal per part × ${basis}. Change the basis or loss % in <a href="#" onclick="event.preventDefault();nav('prod-setup')">Machines &amp; Settings</a>.</span></div>
-  ${agg.t.shotsNoWt?`<div class="alert al-w"><span>⚠️ ${prodFmt(agg.t.shotsNoWt)} shots are for parts with no net weight — they are not counted. Set weights in <a href="#" onclick="event.preventDefault();nav('prod-parts')">Part Master</a>.</span></div>`:''}
-  <div class="card"><div class="ch"><h5>By grade</h5></div><div class="tw"><table>
-    <thead><tr><th>Grade</th><th style="text-align:right">Parts cast</th><th style="text-align:right">OK parts</th><th style="text-align:right">Net kg</th><th style="text-align:right">Melting loss kg</th><th style="text-align:right">Total kg</th></tr></thead>
-    <tbody>${grades.map(([g,v])=>`<tr><td><span class="badge" style="background:#FAEEDA;color:#BA7517">${esc(g)}</span></td>
-      <td class="mono" style="text-align:right">${prodFmt(v.castPcs)}</td><td class="mono" style="text-align:right">${prodFmt(v.okPcs)}</td>
-      <td class="mono" style="text-align:right">${prodFmt(v.netKg,1)}</td><td class="mono" style="text-align:right">${prodFmt(v.lossKg,1)}</td>
-      <td class="mono" style="text-align:right;font-weight:700">${prodFmt(v.totalKg,1)}</td></tr>`).join('')||prodEmpty(6,'No production in this range.')}</tbody>
-  </table></div></div>
-  <div class="card"><div class="ch"><h5>By shift</h5></div><div class="tw"><table>
-    <thead><tr><th>Date</th><th>Shift</th><th>Machine</th><th>Part</th><th>Grade</th><th style="text-align:right">Pcs</th><th style="text-align:right">Net wt/pc</th><th style="text-align:right">Metal/pc (+${prodFmt(ctx.cfg.meltLossPct,1)}%)</th><th style="text-align:right">Total kg</th><th style="text-align:right">of which loss kg</th></tr></thead>
-    <tbody>${lines.map(({s,r})=>`<tr><td class="mono">${esc(s.date)}</td><td>${esc(s.shift)}</td><td>${esc(prodMachineLabel(ctx.machineById[s.machineId]))}</td>
-      <td>${esc(r.part?.partNumber||'?')}</td><td>${esc(r.grade)}</td><td class="mono" style="text-align:right">${prodFmt(r.wt?r.netKg/r.wt:0)}</td>
-      <td class="mono" style="text-align:right">${r.wt?prodFmt(r.wt,3):'—'}</td><td class="mono" style="text-align:right">${r.wt?prodFmt(prodMetalPerPc(r.wt,ctx.cfg),3):'—'}</td>
-      <td class="mono" style="text-align:right;font-weight:600">${prodFmt(r.totalKg,1)}</td><td class="mono" style="text-align:right;color:#6b7280">${prodFmt(r.lossKg,1)}</td></tr>`).join('')||prodEmpty(10,'No data.')}</tbody>
-  </table></div></div>`);
+  ${prodCard('By grade',`<table class="pr-tbl"><thead><tr><th>Grade</th><th class="n">Parts cast</th><th class="n">Net kg</th><th class="n">Melting loss kg</th><th class="n">Total kg</th></tr></thead>
+    <tbody>${grades.map(([g,v])=>`<tr><td><span class="badge" style="background:#FAEEDA;color:#9a5b0f">${esc(g)}</span></td>
+      <td class="n mono">${prodFmt(v.castPcs)}</td><td class="n mono">${prodFmt(v.netKg,1)}</td><td class="n mono">${prodFmt(v.lossKg,1)}</td>
+      <td class="n mono" style="font-weight:700">${prodFmt(v.totalKg,1)}</td></tr>`).join('')}</tbody></table>`)}
+  ${prodCard('By shift',`<table class="pr-tbl"><thead><tr><th>Date</th><th>Machine · Shift</th><th>Part</th><th>Grade</th><th class="n">Parts</th><th class="n">Metal / part</th><th class="n">Total kg</th></tr></thead>
+    <tbody>${lines.map(({s,r},k)=>{ const first=k===0||lines[k-1].s.date!==s.date;
+      return `<tr class="${first&&k?'grp':''}"><td class="mono">${first?esc(s.date):''}</td><td>${esc(prodMachineLabel(ctx.machineById[s.machineId]))} · ${esc(s.shift)}</td>
+      <td>${esc(r.part?.partNumber||'?')}</td><td>${esc(r.grade)}</td><td class="n mono">${prodFmt(r.wt?r.netKg/r.wt:0)}</td>
+      <td class="n mono" title="${r.wt?`${prodFmt(r.wt,3)} kg net + ${loss}`:''}">${r.wt?prodFmt(prodMetalPerPc(r.wt,cfg),3)+' kg':'—'}</td>
+      <td class="n mono" style="font-weight:700">${prodFmt(r.totalKg,1)}</td></tr>`;}).join('')}</tbody></table>
+    <div class="pr-note" style="padding-top:10px">Metal per part = net weight + ${loss} melting loss (e.g. 0.500 kg → ${prodFmt(prodMetalPerPc(0.5,cfg),3)} kg). Counted on ${basis} — change in <a href="#" onclick="event.preventDefault();nav('prod-setup')">Machines &amp; Settings</a>.</div>`)}`;
 }
 
 // ══════════════════════════════════════════════════════
-//  6. STOCK — raw material (by grade) and parts
+//  4. STOCK — raw material (by grade) and parts
 //  RM:    opening / adjustments + lots received (kg) − metal consumed
 //  Parts: opening / adjustments + OK parts produced − dispatched
 // ══════════════════════════════════════════════════════
@@ -921,7 +983,7 @@ async function prodDelAdj(id){
 }
 
 // ══════════════════════════════════════════════════════
-//  7. DISPATCH REGISTER
+//  5. DISPATCH REGISTER
 // ══════════════════════════════════════════════════════
 async function prodRenderDispatch(f={}){
   const ctx=await prodCtx();
@@ -976,7 +1038,7 @@ async function prodDelDispatch(id){
 }
 
 // ══════════════════════════════════════════════════════
-//  8. PART MASTER (production data per part)
+//  6. PART MASTER (production data per part)
 // ══════════════════════════════════════════════════════
 async function prodRenderParts(){
   const ctx=await prodCtx();
@@ -1051,7 +1113,7 @@ async function prodImportPqParts(){
 }
 
 // ══════════════════════════════════════════════════════
-//  9. MACHINES, DEFECT CODES & SETTINGS
+//  7. MACHINES, DEFECT CODES & SETTINGS
 // ══════════════════════════════════════════════════════
 async function prodRenderSetup(){
   const ctx=await prodCtx(), cfg=ctx.cfg;
