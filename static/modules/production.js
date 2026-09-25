@@ -144,29 +144,32 @@ function prodCalc(sheet,ctx){
     const total=prodN(h.total), off=Math.min(total,prodN(h.off));
     const rej={}; let rejS=0;
     for(const [c,v] of Object.entries(h.rej||{})){ const n=prodN(v); if(n>0){ rej[c]=n; rejS+=n; } }
-    return {total, off, rej, rejS, ok:Math.max(0,total-off-rejS)};
+    return {total, off, rej, rejS, ok:Math.max(0,total-off-rejS), cav:h.cav};
   });
 
   const runs=prodRunRanges(sheet.runs).map(r=>{
     const part=ctx.partById[r.partId];
     const cav=prodN(r.cavities)||prodN(part?.cavities)||1;
-    let shots=0, off=prodN(r.offShots), rejS=0; const rejShots={};
+    // Cavities can drop for some hours (one cavity damaged): each hour's
+    // shots convert to pcs with that hour's cavity count, default the run's.
+    const legacyOff=prodN(r.offShots);
+    let shots=0, off=legacyOff, rejS=0, castPcs=0, offPcs=legacyOff*cav, rejPcs=0; const rej={};
     for(let s=r.from;s<=r.to;s++){
-      const h=hrs[s]; shots+=h.total; off+=h.off; rejS+=h.rejS;
-      for(const [c,n] of Object.entries(h.rej)) rejShots[c]=(rejShots[c]||0)+n;
+      const h=hrs[s], hc=prodN(h.cav)||cav;
+      h.cavEff=hc; h.okPcs=h.ok*hc;
+      shots+=h.total; off+=h.off; rejS+=h.rejS;
+      castPcs+=h.total*hc; offPcs+=h.off*hc;
+      for(const [c,n] of Object.entries(h.rej)){ rej[c]=(rej[c]||0)+n*hc; rejPcs+=n*hc; }
     }
-    off=Math.min(shots,off);
-    const rej={}; let rejPcs=0;
-    for(const [c,n] of Object.entries(rejShots)){ rej[c]=n*cav; rejPcs+=n*cav; }
-    for(const [c,v] of Object.entries(r.rej||{})){ const n=prodN(v); if(n>0){ rej[c]=(rej[c]||0)+n; rejPcs+=n; } }  // legacy pcs
-    const castPcs=shots*cav, offPcs=off*cav;
+    for(const [c,v] of Object.entries(r.rej||{})){ const n=prodN(v); if(n>0){ rej[c]=(rej[c]||0)+n; rejS+=n/cav; rejPcs+=n; } }  // first-version entries: pcs
+    off=Math.min(shots,off); offPcs=Math.min(castPcs,offPcs);
     const okPcs=Math.max(0,castPcs-offPcs-rejPcs);
     const ct=prodCT(part,sheet.machineId), wt=prodN(part?.netWeightKg);
     const netKg=(basisOk?okPcs:castPcs)*wt;
     return {...r, part, grade:r.grade||part?.grade||'—', cav, shots, off, offPcs, rej, rejPcs, castPcs, okPcs,
-      okShots:okPcs/cav, ct, wt,
+      okShots:Math.max(0,shots-off-rejS), ct, wt,
       idealMin: ct? shots*ct/60 : 0,
-      qualLossMin: ct? (off+rejPcs/cav)*ct/60 : 0,
+      qualLossMin: ct? (off+rejS)*ct/60 : 0,
       shotsNoCT: ct?0:shots, shotsNoWt: wt?0:shots,
       netKg, lossKg:netKg*loss, totalKg:netKg*(1+loss),
       ppm: castPcs-offPcs>0? rejPcs/(castPcs-offPcs)*1e6 : 0};
@@ -344,7 +347,7 @@ async function prodDeleteShift(id){
 function prodNewRun(ctx,part,fromSlot=0){
   return {partId:part?.id||'', grade:part?.grade||'', cavities:prodN(part?.cavities)||1, fromSlot};
 }
-function prodBlankHours(){ return Array.from({length:PROD_SLOTS},()=>({total:'',off:'',rej:{}})); }
+function prodBlankHours(){ return Array.from({length:PROD_SLOTS},()=>({total:'',cav:'',off:'',rej:{}})); }
 async function prodOpenShift(id=null,preset={}){
   const ctx=await prodCtx();
   const all=await db.prodShifts.toArray().catch(()=>[]);
@@ -358,7 +361,7 @@ async function prodOpenShift(id=null,preset={}){
     prodCarryOver(rec,all,ctx);
   } else {
     rec=JSON.parse(JSON.stringify(rec));
-    rec.hours=prodHours(rec).map(h=>({total:h.total??'', off:h.off??'', rej:{...(h.rej||{})}}));
+    rec.hours=prodHours(rec).map(h=>({total:h.total??'', cav:h.cav??'', off:h.off??'', rej:{...(h.rej||{})}}));
     delete rec.hourly;
   }
   if(!rec.runs?.length) rec.runs=[prodNewRun(ctx,ctx.parts[0])];
@@ -449,28 +452,30 @@ function prodPsRenderHours(){
   const r='text-align:right';
   document.getElementById('ps-hours').innerHTML=`<table>
     <thead><tr><th style="width:80px">Time</th><th>Part</th><th style="${r};width:64px">Target</th>
-      <th style="${r};width:84px">Total shots</th><th style="${r};width:74px">Off shots</th>
+      <th style="${r};width:84px">Total shots</th><th style="${r};width:60px" title="Cavities running this hour — pre-filled from the part; change it if a cavity is down">Cav</th><th style="${r};width:74px">Off shots</th>
       ${codes.map(c=>`<th style="${r};width:74px" title="${esc(dname(c))}">${esc(dname(c))}</th>`).join('')}
-      <th style="${r};width:70px">Rejected</th><th style="${r};width:70px">OK shots</th><th style="${r};width:58px">Down</th><th style="${r};width:58px">Eff.</th></tr></thead>
+      <th style="${r};width:70px">Rejected</th><th style="${r};width:70px">OK shots</th><th style="${r};width:70px">OK pcs</th><th style="${r};width:58px">Down</th><th style="${r};width:58px">Eff.</th></tr></thead>
     <tbody>${rec.hours.map((h,i)=>`<tr>
       <td class="mono" style="font-weight:600">${prodSlotLabel(rec.shift,i)}</td>
-      <td style="font-size:11px;color:#6b7280" id="ps-hp-${i}"></td>
+      <td style="font-size:11px;color:#6b7280;white-space:nowrap" id="ps-hp-${i}"></td>
       <td class="mono" style="${r};color:#6b7280" id="ps-ht-${i}"></td>
       <td>${num(i,`prodPsHour(${i},'total',this.value)`,h.total)}</td>
+      <td>${num(i,`prodPsHourCav(${i},this.value)`,'',`id="ps-hc-${i}" min="1" onblur="prodPsRefresh()"`)}</td>
       <td>${num(i,`prodPsHour(${i},'off',this.value)`,h.off)}</td>
       ${codes.map(c=>`<td>${num(i,`prodPsHourRej(${i},'${esc(c)}',this.value)`,h.rej?.[c])}</td>`).join('')}
       <td class="mono" style="${r};color:#dc2626" id="ps-hr-${i}"></td>
       <td class="mono" style="${r};font-weight:700;color:#16a34a" id="ps-ho-${i}"></td>
+      <td class="mono" style="${r};color:#16a34a" id="ps-hop-${i}"></td>
       <td class="mono" style="${r}" id="ps-hd-${i}"></td>
       <td class="mono" style="${r};font-weight:600" id="ps-he-${i}"></td></tr>`).join('')}
     </tbody>
     <tfoot><tr style="font-weight:700;background:#f6f8fc">
-      <td colspan="2">TOTAL</td><td class="mono" style="${r}" id="ps-tt"></td><td class="mono" style="${r}" id="ps-ts"></td><td class="mono" style="${r}" id="ps-to"></td>
+      <td colspan="2">TOTAL</td><td class="mono" style="${r}" id="ps-tt"></td><td class="mono" style="${r}" id="ps-ts"></td><td></td><td class="mono" style="${r}" id="ps-to"></td>
       ${codes.map(c=>`<td class="mono" style="${r}" id="ps-tc-${esc(c)}"></td>`).join('')}
-      <td class="mono" style="${r};color:#dc2626" id="ps-tr"></td><td class="mono" style="${r};color:#16a34a" id="ps-tok"></td><td class="mono" style="${r}" id="ps-td"></td><td class="mono" style="${r}" id="ps-te"></td></tr></tfoot>
+      <td class="mono" style="${r};color:#dc2626" id="ps-tr"></td><td class="mono" style="${r};color:#16a34a" id="ps-tok"></td><td class="mono" style="${r};color:#16a34a" id="ps-top"></td><td class="mono" style="${r}" id="ps-td"></td><td class="mono" style="${r}" id="ps-te"></td></tr></tfoot>
   </table>
   <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 12px;gap:10px;flex-wrap:wrap">
-    <span style="font-size:11px;color:#6b7280">Target = 3600 ÷ target cycle time. Rejected = off shots + rejections. OK = total − rejected. Eff. = shots × cycle time ÷ time available in the hour (60 min − downtime logged against it).</span>
+    <span style="font-size:11px;color:#6b7280">Target = 3600 ÷ target cycle time. Cav is pre-filled from the part — change it for hours when a cavity is down. Rejected = off shots + rejections. OK = total − rejected; OK pcs = OK shots × Cav. Eff. = shots × cycle time ÷ time available in the hour (60 min − downtime logged against it).</span>
     ${others.length?`<select class="fc" style="width:190px" onchange="if(this.value){window._ps.codes.push(this.value);prodPsRenderHours();prodPsRefresh();}"><option value="">+ add rejection type column…</option>${others.map(d=>`<option value="${esc(d.code)}">${esc(d.description)}</option>`).join('')}</select>`:''}
   </div>`;
 }
@@ -500,6 +505,12 @@ function prodPsRefresh(){
     set(`ps-ht-${i}`, h.target??'—');
     set(`ps-hr-${i}`, has? prodFmt(h.off+h.rejS) : '');
     set(`ps-ho-${i}`, has? prodFmt(h.ok) : '');
+    set(`ps-hop-${i}`, has? prodFmt(h.okPcs||0) : '');
+    const ci=document.getElementById(`ps-hc-${i}`), over=prodN(rec.hours[i].cav)>0;
+    if(ci){
+      if(document.activeElement!==ci) ci.value=h.cavEff??'';
+      ci.style.background=over?'#fef3c7':''; ci.title=over?`Changed from ${h.run?.cav} — clear to use the part's cavities`:'';
+    }
     set(`ps-hd-${i}`, h.down||'');
     set(`ps-he-${i}`, h.eff==null||!h.total&&!h.down?'':`<span style="color:${prodTier(h.eff,.9,.75)}">${Math.round(h.eff*100)}%</span>`);
     tot.tgt+=h.target||0; tot.shots+=h.total; tot.off+=h.off; tot.rej+=h.off+h.rejS; tot.ok+=h.ok; tot.down+=h.down;
@@ -507,7 +518,7 @@ function prodPsRefresh(){
   });
   set('ps-tt',tot.tgt?prodFmt(tot.tgt):'—'); set('ps-ts',prodFmt(tot.shots)); set('ps-to',prodFmt(tot.off));
   codes.forEach(k=>set(`ps-tc-${k}`,prodFmt(tot.codes[k]||0)));
-  set('ps-tr',prodFmt(tot.rej)); set('ps-tok',prodFmt(tot.ok)); set('ps-td',tot.down?prodFmt(tot.down):'');
+  set('ps-tr',prodFmt(tot.rej)); set('ps-tok',prodFmt(tot.ok)); set('ps-top',prodFmt(t.okPcs)); set('ps-td',tot.down?prodFmt(tot.down):'');
   set('ps-te',tot.tgt?`${prodPct(t.shots&&t.runtime?t.pRaw:NaN,0)}`:'');
 
   const warn=[];
@@ -521,7 +532,8 @@ function prodPsRefresh(){
   if(dupe) warn.push('An entry already exists for this date, shift and machine.');
 
   const grades=Object.entries(c.byGrade).filter(([,g])=>g.castPcs>0);
-  const cavNote=c.runs.length===1? `× ${c.runs[0].cav} cav` : '';
+  const cavs=new Set(c.hours.filter(h=>h.total).map(h=>h.cavEff));
+  const cavNote=cavs.size===1? `× ${[...cavs][0]} cav` : '';
   const tile=(l,v,col)=>`<div style="background:#f6f8fc;border-radius:8px;padding:10px 12px"><div style="font-size:20px;font-weight:700;${col?`color:${col}`:''}">${v}</div><div style="font-size:11px;color:#6b7280">${l}</div></div>`;
   const kv=(l,v)=>`<span>${l}</span><b class="mono" style="text-align:right">${v}</b>`;
   set('ps-sum',`<div class="card"><div class="ch"><h5>5 · Shift result</h5></div><div class="cb" style="font-size:12.5px">
@@ -569,6 +581,12 @@ function prodPsHead(k,v,rerender=false){
   if(rerender) prodPsRender(); else prodPsRefresh();
 }
 function prodPsHour(i,k,v){ window._ps.rec.hours[i][k]=v; prodPsRefresh(); }
+// Store a cavity override only when it differs from the part's cavities
+function prodPsHourCav(i,v){
+  const {rec,ctx}=window._ps, r=prodCalc(rec,ctx).hours[i].run;
+  rec.hours[i].cav=(v===''||prodN(v)===r?.cav)? '' : v;
+  prodPsRefresh();
+}
 function prodPsHourRej(i,code,v){ const h=window._ps.rec.hours[i]; h.rej=h.rej||{}; h.rej[code]=v; prodPsRefresh(); }
 function prodPsRun(i,k,v,rerender=false){ window._ps.rec.runs[i][k]=v; if(rerender){ prodPsRenderRuns(); } prodPsRefresh(); }
 function prodPsRunPart(i,pid){
@@ -612,7 +630,7 @@ async function prodPsSave(next){
     plannedMinutes:prodN(rec.plannedMinutes)||prodN(ctx.cfg.plannedMinutes)||720,
     dieCoatL:numOrBlank(rec.dieCoatL),
     hours:rec.hours.map(h=>{ const rej={}; for(const [k,v] of Object.entries(h.rej||{})) if(prodN(v)>0) rej[k]=prodN(v);
-      return {total:numOrBlank(h.total), off:numOrBlank(h.off), rej}; }),
+      return {total:numOrBlank(h.total), cav:numOrBlank(h.cav), off:numOrBlank(h.off), rej}; }),
     hourly:null,
     runs:prodRunRanges(rec.runs).map((r,k)=>{
       const run={partId:+r.partId, grade:r.grade||ctx.partById[r.partId]?.grade||'', cavities:prodN(r.cavities)||1, fromSlot:k===0?0:prodN(r.fromSlot)};
