@@ -131,13 +131,8 @@ const PROD_SUM_KEYS=['planned','downtime','runtime','shots','off','offPcs','rejP
   'idealMin','qualLossMin','netKg','lossKg','totalKg','shotsNoCT','shotsNoWt'];
 
 // Hourly rows are {total, cav}; off shots and rejections are shift totals
-// on the run (run.offShots in shots, run.rej = {code:pcs}). Older entries
-// stored off / rejected shots per hour (hour.off, hour.rej) or `hourly` as
-// plain shot counts — still read here so they keep reporting.
-function prodHours(sheet){
-  if(Array.isArray(sheet.hours)) return Array.from({length:PROD_SLOTS},(_,i)=>sheet.hours[i]||{});
-  return Array.from({length:PROD_SLOTS},(_,i)=>({total:(sheet.hourly||[])[i]??''}));
-}
+// on the run (run.offShots in shots, run.rej = {code:pcs}).
+function prodHours(sheet){ return Array.from({length:PROD_SLOTS},(_,i)=>(sheet.hours||[])[i]||{}); }
 
 function prodCalc(sheet,ctx){
   const loss=prodN(ctx.cfg.meltLossPct)/100, basisOk=ctx.cfg.consumptionBasis==='ok';
@@ -147,29 +142,21 @@ function prodCalc(sheet,ctx){
   downs.forEach(d=>{ if(d.slot!==''&&d.slot!=null&&prodN(d.slot)>=0) downBySlot[prodN(d.slot)]+=prodN(d.minutes); });
   const downtime=Math.min(planned,downs.reduce((s,d)=>s+prodN(d.minutes),0));
 
-  const hrs=prodHours(sheet).map(h=>{
-    const total=prodN(h.total), off=Math.min(total,prodN(h.off));
-    const rej={}; let rejS=0;
-    for(const [c,v] of Object.entries(h.rej||{})){ const n=prodN(v); if(n>0){ rej[c]=n; rejS+=n; } }
-    return {total, off, rej, rejS, ok:Math.max(0,total-off-rejS), cav:h.cav};
-  });
+  const hrs=prodHours(sheet).map(h=>({total:prodN(h.total), cav:h.cav}));
 
   const runs=prodRunRanges(sheet.runs).map(r=>{
     const part=ctx.partById[r.partId];
     const cav=prodN(r.cavities)||prodN(part?.cavities)||1;
     // Cavities can drop for some hours (one cavity damaged): each hour's
     // shots convert to pcs with that hour's cavity count, default the run's.
-    const runOff=prodN(r.offShots);                                    // shift total, shots
-    let shots=0, off=runOff, rejS=0, castPcs=0, offPcs=runOff*cav, rejPcs=0; const rej={};
+    let shots=0, castPcs=0;
     for(let s=r.from;s<=r.to;s++){
       const h=hrs[s], hc=prodN(h.cav)||cav;
-      h.cavEff=hc; h.okPcs=h.ok*hc;
-      shots+=h.total; off+=h.off; rejS+=h.rejS;
-      castPcs+=h.total*hc; offPcs+=h.off*hc;
-      for(const [c,n] of Object.entries(h.rej)){ rej[c]=(rej[c]||0)+n*hc; rejPcs+=n*hc; }
+      h.cavEff=hc; shots+=h.total; castPcs+=h.total*hc;
     }
-    for(const [c,v] of Object.entries(r.rej||{})){ const n=prodN(v); if(n>0){ rej[c]=(rej[c]||0)+n; rejS+=n/cav; rejPcs+=n; } }  // shift total, pcs
-    off=Math.min(shots,off); offPcs=Math.min(castPcs,offPcs);
+    const off=Math.min(shots,prodN(r.offShots)), offPcs=Math.min(castPcs,off*cav);   // shift total, shots
+    let rejS=0, rejPcs=0; const rej={};
+    for(const [c,v] of Object.entries(r.rej||{})){ const n=prodN(v); if(n>0){ rej[c]=n; rejS+=n/cav; rejPcs+=n; } }  // shift total, pcs
     const okPcs=Math.max(0,castPcs-offPcs-rejPcs);
     const ct=prodCT(part,sheet.machineId), wt=prodN(part?.netWeightKg);
     const netKg=(basisOk?okPcs:castPcs)*wt;
@@ -369,20 +356,7 @@ async function prodOpenShift(id=null,preset={}){
     prodCarryOver(rec,all,ctx);
   } else {
     rec=JSON.parse(JSON.stringify(rec));
-    const hrs=prodHours(rec);
-    // Entries keyed with off / rejected shots per hour: fold them into each part's shift totals
-    for(const r of prodRunRanges(rec.runs)){
-      const run=rec.runs[r._i], cav=prodN(r.cavities)||prodN(ctx.partById[r.partId]?.cavities)||1;
-      for(let s=r.from;s<=r.to;s++){
-        if(prodN(hrs[s].off)>0) run.offShots=prodN(run.offShots)+prodN(hrs[s].off);
-        for(const [c,v] of Object.entries(hrs[s].rej||{})){
-          const n=prodN(v)*(prodN(hrs[s].cav)||cav);
-          if(n>0){ run.rej=run.rej||{}; run.rej[c]=prodN(run.rej[c])+n; }
-        }
-      }
-    }
-    rec.hours=hrs.map(h=>({total:h.total??'', cav:h.cav??''}));
-    delete rec.hourly;
+    rec.hours=prodHours(rec).map(h=>({total:h.total??'', cav:h.cav??''}));
   }
   if(!rec.runs?.length) rec.runs=[prodNewRun(ctx,ctx.parts[0])];
   // Runs saved without cavities / grade: show the part's, so saving keeps them
@@ -694,7 +668,6 @@ async function prodPsSave(next){
     plannedMinutes:prodN(rec.plannedMinutes)||prodN(ctx.cfg.plannedMinutes)||720,
     dieCoatL:numOrBlank(rec.dieCoatL),
     hours:rec.hours.map(h=>({total:numOrBlank(h.total), cav:numOrBlank(h.cav)})),
-    hourly:null,
     runs:prodRunRanges(rec.runs).map((r,k)=>{
       const run={partId:+r.partId, grade:r.grade||ctx.partById[r.partId]?.grade||'', cavities:prodN(r.cavities)||prodN(ctx.partById[r.partId]?.cavities)||1, fromSlot:k===0?0:prodN(r.fromSlot)};
       if(prodN(r.offShots)) run.offShots=prodN(r.offShots);                          // shift total, shots
