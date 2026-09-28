@@ -32,7 +32,7 @@ MAX_TOOL_ROUNDS = 6
 # ══════════════════════════════════════════════════════
 #  PRODUCTION CALCULATIONS  (mirror of production.js)
 # ══════════════════════════════════════════════════════
-SUM_KEYS = ['planned', 'downtime', 'runtime', 'shots', 'off', 'offPcs', 'rejPcs', 'castPcs', 'okPcs',
+SUM_KEYS = ['planned', 'noPlanMin', 'downtime', 'runtime', 'shots', 'off', 'offPcs', 'rejPcs', 'castPcs', 'okPcs',
             'idealMin', 'ctMin', 'cavLossMin', 'qualLossMin', 'netKg', 'lossKg', 'totalKg', 'shotsNoCT', 'shotsNoWt']
 CFG_DEFAULT = {'meltLossPct': 6, 'consumptionBasis': 'all', 'plannedMinutes': 720,
                'workDays': 26, 'shiftsPerDay': 2, 'hoursPerShift': 12, 'targetOeePct': 75}
@@ -76,14 +76,21 @@ def calc_shift(sheet, ctx):
     cfg = ctx['cfg']
     loss = num(cfg['meltLossPct']) / 100
     basis_ok = cfg['consumptionBasis'] == 'ok'
-    planned = num(sheet.get('plannedMinutes')) or num(cfg['plannedMinutes']) or 720
-    downs = [d for d in (sheet.get('downtime') or []) if num(d.get('minutes')) > 0]
+    # "No Plan" time is taken off planned time (never counts against OEE). A machine that
+    # did not run is saved with notRun = reason: the whole shift is No Plan or downtime.
+    not_run = sheet.get('notRun') or ''
+    shift = num(sheet.get('plannedMinutes')) or num(cfg['plannedMinutes']) or 720
+    lines = ([{'category': not_run, 'minutes': shift}] if not_run
+             else [d for d in (sheet.get('downtime') or []) if num(d.get('minutes')) > 0])
+    no_plan = min(shift, sum(num(d.get('minutes')) for d in lines if d.get('category') == 'No Plan'))
+    planned = shift - no_plan
+    downs = [d for d in lines if d.get('category') != 'No Plan']
     downtime = min(planned, sum(num(d.get('minutes')) for d in downs))
 
     # Each line is a shift total; a part change or a cavity going down is another line.
     # Performance is in parts: target time per part = cycle time / die cavities.
     runs = []
-    for r in (sheet.get('runs') or []):
+    for r in ([] if not_run else (sheet.get('runs') or [])):
         part = ctx['parts'].get(_key(r.get('partId')))
         cav = num(r.get('cavities')) or num((part or {}).get('cavities')) or 1
         die_cav = num((part or {}).get('cavities')) or cav
@@ -107,7 +114,7 @@ def calc_shift(sheet, ctx):
                      'shotsNoCT': 0 if ct else shots, 'shotsNoWt': 0 if wt else shots,
                      'netKg': net_kg, 'lossKg': net_kg * loss, 'totalKg': net_kg * (1 + loss)})
 
-    t = {'planned': planned, 'downtime': downtime, 'runtime': planned - downtime}
+    t = {'planned': planned, 'noPlanMin': no_plan, 'downtime': downtime, 'runtime': planned - downtime}
     for k in SUM_KEYS:
         if k not in t:
             t[k] = sum(r[k] for r in runs)
@@ -538,7 +545,7 @@ def t_master_data(ctx, kind='parts'):
 # ══════════════════════════════════════════════════════
 AREA_INFO = {
     # production
-    'prodShifts': 'Production — shift entries (shift totals per part line: shots, cavities, off shots, rejections; downtime per machine/shift). Use production_summary for figures.',
+    'prodShifts': 'Production — shift entries (shift totals per part line: shots, cavities, off shots, rejections; downtime per machine/shift; notRun = reason when the machine did not run; "No Plan" time is not planned time). Use production_summary for figures.',
     'prodParts': 'Production — part master (weight, cavities, cycle times, customer, monthly schedule)',
     'prodFettling': 'Production — fettling entries (per date/shift: person, part, qty fettled, rejected, reason)',
     'prodMachines': 'Production — machines', 'prodDefectCodes': 'Production — rejection/defect codes',

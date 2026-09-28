@@ -24,6 +24,8 @@ const PROD_SHIFTS = {
 const PROD_DOWN_CATS = ['Die Loading / Unloading','Die Maintenance','Machine & Furnace Maintenance',
   'Melting / Metal Not Ready','Shot End Component','Spray Gun / Die Coat','Central Compressor','Crane',
   'Power Cut','Manpower','Material Shortage','No Plan','Quality Hold','Other'];
+// Reasons for a machine not running a whole shift ("No Plan" first: doesn't count against OEE)
+const PROD_NOT_RUN = ['No Plan',...PROD_DOWN_CATS.filter(c=>c!=='No Plan')];
 const PROD_DEFAULT_MACHINES = [
   {code:'280T', name:'280 Ton HPDC', tonnage:280, active:true},
   {code:'400T', name:'400 Ton HPDC', tonnage:400, active:true},
@@ -114,7 +116,7 @@ async function prodCtx(){
 // ══════════════════════════════════════════════════════
 //  CALCULATIONS
 // ══════════════════════════════════════════════════════
-const PROD_SUM_KEYS=['planned','downtime','runtime','shots','off','offPcs','rejPcs','castPcs','okPcs',
+const PROD_SUM_KEYS=['planned','noPlanMin','downtime','runtime','shots','off','offPcs','rejPcs','castPcs','okPcs',
   'idealMin','ctMin','cavLossMin','qualLossMin','netKg','lossKg','totalKg','shotsNoCT','shotsNoWt'];
 
 // A shift entry is a list of lines (sheet.runs), each a shift total:
@@ -126,13 +128,22 @@ const PROD_SUM_KEYS=['planned','downtime','runtime','shots','off','offPcs','rejP
 // target cycle time ÷ the die's cavities (Part Master). Running with a
 // cavity down makes half the parts in the same time, so it shows as a
 // performance loss ("cavity down") rather than being hidden.
+//
+// "No Plan" time is not planned time, so it never counts against OEE:
+// "No Plan" downtime lines are taken off planned time instead of being
+// downtime. A machine that did not run a shift is saved with
+// notRun = reason: "No Plan" takes the whole shift off planned time; any
+// other reason counts the whole shift as downtime for that reason.
 function prodCalc(sheet,ctx){
   const loss=prodN(ctx.cfg.meltLossPct)/100, basisOk=ctx.cfg.consumptionBasis==='ok';
-  const planned=prodN(sheet.plannedMinutes)||prodN(ctx.cfg.plannedMinutes)||720;
-  const downs=(sheet.downtime||[]).filter(d=>prodN(d.minutes)>0);
+  const notRun=sheet.notRun||'', shift=prodN(sheet.plannedMinutes)||prodN(ctx.cfg.plannedMinutes)||720;
+  const lines=notRun? [{category:notRun, minutes:shift, remark:'Did not run'}] : (sheet.downtime||[]).filter(d=>prodN(d.minutes)>0);
+  const noPlanMin=Math.min(shift,lines.filter(d=>d.category==='No Plan').reduce((s,d)=>s+prodN(d.minutes),0));
+  const planned=shift-noPlanMin;
+  const downs=lines.filter(d=>d.category!=='No Plan');
   const downtime=Math.min(planned,downs.reduce((s,d)=>s+prodN(d.minutes),0));
 
-  const runs=(sheet.runs||[]).map((r,i)=>{
+  const runs=(notRun?[]:sheet.runs||[]).map((r,i)=>{
     const part=ctx.partById[r.partId];
     const cav=prodN(r.cavities)||prodN(part?.cavities)||1;
     const dieCav=prodN(part?.cavities)||cav;
@@ -153,7 +164,7 @@ function prodCalc(sheet,ctx){
       ppm: castPcs-offPcs>0? rejPcs/(castPcs-offPcs)*1e6 : 0};
   });
 
-  const t={planned, downtime, runtime:planned-downtime};
+  const t={planned, noPlanMin, downtime, runtime:planned-downtime};
   for(const k of PROD_SUM_KEYS) if(!(k in t)) t[k]=runs.reduce((s,r)=>s+(r[k]||0),0);
   t.okShots=runs.reduce((s,r)=>s+r.okShots,0);
   const res={runs, t, byGrade:{}, byPart:{}, byDefect:{}, byDown:{}};
@@ -285,16 +296,18 @@ async function prodRenderShifts(f={}){
     <tbody>${rows.map(({s,c})=>{ const t=c.t; return `<tr>
       <td class="mono">${esc(s.date)}</td><td><b>${esc(s.shift)}</b></td>
       <td>${esc(prodMachineLabel(ctx.machineById[s.machineId]))}</td>
-      <td>${c.runs.map(r=>`<div>${esc(r.part?.partNumber||'—')} <span style="color:#6b7280;font-size:11px">${esc(r.grade)}</span></div>`).join('')}</td>
+      <td>${s.notRun?`<span style="color:#6b7280">⛔ Did not run · ${esc(s.notRun)}</span>`:c.runs.map(r=>`<div>${esc(r.part?.partNumber||'—')} <span style="color:#6b7280;font-size:11px">${esc(r.grade)}</span></div>`).join('')}</td>
       <td style="font-size:12px">${esc([s.operator1,s.operator2].filter(Boolean).join(', '))}</td>
-      <td class="mono" style="text-align:right">${prodFmt(t.shots)}</td>
+      ${s.notRun?`<td colspan="4"></td>
+      <td class="mono" style="text-align:right">${t.downtime?prodFmt(t.downtime)+'m':'—'}</td><td></td>
+      <td class="mono" style="text-align:right;color:#9ca3af">${t.planned?prodPct(0):'—'}</td><td></td>`:`      <td class="mono" style="text-align:right">${prodFmt(t.shots)}</td>
       <td class="mono" style="text-align:right">${prodFmt(t.okPcs)}</td>
       <td class="mono" style="text-align:right;color:${prodTier(1-t.rejPct,.97,.93)}">${prodPct(t.rejPct)}</td>
       <td class="mono" style="text-align:right">${prodFmt(t.ppm)}</td>
       <td class="mono" style="text-align:right">${t.downtime?prodFmt(t.downtime)+'m':'—'}</td>
       <td class="mono" style="text-align:right">${t.actCT?t.actCT.toFixed(0):'—'} / ${t.tgtCT?t.tgtCT.toFixed(0):'—'}s</td>
       <td class="mono" style="text-align:right;font-weight:700;color:${prodTier(t.oee,.75,.55)}">${prodPct(t.oee)}</td>
-      <td class="mono" style="text-align:right">${prodFmt(t.totalKg,1)}</td>
+      <td class="mono" style="text-align:right">${prodFmt(t.totalKg,1)}</td>`}
       <td style="white-space:nowrap">
         <button class="btn btn-o btn-xs" onclick="prodOpenShift(${s.id})">✏️</button>
         <button class="btn btn-r btn-xs" onclick="prodDeleteShift(${s.id})">🗑️</button></td>
@@ -409,7 +422,8 @@ function prodPdTabsHtml(){
     ${pd.sheets.map((x,k)=>{ if(x.rec.shift!==sh) return '';
       const on=k===pd.active, dirty=prodSheetDirty(x);
       const ok=prodCalc(x.rec,x.ctx).t;
-      const st=dirty?'<span style="color:#d97706">● unsaved</span>':x.id?'<span style="color:#16a34a">✓ saved</span>':'<span style="color:#9ca3af">blank</span>';
+      const st=(dirty?'<span style="color:#d97706">● unsaved</span>':x.id?'<span style="color:#16a34a">✓ saved</span>':'<span style="color:#9ca3af">blank</span>')
+        +(x.rec.notRun?` · ⛔ ${esc(x.rec.notRun)}`:'');
       return `<button class="btn ${on?'btn-p':'btn-o'} btn-sm" style="display:flex;flex-direction:column;align-items:flex-start;line-height:1.25;min-width:130px" onclick="prodPdTab(${k})">
         <b>${esc(prodMachineLabel(x.ctx.machineById[x.rec.machineId]))}</b>
         <span style="font-size:10.5px;${on?'opacity:.9':''}">${st}${ok.shots?` · ${prodFmt(ok.okPcs)} OK`:''}</span></button>`; }).join('')}
@@ -420,7 +434,7 @@ function prodPdTabsHtml(){
 // end of the previous shift on the same machine.
 function prodCarryOver(rec,all,ctx){
   const key=s=>s.date+(s.shift==='B'?'2':'1');
-  const prev=all.filter(s=>String(s.machineId)===String(rec.machineId)&&key(s)<key(rec)).sort((a,b)=>key(b).localeCompare(key(a)))[0];
+  const prev=all.filter(s=>String(s.machineId)===String(rec.machineId)&&key(s)<key(rec)&&!s.notRun&&s.runs?.length).sort((a,b)=>key(b).localeCompare(key(a)))[0];
   if(!prev?.runs?.length){ rec.runs=[prodNewRun(ctx,ctx.parts[0])]; return; }
   const last=prev.runs[prev.runs.length-1], p=ctx.partById[last.partId];
   rec.runs=[{...prodNewRun(ctx,p,prodN(last.cavities)), grade:last.grade||p?.grade||''}];
@@ -441,7 +455,17 @@ function prodPsRender(){
     <div style="display:flex;flex-direction:column;gap:6px" id="pd-tabs">${prodPdTabsHtml()}</div>
   </div></div>
   <div class="card"><div class="ch"><h5>1 · ${esc(PROD_SHIFTS[rec.shift]?.label||'Shift '+rec.shift)} · ${esc(m?`${m.code} — ${m.name||''}`:'')}</h5>
-    <span style="font-size:11px;color:#6b7280">Blank tabs are not saved — leave a machine / shift blank if it didn't run.</span></div>
+    ${rec.notRun?`<button class="btn btn-o btn-sm" onclick="prodPsNotRun('')">↩ Machine did run</button>`:
+      `<select class="fc" style="width:auto;height:30px;font-size:12px" onchange="prodPsNotRun(this.value)"><option value="">⛔ Did not run…</option>${PROD_NOT_RUN.map(c=>`<option>${esc(c)}</option>`).join('')}</select>`}</div>
+    ${rec.notRun?`<div class="cb">
+      <div class="alert al-w" style="margin:0 0 12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <b>⛔ Did not run this shift</b>
+        <span>Reason</span><select class="fc" style="width:auto" onchange="prodPsNotRun(this.value)">${prodOpts(PROD_NOT_RUN,rec.notRun)}</select>
+        <span style="font-size:12px">${rec.notRun==='No Plan'?'No work was planned — not counted against OEE.':`The whole shift (${prodFmt(prodN(rec.plannedMinutes)||prodN(ctx.cfg.plannedMinutes)||720)} min) counts as downtime: ${esc(rec.notRun)}.`}</span>
+      </div>
+      <div class="fg" style="margin:0"><label class="lbl">Remarks</label>
+        <input class="fc" value="${esc(rec.remarks)}" oninput="prodPsHead('remarks',this.value)" placeholder="e.g. hydraulic pump failure, waiting for spare"></div>
+    </div></div>`:`
     <div class="cb" style="display:grid;grid-template-columns:1fr 1fr;gap:0 16px;max-width:760px">
     ${row('Planned time (min)',`<input class="fc" type="number" min="0" value="${esc(rec.plannedMinutes)}" oninput="prodPsHead('plannedMinutes',this.value)" title="12 h = 720. Reduce for planned breaks if you don't want them to count as downtime.">`)}
     ${row('Operator 1',`<input class="fc" list="ps-names" value="${esc(rec.operator1)}" oninput="prodPsHead('operator1',this.value)">`)}
@@ -460,7 +484,7 @@ function prodPsRender(){
     <div class="cb" id="ps-down"></div></div>
   <div class="card"><div class="cb"><div class="fg" style="margin:0"><label class="lbl">Remarks</label>
     <input class="fc" value="${esc(rec.remarks)}" oninput="prodPsHead('remarks',this.value)"></div></div></div>
-  <div id="ps-sum"></div>
+  <div id="ps-sum"></div>`}
   <div style="display:flex;gap:8px;justify-content:flex-end;align-items:center;margin:4px 0 30px">
     <span style="font-size:11.5px;color:#6b7280;margin-right:auto">Saves every tab you've changed on this day.</span>
     <button class="btn btn-o" onclick="prodPdCancel()">Cancel</button>
@@ -468,7 +492,8 @@ function prodPsRender(){
     <button class="btn btn-p" onclick="prodPsSave(false)">💾 Save Day</button>
   </div>
   </div>`);
-  prodPsRenderRuns(); prodPsRenderRej(); prodPsRenderDown(); prodPsRefresh();
+  if(!rec.notRun){ prodPsRenderRuns(); prodPsRenderRej(); prodPsRenderDown(); }
+  prodPsRefresh();
 }
 
 function prodPsRenderRuns(){
@@ -535,7 +560,8 @@ function prodPsRenderDown(){
       <td><input class="fc" type="number" min="0" value="${esc(d.minutes)}" oninput="prodPsDown(${i},'minutes',this.value)"></td>
       <td><input class="fc" value="${esc(d.remark||'')}" oninput="prodPsDown(${i},'remark',this.value,false)"></td>
       <td><button class="btn btn-r btn-xs" onclick="prodPsDelDown(${i})">✕</button></td></tr>`).join('')}
-    </tbody></table>`:`<div style="color:#9ca3af;font-size:12px">No downtime — machine ran the full planned time.</div>`);
+    </tbody></table>
+    <div style="font-size:11px;color:#6b7280;margin-top:6px">"No Plan" minutes are taken off planned time — they don't count against OEE.</div>`:`<div style="color:#9ca3af;font-size:12px">No downtime — machine ran the full planned time.</div>`);
 }
 
 function prodPsRefresh(){
@@ -593,7 +619,8 @@ function prodPsRefresh(){
         ${kv('Cycle time act / target',`${t.actCT?t.actCT.toFixed(1):'—'} / ${t.tgtCT?t.tgtCT.toFixed(1):'—'} s`)}
       </div>
       <div style="display:grid;grid-template-columns:1fr auto;gap:3px 10px;align-content:start">
-        <span style="grid-column:span 2;font-weight:600;font-size:11px;color:#6b7280">WHERE THE ${prodFmt(t.planned)} MIN WENT</span>
+        <span style="grid-column:span 2;font-weight:600;font-size:11px;color:#6b7280">WHERE THE ${prodFmt(t.planned)} PLANNED MIN WENT</span>
+        ${t.noPlanMin?`<span style="grid-column:span 2;font-size:11px;color:#6b7280">${prodFmt(t.noPlanMin)} min No Plan — not counted</span>`:''}
         ${kv('Good parts',prodFmt(Math.max(0,t.idealMin-t.qualLossMin))+' min')}
         ${kv('Quality loss',prodFmt(t.qualLossMin)+' min')}
         ${kv('Speed loss',(t.shotsNoCT?'—':prodFmt(t.speedLossMin))+' min')}
@@ -613,6 +640,13 @@ function prodPsRefresh(){
 
 // ── state setters ────────────────────────────────────
 function prodPsHead(k,v){ window._ps.rec[k]=v; prodPsRefresh(); }
+// Mark the tab as "did not run" (reason) or back to a normal entry ('').
+// Lines keyed before are kept on screen in case it's undone, but not saved.
+function prodPsNotRun(reason){
+  const rec=window._ps.rec;
+  if(reason) rec.notRun=reason; else delete rec.notRun;
+  prodPsRender();
+}
 function prodPsRunRej(i,code,v){ const r=window._ps.rec.runs[i]; r.rej=r.rej||{}; r.rej[code]=v; prodPsRefresh(); }
 function prodPsRun(i,k,v,rerender=false){ window._ps.rec.runs[i][k]=v; if(rerender){ prodPsRenderRuns(); prodPsRenderRej(); } prodPsRefresh(); }
 function prodPsRunPart(i,pid){
@@ -638,6 +672,7 @@ function prodPsDelDown(i){ window._ps.rec.downtime.splice(i,1); prodPsRenderDown
 // Check one tab; returns an error message or ''
 function prodSheetError(x){
   const {rec,ctx}=x;
+  if(rec.notRun) return '';
   if(rec.runs.some(r=>!r.partId)) return 'select a part';
   const c=prodCalc(rec,ctx);
   const offRun=c.runs.find(r=>prodN(r.offShots)>r.shots);
@@ -649,6 +684,13 @@ function prodSheetError(x){
 function prodSheetClean(x){
   const {rec,ctx}=x;
   const numOrBlank=v=>v===''||v==null?'':prodN(v);
+  if(rec.notRun) return {
+    date:rec.date, shift:rec.shift, machineId:+rec.machineId, notRun:rec.notRun,
+    operator1:'', operator2:'', supervisor:'',
+    plannedMinutes:prodN(rec.plannedMinutes)||prodN(ctx.cfg.plannedMinutes)||720, dieCoatL:'',
+    runs:[], downtime:[], remarks:(rec.remarks||'').trim(),
+    updatedAt:new Date().toISOString(), updatedBy:Auth.user?.name||'',
+  };
   return {
     date:rec.date, shift:rec.shift, machineId:+rec.machineId,
     operator1:(rec.operator1||'').trim(), operator2:(rec.operator2||'').trim(), supervisor:(rec.supervisor||'').trim(),
@@ -673,7 +715,7 @@ async function prodPsSave(next){
     const err=prodSheetError(x);
     if(err){ prodPdTab(pd.sheets.indexOf(x)); toast(`${prodSheetLabel(x)}: ${err}`,'d'); return; }
   }
-  const empty=todo.filter(x=>{ const t=prodCalc(x.rec,x.ctx).t; return !t.shots&&!t.downtime; });
+  const empty=todo.filter(x=>{ const t=prodCalc(x.rec,x.ctx).t; return !x.rec.notRun&&!t.shots&&!t.downtime; });
   if(empty.length&&!confirm(`No shots and no downtime on ${empty.map(prodSheetLabel).join(', ')}. Save anyway?`)) return;
   let saved=0;
   for(const x of todo){
@@ -857,8 +899,8 @@ function prodRepOEE(ctx,rows){
       return `<tr class="${first&&k?'grp':''}"><td class="mono">${first?esc(s.date):''}</td>
       <td>${esc(prodMachineLabel(ctx.machineById[s.machineId]))} · ${esc(s.shift)}</td>
       <td class="n mono">${prodFmt(x.okPcs)}</td><td class="n mono">${x.downtime?prodFmt(x.downtime)+' min':'—'}</td>
-      <td class="n mono" style="font-weight:700;color:${prodTier(x.oee,.75,.55)}">${prodPct(x.oee)}</td>
-      <td style="color:#6b7280">${top?`${esc(top[0])} · ${prodFmt(top[1])} min`:''}</td></tr>`;}).join('')}</tbody></table>`)}`;
+      <td class="n mono" style="font-weight:700;color:${x.planned?prodTier(x.oee,.75,.55):'#9ca3af'}">${x.planned?prodPct(x.oee):'—'}</td>
+      <td style="color:#6b7280">${s.notRun?`⛔ Did not run · ${esc(s.notRun)}`:top?`${esc(top[0])} · ${prodFmt(top[1])} min`:''}</td></tr>`;}).join('')}</tbody></table>`)}`;
 }
 
 // ── Rejection ────────────────────────────────────────
