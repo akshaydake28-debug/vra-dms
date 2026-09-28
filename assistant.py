@@ -120,7 +120,7 @@ def calc_shift(sheet, ctx):
             cast += h['total'] * hc; off_pcs += h['off'] * hc
             for c, n in h['rej'].items():
                 rej[c] = rej.get(c, 0) + n * hc; rej_pcs += n * hc
-        for c, v in (r.get('rej') or {}).items():          # first-version entries: pcs on the run
+        for c, v in (r.get('rej') or {}).items():          # shift total per part, pcs
             n = num(v)
             if n > 0:
                 rej[c] = rej.get(c, 0) + n; rej_s += n / cav; rej_pcs += n
