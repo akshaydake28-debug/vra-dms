@@ -66,11 +66,8 @@ def run_ranges(runs):
 
 
 def hours_of(sheet):
-    hrs = sheet.get('hours')
-    if isinstance(hrs, list):
-        return [(hrs[i] if i < len(hrs) and isinstance(hrs[i], dict) else {}) for i in range(SLOTS)]
-    hourly = sheet.get('hourly') or []
-    return [{'total': hourly[i] if i < len(hourly) else ''} for i in range(SLOTS)]
+    hrs = sheet.get('hours') if isinstance(sheet.get('hours'), list) else []
+    return [(hrs[i] if i < len(hrs) and isinstance(hrs[i], dict) else {}) for i in range(SLOTS)]
 
 
 def ratios(t):
@@ -98,33 +95,20 @@ def calc_shift(sheet, ctx):
     downs = [d for d in (sheet.get('downtime') or []) if num(d.get('minutes')) > 0]
     downtime = min(planned, sum(num(d.get('minutes')) for d in downs))
 
-    hrs = []
-    for h in hours_of(sheet):
-        total = num(h.get('total'))
-        off = min(total, num(h.get('off')))
-        rej = {c: num(v) for c, v in (h.get('rej') or {}).items() if num(v) > 0}
-        rej_s = sum(rej.values())
-        hrs.append({'total': total, 'off': off, 'rej': rej, 'rejS': rej_s,
-                    'ok': max(0, total - off - rej_s), 'cav': h.get('cav')})
+    hrs = [{'total': num(h.get('total')), 'cav': h.get('cav')} for h in hours_of(sheet)]
 
     runs = []
     for r in run_ranges(sheet.get('runs')):
         part = ctx['parts'].get(_key(r.get('partId')))
         cav = num(r.get('cavities')) or num((part or {}).get('cavities')) or 1
-        legacy_off = num(r.get('offShots'))
-        shots, off, rej_s, cast, off_pcs, rej_pcs, rej = 0, legacy_off, 0, 0, legacy_off * cav, 0, {}
+        shots, cast = 0, 0
         for s in range(r['_from'], r['_to'] + 1):
             h = hrs[s]
-            hc = num(h['cav']) or cav
-            shots += h['total']; off += h['off']; rej_s += h['rejS']
-            cast += h['total'] * hc; off_pcs += h['off'] * hc
-            for c, n in h['rej'].items():
-                rej[c] = rej.get(c, 0) + n * hc; rej_pcs += n * hc
-        for c, v in (r.get('rej') or {}).items():          # first-version entries: pcs on the run
-            n = num(v)
-            if n > 0:
-                rej[c] = rej.get(c, 0) + n; rej_s += n / cav; rej_pcs += n
-        off = min(shots, off); off_pcs = min(cast, off_pcs)
+            shots += h['total']; cast += h['total'] * (num(h['cav']) or cav)
+        off = min(shots, num(r.get('offShots')))       # shift total per part, shots
+        off_pcs = min(cast, off * cav)
+        rej = {c: num(v) for c, v in (r.get('rej') or {}).items() if num(v) > 0}   # shift total per part, pcs
+        rej_pcs = sum(rej.values()); rej_s = rej_pcs / cav
         ok_pcs = max(0, cast - off_pcs - rej_pcs)
         ct = ct_of(part, sheet.get('machineId'))
         wt = num((part or {}).get('netWeightKg'))
@@ -568,7 +552,7 @@ def t_master_data(ctx, kind='parts'):
 # ══════════════════════════════════════════════════════
 AREA_INFO = {
     # production
-    'prodShifts': 'Production — shift entries (raw hourly shots, rejections, downtime per machine/shift). Use production_summary for figures.',
+    'prodShifts': 'Production — shift entries (raw hourly shots, per-part off shots and rejections, downtime per machine/shift). Use production_summary for figures.',
     'prodParts': 'Production — part master (weight, cavities, cycle times, customer, monthly schedule)',
     'prodFettling': 'Production — fettling entries (per date/shift: person, part, qty fettled, rejected, reason)',
     'prodMachines': 'Production — machines', 'prodDefectCodes': 'Production — rejection/defect codes',
