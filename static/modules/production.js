@@ -385,6 +385,10 @@ async function prodOpenShift(id=null,preset={}){
     delete rec.hourly;
   }
   if(!rec.runs?.length) rec.runs=[prodNewRun(ctx,ctx.parts[0])];
+  // Runs saved without cavities / grade: show the part's, so saving keeps them
+  rec.runs.forEach(r=>{ const p=ctx.partById[r.partId];
+    if(!prodN(r.cavities)) r.cavities=prodN(p?.cavities)||1;
+    if(!r.grade&&p?.grade) r.grade=p.grade; });
   rec.downtime=rec.downtime||[];
   const names=new Set();
   all.forEach(s=>{ s.operator1&&names.add(s.operator1); s.operator2&&names.add(s.operator2); s.supervisor&&names.add(s.supervisor); });
@@ -404,7 +408,8 @@ function prodCarryOver(rec,all,ctx){
   const prev=all.filter(s=>String(s.machineId)===String(rec.machineId)&&key(s)<key(rec)).sort((a,b)=>key(b).localeCompare(key(a)))[0];
   if(!prev?.runs?.length){ rec.runs=[prodNewRun(ctx,ctx.parts[0])]; return; }
   const last=prodRunRanges(prev.runs).slice(-1)[0];
-  rec.runs=[{partId:last.partId, grade:last.grade, cavities:last.cavities, fromSlot:0}];
+  const p=ctx.partById[last.partId];
+  rec.runs=[{partId:last.partId, grade:last.grade||p?.grade||'', cavities:prodN(last.cavities)||prodN(p?.cavities)||1, fromSlot:0}];
 }
 
 function prodPsRender(){
@@ -691,7 +696,7 @@ async function prodPsSave(next){
     hours:rec.hours.map(h=>({total:numOrBlank(h.total), cav:numOrBlank(h.cav)})),
     hourly:null,
     runs:prodRunRanges(rec.runs).map((r,k)=>{
-      const run={partId:+r.partId, grade:r.grade||ctx.partById[r.partId]?.grade||'', cavities:prodN(r.cavities)||1, fromSlot:k===0?0:prodN(r.fromSlot)};
+      const run={partId:+r.partId, grade:r.grade||ctx.partById[r.partId]?.grade||'', cavities:prodN(r.cavities)||prodN(ctx.partById[r.partId]?.cavities)||1, fromSlot:k===0?0:prodN(r.fromSlot)};
       if(prodN(r.offShots)) run.offShots=prodN(r.offShots);                          // shift total, shots
       const rej={}; for(const [k,v] of Object.entries(r.rej||{})) if(prodN(v)>0) rej[k]=prodN(v);
       if(Object.keys(rej).length) run.rej=rej;                                        // shift total, pcs
@@ -1644,8 +1649,9 @@ async function prodDemoGenerate(){
       if(existing.has(`${date}|${m.id}|${sh}`)) continue;
       const main=plan[mi][Math.floor(rnd()*plan[mi].length)], alt=plan[mi].find(x=>x!==main);
       const change=rnd()<.25? 5+Math.floor(rnd()*5) : 0;
-      const runs=[{partId:main, grade:'', cavities:'', fromSlot:0}];
-      if(change&&alt) runs.push({partId:alt, grade:'', cavities:'', fromSlot:change});
+      const run=(id,fromSlot)=>({partId:id, grade:defById[id]?.grade||'', cavities:defById[id]?.cavities||1, fromSlot});
+      const runs=[run(main,0)];
+      if(change&&alt) runs.push(run(alt,change));
       const downtime=[];
       const nDown=rnd()<.25?0:1+Math.floor(rnd()*2);
       for(let k=0;k<nDown;k++) downtime.push({category:cats[Math.floor(rnd()*rnd()*cats.length)], slot:Math.floor(rnd()*12), minutes:10+Math.round(rnd()*50), remark:''});
