@@ -499,6 +499,12 @@ def backup():
         except (TypeError, ValueError):
             backup_errors.append(f'{r.module} record {r.id}: unreadable data, skipped')
             continue
+        if not r.module or (not r.module.startswith('setting_') and not isinstance(parsed, dict)):
+            # A row stored as JSON null / a list / a bare value can't take
+            # the 'id' key below — that TypeError used to abort the entire
+            # backup. Skip just this row and flag it instead.
+            backup_errors.append(f'{r.module} record {r.id}: data is not a record object, skipped')
+            continue
         if r.module.startswith('setting_'):
             key = r.module.replace('setting_','')
             if 'settings' not in data: data['settings'] = {}
@@ -551,6 +557,8 @@ def restore():
         GenericRecord.query.filter_by(module=key).delete()
         db.session.flush()
         for rec in value:
+            if not isinstance(rec, dict):
+                continue
             nr = {k:v for k,v in rec.items() if k not in ('id','_rid')}
             db.session.add(GenericRecord(module=key, data=json.dumps(nr)))
             module_count += 1
