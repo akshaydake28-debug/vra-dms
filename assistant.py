@@ -32,10 +32,8 @@ MAX_TOOL_ROUNDS = 6
 # ══════════════════════════════════════════════════════
 #  PRODUCTION CALCULATIONS  (mirror of production.js)
 # ══════════════════════════════════════════════════════
-SLOTS = 12
-SHIFT_START = {'A': 8, 'B': 20}
 SUM_KEYS = ['planned', 'downtime', 'runtime', 'shots', 'off', 'offPcs', 'rejPcs', 'castPcs', 'okPcs',
-            'idealMin', 'qualLossMin', 'netKg', 'lossKg', 'totalKg', 'shotsNoCT', 'shotsNoWt']
+            'idealMin', 'ctMin', 'cavLossMin', 'qualLossMin', 'netKg', 'lossKg', 'totalKg', 'shotsNoCT', 'shotsNoWt']
 CFG_DEFAULT = {'meltLossPct': 6, 'consumptionBasis': 'all', 'plannedMinutes': 720,
                'workDays': 26, 'shiftsPerDay': 2, 'hoursPerShift': 12, 'targetOeePct': 75}
 
@@ -56,20 +54,6 @@ def ct_of(part, machine_id):
     return num(((part or {}).get('cycleTimes') or {}).get(_key(machine_id)))
 
 
-def run_ranges(runs):
-    srt = sorted([dict(r, _i=i) for i, r in enumerate(runs or [])], key=lambda r: num(r.get('fromSlot')))
-    out = []
-    for k, r in enumerate(srt):
-        nxt = num(srt[k + 1].get('fromSlot')) if k < len(srt) - 1 else SLOTS
-        out.append(dict(r, _from=0 if k == 0 else int(num(r.get('fromSlot'))), _to=int(nxt) - 1))
-    return out
-
-
-def hours_of(sheet):
-    hrs = sheet.get('hours') if isinstance(sheet.get('hours'), list) else []
-    return [(hrs[i] if i < len(hrs) and isinstance(hrs[i], dict) else {}) for i in range(SLOTS)]
-
-
 def ratios(t):
     t = dict(t)
     t['A'] = t['runtime'] / t['planned'] if t['planned'] else 0
@@ -82,8 +66,9 @@ def ratios(t):
     t['ppm'] = t['rejPcs'] / good * 1e6 if good > 0 else 0
     t['actCT'] = t['runtime'] * 60 / t['shots'] if t['shots'] else None
     shots_ct = t['shots'] - t['shotsNoCT']
-    t['tgtCT'] = t['idealMin'] * 60 / shots_ct if shots_ct > 0 else None
-    t['perfLossMin'] = max(0, t['runtime'] - t['idealMin'])
+    t['tgtCT'] = t['ctMin'] * 60 / shots_ct if shots_ct > 0 else None
+    t['perfLossMin'] = max(0, t['runtime'] - t['idealMin'])      # speed + cavity down
+    t['speedLossMin'] = max(0, t['runtime'] - t['idealMin'] - t['cavLossMin'])
     return t
 
 
@@ -95,30 +80,30 @@ def calc_shift(sheet, ctx):
     downs = [d for d in (sheet.get('downtime') or []) if num(d.get('minutes')) > 0]
     downtime = min(planned, sum(num(d.get('minutes')) for d in downs))
 
-    hrs = [{'total': num(h.get('total')), 'cav': h.get('cav')} for h in hours_of(sheet)]
-
+    # Each line is a shift total; a part change or a cavity going down is another line.
+    # Performance is in parts: target time per part = cycle time / die cavities.
     runs = []
-    for r in run_ranges(sheet.get('runs')):
+    for r in (sheet.get('runs') or []):
         part = ctx['parts'].get(_key(r.get('partId')))
         cav = num(r.get('cavities')) or num((part or {}).get('cavities')) or 1
-        shots, cast = 0, 0
-        for s in range(r['_from'], r['_to'] + 1):
-            h = hrs[s]
-            shots += h['total']; cast += h['total'] * (num(h['cav']) or cav)
-        off = min(shots, num(r.get('offShots')))       # shift total per part, shots
-        off_pcs = min(cast, off * cav)
-        rej = {c: num(v) for c, v in (r.get('rej') or {}).items() if num(v) > 0}   # shift total per part, pcs
+        die_cav = num((part or {}).get('cavities')) or cav
+        shots = num(r.get('shots')); cast = shots * cav
+        off = min(shots, num(r.get('offShots'))); off_pcs = off * cav
+        rej = {c: num(v) for c, v in (r.get('rej') or {}).items() if num(v) > 0}   # pcs
         rej_pcs = sum(rej.values()); rej_s = rej_pcs / cav
         ok_pcs = max(0, cast - off_pcs - rej_pcs)
         ct = ct_of(part, sheet.get('machineId'))
+        ct_pc = ct / die_cav
         wt = num((part or {}).get('netWeightKg'))
         net_kg = (ok_pcs if basis_ok else cast) * wt
+        ideal = cast * ct_pc / 60 if ct else 0
+        ct_min = shots * ct / 60 if ct else 0
         runs.append({'part': part, 'partId': r.get('partId'),
                      'grade': r.get('grade') or (part or {}).get('grade') or '—',
-                     'cav': cav, 'shots': shots, 'off': off, 'offPcs': off_pcs, 'rej': rej, 'rejPcs': rej_pcs,
+                     'cav': cav, 'dieCav': die_cav, 'shots': shots, 'off': off, 'offPcs': off_pcs, 'rej': rej, 'rejPcs': rej_pcs,
                      'castPcs': cast, 'okPcs': ok_pcs, 'okShots': max(0, shots - off - rej_s), 'ct': ct, 'wt': wt,
-                     'idealMin': shots * ct / 60 if ct else 0,
-                     'qualLossMin': (off + rej_s) * ct / 60 if ct else 0,
+                     'idealMin': ideal, 'ctMin': ct_min, 'cavLossMin': max(0, ct_min - ideal),
+                     'qualLossMin': (off_pcs + rej_pcs) * ct_pc / 60 if ct else 0,
                      'shotsNoCT': 0 if ct else shots, 'shotsNoWt': 0 if wt else shots,
                      'netKg': net_kg, 'lossKg': net_kg * loss, 'totalKg': net_kg * (1 + loss)})
 
@@ -352,7 +337,8 @@ def t_downtime_analysis(ctx, start_date=None, end_date=None, machine=None):
     t = agg_totals([c['t'] for _, c in rows])
     return {'period': {'from': start, 'to': end}, 'machine': machine,
             'downtime_hours': r0(t['downtime'] / 60, 1), 'planned_hours': r0(t['planned'] / 60, 1),
-            'speed_loss_hours': r0(t['perfLossMin'] / 60, 1) if not t['shotsNoCT'] else None,
+            'speed_loss_hours': r0(t['speedLossMin'] / 60, 1) if not t['shotsNoCT'] else None,
+            'cavity_down_hours': r0(t['cavLossMin'] / 60, 1),
             'quality_loss_hours': r0(t['qualLossMin'] / 60, 1),
             'by_reason': sorted(({'reason': k, 'hours': r0(v / 60, 1), 'share_pct': round(v / tot * 100, 1)}
                                  for k, v in by.items()), key=lambda x: -x['hours']),
@@ -427,7 +413,7 @@ def t_capacity_status(ctx):
             continue
         mine = [(s, c) for s, c in rows if _key(s.get('machineId')) == mid]
         t = agg_totals([c['t'] for _, c in mine])
-        hist = sum(r['okShots'] * r['ct'] / 3600 for _, c in mine for r in c['runs'] if r['ct'])
+        hist = sum(r['okPcs'] * r['ct'] / r['dieCav'] / 3600 for _, c in mine for r in c['runs'] if r['ct'])
         if days:
             hist = hist / days * num(cfg['workDays'])
         actual = t['oee'] if t['oee'] > 0 else None
@@ -552,7 +538,7 @@ def t_master_data(ctx, kind='parts'):
 # ══════════════════════════════════════════════════════
 AREA_INFO = {
     # production
-    'prodShifts': 'Production — shift entries (raw hourly shots, per-part off shots and rejections, downtime per machine/shift). Use production_summary for figures.',
+    'prodShifts': 'Production — shift entries (shift totals per part line: shots, cavities, off shots, rejections; downtime per machine/shift). Use production_summary for figures.',
     'prodParts': 'Production — part master (weight, cavities, cycle times, customer, monthly schedule)',
     'prodFettling': 'Production — fettling entries (per date/shift: person, part, qty fettled, rejected, reason)',
     'prodMachines': 'Production — machines', 'prodDefectCodes': 'Production — rejection/defect codes',
@@ -745,7 +731,7 @@ TOOLS = {
         'Rejections for a date range: defect Pareto (top defect reasons with share and cumulative %), PPM by part.',
         {'start_date': DATE, 'end_date': DATE, 'machine': {'type': S}, 'part_number': {'type': S}}),
     'downtime_analysis': (t_downtime_analysis,
-        'Downtime / breakdown for a date range: hours by reason, speed and quality loss, worst shifts.',
+        'Downtime / breakdown for a date range: hours by reason, speed, cavity-down and quality loss, worst shifts.',
         {'start_date': DATE, 'end_date': DATE, 'machine': {'type': S}}),
     'material_consumption': (t_material_consumption,
         'Metal consumed by alloy grade for a date range (net weight, melting loss, total kg).',
