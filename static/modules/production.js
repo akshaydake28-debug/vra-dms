@@ -1,14 +1,13 @@
 // ══════════════════════════════════════════════════════
 //  VRA DMS — PRODUCTION MODULE (Die Casting)
 //
-//  One entry per machine per shift, built for fast keying from the
+//  One entry per machine per shift, keyed as shift totals from the
 //  paper Daily Production Report:
 //    • header    — date, shift A/B, machine, 2 operators, planned time
-//    • part runs — part, grade, cavities (a mid-shift part / grade change
-//                  is just another run starting at a later hour)
-//    • hourly    — 12 rows: total shots, cavities
-//    • per part  — shift totals: off shots, rejected pcs by defect
-//    • downtime  — category, minutes, optional hour
+//    • lines     — part, grade, cavities, total shots, off shots (a
+//                  part change or a cavity going down is another line)
+//    • rejection — rejected pcs by defect, per line
+//    • downtime  — category, minutes
 //  Everything else is calculated: OK parts, rejection % / PPM, OEE and
 //  where the time went, melting loss and metal consumed per grade, and
 //  raw-material / part stock (tied to the RM Lot Register + Dispatch).
@@ -22,7 +21,6 @@ const PROD_SHIFTS = {
   A: {label:'A — Day (08:00–20:00)',   start:8},
   B: {label:'B — Night (20:00–08:00)', start:20},
 };
-const PROD_SLOTS = 12;
 const PROD_DOWN_CATS = ['Die Loading / Unloading','Die Maintenance','Machine & Furnace Maintenance',
   'Melting / Metal Not Ready','Shot End Component','Spray Gun / Die Coat','Central Compressor','Crane',
   'Power Cut','Manpower','Material Shortage','No Plan','Quality Hold','Other'];
@@ -60,8 +58,6 @@ function prodFmt(n,dp=0){
 function prodPct(x,dp=1){ return isFinite(x)? (x*100).toFixed(dp)+'%' : '—'; }
 function prodHrs(min){ return isFinite(min)? (min/60).toFixed(1)+' h' : '—'; }
 function prodTier(x,hi,lo){ return x>=hi?'#16a34a':x>=lo?'#d97706':'#dc2626'; }
-function prodPad(h){ return String(h).padStart(2,'0'); }
-function prodSlotLabel(shift,i){ const h=(PROD_SHIFTS[shift]?.start??8)+i; return prodPad(h%24)+'–'+prodPad((h+1)%24); }
 function prodPartLabel(p){ return p? `${p.partNumber||''} — ${p.partName||''}` : '—'; }
 function prodMachineLabel(m){ return m? (m.code||m.name||'') : '—'; }
 // Metal needed per part: net weight + melting loss on that metal (0.5 kg @ 6% → 0.53 kg)
@@ -118,68 +114,49 @@ async function prodCtx(){
 // ══════════════════════════════════════════════════════
 //  CALCULATIONS
 // ══════════════════════════════════════════════════════
-// Runs are ordered by the hour they start; each run covers hours up to
-// the next run's start.
-function prodRunRanges(runs){
-  const sorted=(runs||[]).map((r,i)=>({...r,_i:i})).sort((a,b)=>prodN(a.fromSlot)-prodN(b.fromSlot));
-  return sorted.map((r,k)=>({...r,
-    from: k===0?0:prodN(r.fromSlot),
-    to: (k<sorted.length-1? prodN(sorted[k+1].fromSlot) : PROD_SLOTS)-1}));
-}
-
 const PROD_SUM_KEYS=['planned','downtime','runtime','shots','off','offPcs','rejPcs','castPcs','okPcs',
-  'idealMin','qualLossMin','netKg','lossKg','totalKg','shotsNoCT','shotsNoWt'];
+  'idealMin','ctMin','cavLossMin','qualLossMin','netKg','lossKg','totalKg','shotsNoCT','shotsNoWt'];
 
-// Hourly rows are {total, cav}; off shots and rejections are shift totals
-// on the run (run.offShots in shots, run.rej = {code:pcs}).
-function prodHours(sheet){ return Array.from({length:PROD_SLOTS},(_,i)=>(sheet.hours||[])[i]||{}); }
-
+// A shift entry is a list of lines (sheet.runs), each a shift total:
+//   {partId, grade, cavities, shots, offShots, rej:{code:pcs}}
+// A part change or a cavity going down mid-shift is just another line
+// (same part, fewer cavities, the shots made after it).
+//
+// Performance is measured in parts: the target time per part is the
+// target cycle time ÷ the die's cavities (Part Master). Running with a
+// cavity down makes half the parts in the same time, so it shows as a
+// performance loss ("cavity down") rather than being hidden.
 function prodCalc(sheet,ctx){
   const loss=prodN(ctx.cfg.meltLossPct)/100, basisOk=ctx.cfg.consumptionBasis==='ok';
   const planned=prodN(sheet.plannedMinutes)||prodN(ctx.cfg.plannedMinutes)||720;
   const downs=(sheet.downtime||[]).filter(d=>prodN(d.minutes)>0);
-  const downBySlot=Array(PROD_SLOTS).fill(0);
-  downs.forEach(d=>{ if(d.slot!==''&&d.slot!=null&&prodN(d.slot)>=0) downBySlot[prodN(d.slot)]+=prodN(d.minutes); });
   const downtime=Math.min(planned,downs.reduce((s,d)=>s+prodN(d.minutes),0));
 
-  const hrs=prodHours(sheet).map(h=>({total:prodN(h.total), cav:h.cav}));
-
-  const runs=prodRunRanges(sheet.runs).map(r=>{
+  const runs=(sheet.runs||[]).map((r,i)=>{
     const part=ctx.partById[r.partId];
     const cav=prodN(r.cavities)||prodN(part?.cavities)||1;
-    // Cavities can drop for some hours (one cavity damaged): each hour's
-    // shots convert to pcs with that hour's cavity count, default the run's.
-    let shots=0, castPcs=0;
-    for(let s=r.from;s<=r.to;s++){
-      const h=hrs[s], hc=prodN(h.cav)||cav;
-      h.cavEff=hc; shots+=h.total; castPcs+=h.total*hc;
-    }
-    const off=Math.min(shots,prodN(r.offShots)), offPcs=Math.min(castPcs,off*cav);   // shift total, shots
+    const dieCav=prodN(part?.cavities)||cav;
+    const shots=prodN(r.shots), castPcs=shots*cav;
+    const off=Math.min(shots,prodN(r.offShots)), offPcs=off*cav;
     let rejS=0, rejPcs=0; const rej={};
-    for(const [c,v] of Object.entries(r.rej||{})){ const n=prodN(v); if(n>0){ rej[c]=n; rejS+=n/cav; rejPcs+=n; } }  // shift total, pcs
+    for(const [c,v] of Object.entries(r.rej||{})){ const n=prodN(v); if(n>0){ rej[c]=n; rejS+=n/cav; rejPcs+=n; } }
     const okPcs=Math.max(0,castPcs-offPcs-rejPcs);
-    const ct=prodCT(part,sheet.machineId), wt=prodN(part?.netWeightKg);
+    const ct=prodCT(part,sheet.machineId), wt=prodN(part?.netWeightKg), ctPc=ct/dieCav;
     const netKg=(basisOk?okPcs:castPcs)*wt;
-    return {...r, part, grade:r.grade||part?.grade||'—', cav, shots, off, offPcs, rej, rejPcs, castPcs, okPcs,
+    const idealMin=ct? castPcs*ctPc/60 : 0, ctMin=ct? shots*ct/60 : 0;
+    return {...r, _i:i, part, grade:r.grade||part?.grade||'—', cav, dieCav, shots, off, offPcs, rej, rejPcs, castPcs, okPcs,
       okShots:Math.max(0,shots-off-rejS), ct, wt,
-      idealMin: ct? shots*ct/60 : 0,
-      qualLossMin: ct? (off+rejS)*ct/60 : 0,
+      idealMin, ctMin, cavLossMin:Math.max(0,ctMin-idealMin),
+      qualLossMin: ct? (offPcs+rejPcs)*ctPc/60 : 0,
       shotsNoCT: ct?0:shots, shotsNoWt: wt?0:shots,
       netKg, lossKg:netKg*loss, totalKg:netKg*(1+loss),
       ppm: castPcs-offPcs>0? rejPcs/(castPcs-offPcs)*1e6 : 0};
   });
 
-  const hours=hrs.map((h,s)=>{
-    const r=runs.find(x=>s>=x.from&&s<=x.to), ct=r?.ct||0, avail=Math.max(0,60-downBySlot[s]);
-    return {...h, shots:h.total, down:downBySlot[s], ct, run:r,
-      target: ct? Math.floor(3600/ct) : null,
-      eff: ct&&avail? h.total*ct/(avail*60) : null};
-  });
-
   const t={planned, downtime, runtime:planned-downtime};
   for(const k of PROD_SUM_KEYS) if(!(k in t)) t[k]=runs.reduce((s,r)=>s+(r[k]||0),0);
   t.okShots=runs.reduce((s,r)=>s+r.okShots,0);
-  const res={runs, hours, t, byGrade:{}, byPart:{}, byDefect:{}, byDown:{}};
+  const res={runs, t, byGrade:{}, byPart:{}, byDefect:{}, byDown:{}};
   prodMergeMaps(res,runs,downs);
   res.t=prodRatios(t);
   return res;
@@ -207,8 +184,9 @@ function prodRatios(t){
     rejPct: t.castPcs? (t.offPcs+t.rejPcs)/t.castPcs : 0,
     ppm: (t.castPcs-t.offPcs)>0? t.rejPcs/(t.castPcs-t.offPcs)*1e6 : 0,
     actCT: t.shots? t.runtime*60/t.shots : null,
-    tgtCT: shotsCT>0? t.idealMin*60/shotsCT : null,
-    perfLossMin: Math.max(0,t.runtime-t.idealMin)};  // overstated when shotsNoCT>0 — callers flag it
+    tgtCT: shotsCT>0? t.ctMin*60/shotsCT : null,
+    perfLossMin: Math.max(0,t.runtime-t.idealMin),   // speed + cavity down; overstated when shotsNoCT>0 — callers flag it
+    speedLossMin: Math.max(0,t.runtime-t.idealMin-t.cavLossMin)};
 }
 // Sum several shift calcs into one (for reports)
 function prodAgg(calcs){
@@ -335,17 +313,16 @@ async function prodDeleteShift(id){
 //  2. DAY ENTRY — one window per date with a tab for every shift ×
 //     machine (A·280T, A·400T, B·280T, B·400T…) and one Save for all.
 //     Each tab is still stored as its own shift entry. A tab is laid out
-//     like the paper sheet: shift details → part → one row per hour →
-//     rejections per part → downtime → totals.
+//     like the paper sheet: shift details → production lines →
+//     rejections → downtime → totals.
 //  State: window._pd holds the day; window._ps is the active tab's sheet.
 //  Number inputs update state and call prodPsRefresh() (updates
 //  calculated cells only, so focus is kept); structural changes
 //  (part, run added/removed, tab) re-render.
 // ══════════════════════════════════════════════════════
-function prodNewRun(ctx,part,fromSlot=0){
-  return {partId:part?.id||'', grade:part?.grade||'', cavities:prodN(part?.cavities)||1, fromSlot};
+function prodNewRun(ctx,part,cavities){
+  return {partId:part?.id||'', grade:part?.grade||'', cavities:cavities||prodN(part?.cavities)||1, shots:'', offShots:''};
 }
-function prodBlankHours(){ return Array.from({length:PROD_SLOTS},()=>({total:'',cav:''})); }
 // Edit an entry = open its day with that tab selected
 async function prodOpenShift(id=null){
   if(!id) return prodOpenDay();
@@ -379,10 +356,10 @@ function prodSheet(ex,{date,shift,machineId},ctx,all,names){
   let rec;
   if(ex){
     rec=JSON.parse(JSON.stringify(ex));
-    rec.hours=prodHours(rec).map(h=>({total:h.total??'', cav:h.cav??''}));
+    rec.runs=(rec.runs||[]).map(r=>({...r, shots:r.shots??'', offShots:r.offShots??''}));
   } else {
     rec={date, shift, machineId, operator1:'', operator2:'', supervisor:'', plannedMinutes:ctx.cfg.plannedMinutes, dieCoatL:'',
-      hours:prodBlankHours(), runs:[], downtime:[], remarks:''};
+      runs:[], downtime:[], remarks:''};
   }
   if(!rec.runs?.length) rec.runs=[prodNewRun(ctx,ctx.parts[0])];
   // Runs saved without cavities / grade: show the part's, so saving keeps them
@@ -439,15 +416,14 @@ function prodPdTabsHtml(){
   </div>`).join('');
 }
 
-// New entry: continue with whatever part was running at the end of the
-// previous shift on the same machine.
+// New entry: continue with whatever part (and cavities) was running at the
+// end of the previous shift on the same machine.
 function prodCarryOver(rec,all,ctx){
   const key=s=>s.date+(s.shift==='B'?'2':'1');
   const prev=all.filter(s=>String(s.machineId)===String(rec.machineId)&&key(s)<key(rec)).sort((a,b)=>key(b).localeCompare(key(a)))[0];
   if(!prev?.runs?.length){ rec.runs=[prodNewRun(ctx,ctx.parts[0])]; return; }
-  const last=prodRunRanges(prev.runs).slice(-1)[0];
-  const p=ctx.partById[last.partId];
-  rec.runs=[{partId:last.partId, grade:last.grade||p?.grade||'', cavities:prodN(last.cavities)||prodN(p?.cavities)||1, fromSlot:0}];
+  const last=prev.runs[prev.runs.length-1], p=ctx.partById[last.partId];
+  rec.runs=[{...prodNewRun(ctx,p,prodN(last.cavities)), grade:last.grade||p?.grade||''}];
 }
 
 function prodPsRender(){
@@ -473,16 +449,13 @@ function prodPsRender(){
     ${row('Supervisor / Handover to',`<input class="fc" list="ps-names" value="${esc(rec.supervisor)}" oninput="prodPsHead('supervisor',this.value)">`)}
     ${row('Die coat used (L)',`<input class="fc" type="number" min="0" step="0.1" value="${esc(rec.dieCoatL)}" oninput="prodPsHead('dieCoatL',this.value)">`)}
   </div></div>
-  <div class="card"><div class="ch"><h5>2 · Part</h5>
-    <button class="btn btn-o btn-sm" onclick="prodPsAddRun()">➕ Part / grade change mid-shift</button></div>
+  <div class="card"><div class="ch"><h5>2 · Production (shift total)</h5>
+    <button class="btn btn-o btn-sm" onclick="prodPsAddRun()">➕ Add line — part change / cavity down</button></div>
     <div class="cb" id="ps-runs"></div></div>
-  <div class="card"><div class="ch"><h5>3 · Hourly production (shots)</h5>
-    <span style="font-size:11px;color:#6b7280">Enter total shots — Target, Pcs and Eff. are calculated. Tab moves along the row.</span></div>
-    <div class="tw" id="ps-hours"></div></div>
-  <div class="card"><div class="ch"><h5>4 · Off shots &amp; rejections (shift total per part)</h5>
-    <span style="font-size:11px;color:#6b7280">Enter off shots and rejected parts by type for the whole shift — OK parts and Rej % are calculated.</span></div>
+  <div class="card"><div class="ch"><h5>3 · Rejections (shift total, pcs)</h5>
+    <span style="font-size:11px;color:#6b7280">Enter rejected parts by type for the whole shift — OK parts and Rej % are calculated.</span></div>
     <div class="tw" id="ps-rej"></div></div>
-  <div class="card"><div class="ch"><h5>5 · Downtime / breakdown</h5>
+  <div class="card"><div class="ch"><h5>4 · Downtime / breakdown</h5>
     <button class="btn btn-o btn-sm" onclick="prodPsAddDown()">➕ Add downtime</button></div>
     <div class="cb" id="ps-down"></div></div>
   <div class="card"><div class="cb"><div class="fg" style="margin:0"><label class="lbl">Remarks</label>
@@ -495,50 +468,31 @@ function prodPsRender(){
     <button class="btn btn-p" onclick="prodPsSave(false)">💾 Save Day</button>
   </div>
   </div>`);
-  prodPsRenderRuns(); prodPsRenderHours(); prodPsRenderRej(); prodPsRenderDown(); prodPsRefresh();
+  prodPsRenderRuns(); prodPsRenderRej(); prodPsRenderDown(); prodPsRefresh();
 }
 
 function prodPsRenderRuns(){
   const {rec,ctx}=window._ps;
-  const ordered=prodRunRanges(rec.runs);
+  const num=(i,k,v,extra='')=>`<input class="fc mono" style="text-align:right" type="number" min="0" inputmode="numeric" value="${esc(v??'')}" oninput="prodPsRun(${i},'${k}',this.value)" ${extra}>`;
+  const r='text-align:right';
   document.getElementById('ps-runs').innerHTML=`<table>
-    <thead><tr><th>Part *</th><th style="width:150px">Grade</th><th style="width:100px">Cavities</th><th style="width:170px">From hour</th><th>Target CT · metal per part</th><th style="width:40px"></th></tr></thead>
-    <tbody>${ordered.map((r,k)=>{ const i=r._i, p=ctx.partById[r.partId], ct=prodCT(p,rec.machineId);
+    <thead><tr><th>Part *</th><th style="width:130px">Grade</th><th style="width:80px;${r}">Cavities</th><th style="width:110px;${r}">Total shots</th><th style="width:100px;${r}" title="Warm-up / trial shots scrapped">Off shots</th><th style="width:90px;${r}" title="(Total − off shots) × cavities">Pcs cast</th><th>Target CT · metal per part</th><th style="width:40px"></th></tr></thead>
+    <tbody>${rec.runs.map((x,i)=>{ const p=ctx.partById[x.partId], ct=prodCT(p,rec.machineId);
       return `<tr>
-      <td><select class="fc" onchange="prodPsRunPart(${i},this.value)">${prodOpts(ctx.parts.filter(x=>x.active!==false||String(x.id)===String(r.partId)),r.partId,{val:x=>x.id,label:prodPartLabel,blank:'— select part —'})}</select></td>
-      <td><select class="fc" onchange="prodPsRun(${i},'grade',this.value)">${prodOpts([...new Set([...ctx.grades,r.grade].filter(Boolean))],r.grade,{blank:'—'})}</select></td>
-      <td><input class="fc" type="number" min="1" value="${esc(r.cavities)}" oninput="prodPsRun(${i},'cavities',this.value)"></td>
-      <td>${k===0?`<input class="fc" disabled value="${prodSlotLabel(rec.shift,0)} (start)">`:
-        `<select class="fc" onchange="prodPsRun(${i},'fromSlot',+this.value,true)">${Array.from({length:PROD_SLOTS-1},(_,s)=>s+1).map(s=>`<option value="${s}" ${s===prodN(r.fromSlot)?'selected':''}>${prodSlotLabel(rec.shift,s)}</option>`).join('')}</select>`}</td>
+      <td><select class="fc" onchange="prodPsRunPart(${i},this.value)">${prodOpts(ctx.parts.filter(y=>y.active!==false||String(y.id)===String(x.partId)),x.partId,{val:y=>y.id,label:prodPartLabel,blank:'— select part —'})}</select></td>
+      <td><select class="fc" onchange="prodPsRun(${i},'grade',this.value)">${prodOpts([...new Set([...ctx.grades,x.grade].filter(Boolean))],x.grade,{blank:'—'})}</select></td>
+      <td>${num(i,'cavities',x.cavities,`min="1" id="ps-cv-${i}"`)}</td>
+      <td>${num(i,'shots',x.shots)}</td>
+      <td>${num(i,'offShots',x.offShots)}</td>
+      <td class="mono" style="${r}" id="ps-rc-${i}"></td>
       <td style="font-size:12px">${p?`${ct?ct+' s/shot':'<span style="color:#d97706">CT not set</span>'} · ${prodN(p.netWeightKg)?`${prodFmt(p.netWeightKg,3)} kg net → <b>${prodFmt(prodMetalPerPc(p.netWeightKg,ctx.cfg),3)} kg metal/pc</b>`:'<span style="color:#d97706">weight not set</span>'}`:''}</td>
       <td>${rec.runs.length>1?`<button class="btn btn-r btn-xs" title="Remove" onclick="prodPsDelRun(${i})">✕</button>`:''}</td></tr>`;}).join('')}
-    </tbody></table>
-    ${ctx.parts.length?'':`<div class="alert al-w" style="margin-top:8px"><span>No parts in the Part Master yet. <a href="#" onclick="event.preventDefault();nav('prod-parts')">Add parts →</a></span></div>`}`;
-}
-
-function prodPsRenderHours(){
-  const {rec}=window._ps;
-  const num=(i,f,v,extra='')=>`<input class="fc mono" style="padding:5px 6px;text-align:right" type="number" min="0" inputmode="numeric" value="${esc(v??'')}" oninput="${f}" ${extra}>`;
-  const r='text-align:right';
-  document.getElementById('ps-hours').innerHTML=`<table>
-    <thead><tr><th style="width:80px">Time</th><th>Part</th><th style="${r};width:64px">Target</th>
-      <th style="${r};width:90px">Total shots</th><th style="${r};width:64px" title="Cavities running this hour — pre-filled from the part; change it if a cavity is down">Cav</th>
-      <th style="${r};width:80px" title="Total shots × Cav">Pcs cast</th><th style="${r};width:58px">Down</th><th style="${r};width:58px">Eff.</th></tr></thead>
-    <tbody>${rec.hours.map((h,i)=>`<tr>
-      <td class="mono" style="font-weight:600">${prodSlotLabel(rec.shift,i)}</td>
-      <td style="font-size:11px;color:#6b7280;white-space:nowrap" id="ps-hp-${i}"></td>
-      <td class="mono" style="${r};color:#6b7280" id="ps-ht-${i}"></td>
-      <td>${num(i,`prodPsHour(${i},'total',this.value)`,h.total)}</td>
-      <td>${num(i,`prodPsHourCav(${i},this.value)`,'',`id="ps-hc-${i}" min="1" onblur="prodPsRefresh()"`)}</td>
-      <td class="mono" style="${r}" id="ps-hpc-${i}"></td>
-      <td class="mono" style="${r}" id="ps-hd-${i}"></td>
-      <td class="mono" style="${r};font-weight:600" id="ps-he-${i}"></td></tr>`).join('')}
     </tbody>
-    <tfoot><tr style="font-weight:700;background:#f6f8fc">
-      <td colspan="2">TOTAL</td><td class="mono" style="${r}" id="ps-tt"></td><td class="mono" style="${r}" id="ps-ts"></td><td></td>
-      <td class="mono" style="${r}" id="ps-tpc"></td><td class="mono" style="${r}" id="ps-td"></td><td class="mono" style="${r}" id="ps-te"></td></tr></tfoot>
-  </table>
-  <div style="font-size:11px;color:#6b7280;padding:6px 12px">Target = 3600 ÷ target cycle time. Cav is pre-filled from the part — change it for hours when a cavity is down. Pcs cast = total shots × Cav. Eff. = shots × cycle time ÷ time available in the hour (60 min − downtime logged against it).</div>`;
+    ${rec.runs.length>1?`<tfoot><tr style="font-weight:700;background:#f6f8fc"><td colspan="3">TOTAL</td>
+      <td class="mono" style="${r}" id="ps-rts"></td><td class="mono" style="${r}" id="ps-rtf"></td><td class="mono" style="${r}" id="ps-rtc2"></td><td colspan="2"></td></tr></tfoot>`:''}
+    </table>
+    <div style="font-size:11px;color:#6b7280;margin-top:8px">Part changed or a cavity broke mid-shift? Add a line — for a cavity down, keep the same part, lower the cavities and enter the shots made after it. Running with a cavity down counts as a Performance loss.</div>
+    ${ctx.parts.length?'':`<div class="alert al-w" style="margin-top:8px"><span>No parts in the Part Master yet. <a href="#" onclick="event.preventDefault();nav('prod-parts')">Add parts →</a></span></div>`}`;
 }
 
 // One row per part run: rejected pcs by type, keyed as shift totals.
@@ -546,42 +500,38 @@ function prodPsRenderRej(){
   const {rec,ctx,codes}=window._ps;
   const others=ctx.defects.filter(d=>!codes.includes(d.code));
   const dname=c=>ctx.defectByCode[c]?.description||c;
-  const ordered=prodRunRanges(rec.runs), multi=ordered.length>1;
+  const multi=rec.runs.length>1;
   const r='text-align:right';
   document.getElementById('ps-rej').innerHTML=`<table>
-    <thead><tr><th>Part</th><th style="${r};width:72px">Shots</th><th style="${r};width:84px" title="Warm-up / trial shots scrapped, for the whole shift">Off shots</th><th style="${r};width:84px" title="(Shots − off shots) × cavities">Pcs cast</th>
+    <thead><tr><th>Part</th><th style="${r};width:84px" title="(Shots − off shots) × cavities">Pcs cast</th>
       ${codes.map(c=>`<th style="${r};width:84px" title="${esc(dname(c))}">${esc(dname(c))}</th>`).join('')}
       <th style="${r};width:76px">Rejected</th><th style="${r};width:76px">OK pcs</th><th style="${r};width:64px">Rej %</th></tr></thead>
-    <tbody>${ordered.map(x=>{ const i=x._i, p=ctx.partById[x.partId];
+    <tbody>${rec.runs.map((x,i)=>{ const p=ctx.partById[x.partId];
       return `<tr>
-      <td style="white-space:nowrap">${p?esc(prodPartLabel(p)):'<span style="color:#9ca3af">— select part —</span>'}${multi?`<div style="font-size:11px;color:#6b7280">${prodSlotLabel(rec.shift,x.from).slice(0,2)}–${prodSlotLabel(rec.shift,x.to).slice(3)}</div>`:''}</td>
-      <td class="mono" style="${r};color:#6b7280" id="ps-rs-${i}"></td>
-      <td><input class="fc mono" style="padding:5px 6px;text-align:right" type="number" min="0" inputmode="numeric" value="${esc(rec.runs[i].offShots??'')}" oninput="prodPsRun(${i},'offShots',this.value)"></td>
-      <td class="mono" style="${r}" id="ps-rc-${i}"></td>
+      <td style="white-space:nowrap">${p?esc(prodPartLabel(p)):'<span style="color:#9ca3af">— select part —</span>'}${multi?`<div style="font-size:11px;color:#6b7280" id="ps-rl-${i}"></div>`:''}</td>
+      <td class="mono" style="${r}" id="ps-rcr-${i}"></td>
       ${codes.map(c=>`<td><input class="fc mono" style="padding:5px 6px;text-align:right" type="number" min="0" inputmode="numeric" value="${esc(rec.runs[i].rej?.[c]??'')}" oninput="prodPsRunRej(${i},'${esc(c)}',this.value)"></td>`).join('')}
       <td class="mono" style="${r};color:#dc2626" id="ps-rr-${i}"></td>
       <td class="mono" style="${r};font-weight:700;color:#16a34a" id="ps-ro-${i}"></td>
       <td class="mono" style="${r}" id="ps-rp-${i}"></td></tr>`;}).join('')}
     </tbody>
     ${multi?`<tfoot><tr style="font-weight:700;background:#f6f8fc">
-      <td>TOTAL</td><td class="mono" style="${r};color:#6b7280" id="ps-rts"></td><td class="mono" style="${r}" id="ps-rtf"></td><td class="mono" style="${r}" id="ps-rtc"></td>
+      <td>TOTAL</td><td class="mono" style="${r}" id="ps-rtc"></td>
       ${codes.map(c=>`<td class="mono" style="${r}" id="ps-rtd-${esc(c)}"></td>`).join('')}
       <td class="mono" style="${r};color:#dc2626" id="ps-rtr"></td><td class="mono" style="${r};color:#16a34a" id="ps-rto"></td><td class="mono" style="${r}" id="ps-rtp"></td></tr></tfoot>`:''}
   </table>
   <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 12px;gap:10px;flex-wrap:wrap">
-    <span style="font-size:11px;color:#6b7280">Pcs cast = (shots − off shots) × cavities. OK pcs = pcs cast − rejected. Rej % = rejected ÷ pcs cast.</span>
+    <span style="font-size:11px;color:#6b7280">Pcs cast = (total − off shots) × cavities. OK pcs = pcs cast − rejected. Rej % = rejected ÷ pcs cast.</span>
     ${others.length?`<select class="fc" style="width:190px" onchange="if(this.value){window._ps.codes.push(this.value);prodPsRenderRej();prodPsRefresh();}"><option value="">+ add rejection type column…</option>${others.map(d=>`<option value="${esc(d.code)}">${esc(d.description)}</option>`).join('')}</select>`:''}
   </div>`;
 }
 
 function prodPsRenderDown(){
   const {rec}=window._ps;
-  const slots=[{v:'',l:'— whole shift / not specific —'},...Array.from({length:PROD_SLOTS},(_,s)=>({v:s,l:prodSlotLabel(rec.shift,s)}))];
   document.getElementById('ps-down').innerHTML=(rec.downtime.length?`<table>
-    <thead><tr><th>Reason</th><th style="width:190px">Hour</th><th style="width:100px">Minutes</th><th>Remark</th><th style="width:40px"></th></tr></thead>
+    <thead><tr><th>Reason</th><th style="width:100px">Minutes</th><th>Remark</th><th style="width:40px"></th></tr></thead>
     <tbody>${rec.downtime.map((d,i)=>`<tr>
       <td><select class="fc" onchange="prodPsDown(${i},'category',this.value)">${prodOpts(PROD_DOWN_CATS,d.category)}</select></td>
-      <td><select class="fc" onchange="prodPsDown(${i},'slot',this.value===''?'':+this.value)">${slots.map(s=>`<option value="${s.v}" ${String(s.v)===String(d.slot??'')?'selected':''}>${s.l}</option>`).join('')}</select></td>
       <td><input class="fc" type="number" min="0" value="${esc(d.minutes)}" oninput="prodPsDown(${i},'minutes',this.value)"></td>
       <td><input class="fc" value="${esc(d.remark||'')}" oninput="prodPsDown(${i},'remark',this.value,false)"></td>
       <td><button class="btn btn-r btn-xs" onclick="prodPsDelDown(${i})">✕</button></td></tr>`).join('')}
@@ -592,56 +542,39 @@ function prodPsRefresh(){
   const {rec,ctx,codes}=window._ps;
   const c=prodCalc(rec,ctx), t=c.t;
   const set=(id,h)=>{ const e=document.getElementById(id); if(e) e.innerHTML=h; };
-  const tot={tgt:0,shots:0,pcs:0,down:0};
-  c.hours.forEach((h,i)=>{
-    const has=h.total, pcs=h.total*(h.cavEff||0);
-    set(`ps-hp-${i}`, esc(h.run?.part?.partNumber||''));
-    set(`ps-ht-${i}`, h.target??'—');
-    set(`ps-hpc-${i}`, has? prodFmt(pcs) : '');
-    const ci=document.getElementById(`ps-hc-${i}`), over=prodN(rec.hours[i].cav)>0;
-    if(ci){
-      if(document.activeElement!==ci) ci.value=h.cavEff??'';
-      ci.style.background=over?'#fef3c7':''; ci.title=over?`Changed from ${h.run?.cav} — clear to use the part's cavities`:'';
-    }
-    set(`ps-hd-${i}`, h.down||'');
-    set(`ps-he-${i}`, h.eff==null||!h.total&&!h.down?'':`<span style="color:${prodTier(h.eff,.9,.75)}">${Math.round(h.eff*100)}%</span>`);
-    tot.tgt+=h.target||0; tot.shots+=h.total; tot.pcs+=pcs; tot.down+=h.down;
-  });
-  set('ps-tt',tot.tgt?prodFmt(tot.tgt):'—'); set('ps-ts',prodFmt(tot.shots));
-  set('ps-tpc',prodFmt(tot.pcs)); set('ps-td',tot.down?prodFmt(tot.down):'');
-  set('ps-te',tot.tgt?`${prodPct(t.shots&&t.runtime?t.pRaw:NaN,0)}`:'');
-
-  // Rejections per part (shift totals, pcs)
+  // Per line: pcs cast, rejections, OK
   const good=r=>Math.max(0,r.castPcs-r.offPcs), rt={shots:0,off:0,cast:0,rej:0,ok:0,codes:{}};
   c.runs.forEach(r=>{
     const g=good(r), has=g||r.rejPcs||r.off;
-    set(`ps-rs-${r._i}`, r.shots? prodFmt(r.shots) : '');
-    set(`ps-rc-${r._i}`, has? prodFmt(g) : '');
+    set(`ps-rc-${r._i}`, has? prodFmt(g) : ''); set(`ps-rcr-${r._i}`, has? prodFmt(g) : '');
+    set(`ps-rl-${r._i}`, `line ${r._i+1} · ${prodFmt(r.cav)} cav`);
+    const cv=document.getElementById(`ps-cv-${r._i}`), down=r.part&&r.cav<r.dieCav;       // cavity down: highlight
+    if(cv){ cv.style.background=down?'#fef3c7':''; cv.title=down?`Die has ${r.dieCav} cavities — running with a cavity down`:''; }
     set(`ps-rr-${r._i}`, has? prodFmt(r.rejPcs) : '');
     set(`ps-ro-${r._i}`, has? prodFmt(r.okPcs) : '');
     set(`ps-rp-${r._i}`, g? `<span style="color:${prodTier(1-r.rejPcs/g,.97,.93)}">${prodPct(r.rejPcs/g)}</span>` : '');
     rt.shots+=r.shots; rt.off+=r.off; rt.cast+=g; rt.rej+=r.rejPcs; rt.ok+=r.okPcs;
     for(const [k,n] of Object.entries(r.rej)) rt.codes[k]=(rt.codes[k]||0)+n;
   });
-  set('ps-rts',prodFmt(rt.shots)); set('ps-rtf',prodFmt(rt.off)); set('ps-rtc',prodFmt(rt.cast)); set('ps-rtr',prodFmt(rt.rej)); set('ps-rto',prodFmt(rt.ok));
+  set('ps-rts',prodFmt(rt.shots)); set('ps-rtf',prodFmt(rt.off)); set('ps-rtc',prodFmt(rt.cast)); set('ps-rtc2',prodFmt(rt.cast)); set('ps-rtr',prodFmt(rt.rej)); set('ps-rto',prodFmt(rt.ok));
   set('ps-rtp',rt.cast?prodPct(rt.rej/rt.cast):'');
   codes.forEach(k=>set(`ps-rtd-${k}`,prodFmt(rt.codes[k]||0)));
 
   const warn=[];
-  if(t.shotsNoCT) warn.push('Target cycle time missing for a part on this machine — Target and Performance/OEE can\'t be calculated. Set it in Part Master.');
+  if(t.shotsNoCT) warn.push('Target cycle time missing for a part on this machine — Performance/OEE can\'t be calculated. Set it in Part Master.');
   if(t.shotsNoWt) warn.push('Net weight missing for a part — metal consumption understated.');
   if(c.runs.some(r=>!r.partId)) warn.push('Select a part.');
-  if(rec.runs.some((r,i)=>prodN(r.offShots)>(c.runs.find(x=>x._i===i)?.shots||0))) warn.push('A part has more off shots than shots.');
+  if(rec.runs.some(r=>prodN(r.offShots)>prodN(r.shots))) warn.push('A line has more off shots than total shots.');
   if(c.runs.some(r=>r.rejPcs>Math.max(0,r.castPcs-r.offPcs))) warn.push('A part has more rejected pcs than pcs cast.');
-  if(t.pRaw>1.02) warn.push(`Shots exceed target rate (${prodPct(t.pRaw,0)}) — check shot counts or the target cycle time.`);
+  if(t.pRaw>1.02) warn.push(`Shots exceed target rate (${prodPct(t.pRaw,0)}) — check total shots, downtime or the target cycle time.`);
   set('pd-tabs',prodPdTabsHtml());
 
   const grades=Object.entries(c.byGrade).filter(([,g])=>g.castPcs>0);
-  const cavs=new Set(c.hours.filter(h=>h.total).map(h=>h.cavEff));
+  const cavs=new Set(c.runs.filter(r=>r.shots).map(r=>r.cav));
   const cavNote=cavs.size===1? `× ${[...cavs][0]} cav` : '';
   const tile=(l,v,col)=>`<div style="background:#f6f8fc;border-radius:8px;padding:10px 12px"><div style="font-size:20px;font-weight:700;${col?`color:${col}`:''}">${v}</div><div style="font-size:11px;color:#6b7280">${l}</div></div>`;
   const kv=(l,v)=>`<span>${l}</span><b class="mono" style="text-align:right">${v}</b>`;
-  set('ps-sum',`<div class="card"><div class="ch"><h5>6 · Shift result</h5></div><div class="cb" style="font-size:12.5px">
+  set('ps-sum',`<div class="card"><div class="ch"><h5>5 · Shift result</h5></div><div class="cb" style="font-size:12.5px">
     ${warn.map(w=>`<div class="alert al-w" style="font-size:12px;margin-bottom:6px">⚠️ ${w}</div>`).join('')}
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px">
       ${tile('Total OK shots',prodFmt(t.okShots),'#16a34a')}
@@ -655,7 +588,7 @@ function prodPsRefresh(){
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px">
       <div style="display:grid;grid-template-columns:1fr auto;gap:3px 10px;align-content:start">
-        ${kv('Target shots',tot.tgt?prodFmt(tot.tgt):'—')}${kv('Actual shots',prodFmt(t.shots))}
+        ${kv('Target shots (run time ÷ CT)',t.tgtCT&&!t.shotsNoCT?prodFmt(Math.floor(t.runtime*60/t.tgtCT)):'—')}${kv('Actual shots',prodFmt(t.shots))}
         ${kv('OK shots',prodFmt(t.okShots))}${kv('Rejected shots (incl. off)',prodFmt(t.shots-t.okShots))}
         ${kv('Cycle time act / target',`${t.actCT?t.actCT.toFixed(1):'—'} / ${t.tgtCT?t.tgtCT.toFixed(1):'—'} s`)}
       </div>
@@ -663,7 +596,8 @@ function prodPsRefresh(){
         <span style="grid-column:span 2;font-weight:600;font-size:11px;color:#6b7280">WHERE THE ${prodFmt(t.planned)} MIN WENT</span>
         ${kv('Good parts',prodFmt(Math.max(0,t.idealMin-t.qualLossMin))+' min')}
         ${kv('Quality loss',prodFmt(t.qualLossMin)+' min')}
-        ${kv('Speed loss',(t.shotsNoCT?'—':prodFmt(t.perfLossMin))+' min')}
+        ${kv('Speed loss',(t.shotsNoCT?'—':prodFmt(t.speedLossMin))+' min')}
+        ${t.cavLossMin?kv('Cavity down',prodFmt(t.cavLossMin)+' min'):''}
         ${kv('Downtime',prodFmt(t.downtime)+' min')}
       </div>
       <div style="display:grid;grid-template-columns:1fr auto;gap:3px 10px;align-content:start">
@@ -679,13 +613,6 @@ function prodPsRefresh(){
 
 // ── state setters ────────────────────────────────────
 function prodPsHead(k,v){ window._ps.rec[k]=v; prodPsRefresh(); }
-function prodPsHour(i,k,v){ window._ps.rec.hours[i][k]=v; prodPsRefresh(); }
-// Store a cavity override only when it differs from the part's cavities
-function prodPsHourCav(i,v){
-  const {rec,ctx}=window._ps, r=prodCalc(rec,ctx).hours[i].run;
-  rec.hours[i].cav=(v===''||prodN(v)===r?.cav)? '' : v;
-  prodPsRefresh();
-}
 function prodPsRunRej(i,code,v){ const r=window._ps.rec.runs[i]; r.rej=r.rej||{}; r.rej[code]=v; prodPsRefresh(); }
 function prodPsRun(i,k,v,rerender=false){ window._ps.rec.runs[i][k]=v; if(rerender){ prodPsRenderRuns(); prodPsRenderRej(); } prodPsRefresh(); }
 function prodPsRunPart(i,pid){
@@ -693,20 +620,18 @@ function prodPsRunPart(i,pid){
   Object.assign(rec.runs[i],{partId:pid?+pid:'', grade:p?.grade||rec.runs[i].grade, cavities:prodN(p?.cavities)||rec.runs[i].cavities||1});
   prodPsRenderRuns(); prodPsRenderRej(); prodPsRefresh();
 }
+// New line: same part with one cavity fewer (the usual "cavity down" case);
+// picking another part resets it to that part's cavities.
 function prodPsAddRun(){
-  const {rec,ctx}=window._ps;
-  const ordered=prodRunRanges(rec.runs), last=ordered[ordered.length-1];
-  if(last.to<=last.from){ toast('The last part only covers one hour — move its start first','w'); return; }
-  const from=Math.min(PROD_SLOTS-1,Math.max(last.from+1,Math.round((last.from+PROD_SLOTS)/2)));
-  rec.runs.push(prodNewRun(ctx,ctx.partById[last.partId],from));
+  const {rec,ctx}=window._ps, last=rec.runs[rec.runs.length-1];
+  rec.runs.push({...prodNewRun(ctx,ctx.partById[last.partId],Math.max(1,prodN(last.cavities)-1)), grade:last.grade});
   prodPsRenderRuns(); prodPsRenderRej(); prodPsRefresh();
 }
 function prodPsDelRun(i){
   const rec=window._ps.rec; rec.runs.splice(i,1);
-  const first=prodRunRanges(rec.runs)[0]; if(first) rec.runs[first._i].fromSlot=0;
   prodPsRenderRuns(); prodPsRenderRej(); prodPsRefresh();
 }
-function prodPsAddDown(){ window._ps.rec.downtime.push({category:PROD_DOWN_CATS[0],slot:'',minutes:'',remark:''}); prodPsRenderDown(); prodPsRefresh(); }
+function prodPsAddDown(){ window._ps.rec.downtime.push({category:PROD_DOWN_CATS[0],minutes:'',remark:''}); prodPsRenderDown(); prodPsRefresh(); }
 function prodPsDown(i,k,v,refresh=true){ window._ps.rec.downtime[i][k]=v; if(refresh) prodPsRefresh(); }
 function prodPsDelDown(i){ window._ps.rec.downtime.splice(i,1); prodPsRenderDown(); prodPsRefresh(); }
 
@@ -714,11 +639,9 @@ function prodPsDelDown(i){ window._ps.rec.downtime.splice(i,1); prodPsRenderDown
 function prodSheetError(x){
   const {rec,ctx}=x;
   if(rec.runs.some(r=>!r.partId)) return 'select a part';
-  const starts=rec.runs.map(r=>prodN(r.fromSlot));
-  if(new Set(starts).size!==starts.length) return 'two parts start in the same hour';
   const c=prodCalc(rec,ctx);
-  const offRun=c.runs.find(r=>prodN(rec.runs[r._i].offShots)>r.shots);
-  if(offRun) return `${offRun.part?.partNumber||'a part'}: off shots are more than shots`;
+  const offRun=c.runs.find(r=>prodN(r.offShots)>r.shots);
+  if(offRun) return `${offRun.part?.partNumber||'a part'}: off shots are more than total shots`;
   const badRun=c.runs.find(r=>r.rejPcs>Math.max(0,r.castPcs-r.offPcs));
   if(badRun) return `${badRun.part?.partNumber||'a part'}: rejected pcs are more than pcs cast`;
   return '';
@@ -731,15 +654,14 @@ function prodSheetClean(x){
     operator1:(rec.operator1||'').trim(), operator2:(rec.operator2||'').trim(), supervisor:(rec.supervisor||'').trim(),
     plannedMinutes:prodN(rec.plannedMinutes)||prodN(ctx.cfg.plannedMinutes)||720,
     dieCoatL:numOrBlank(rec.dieCoatL),
-    hours:rec.hours.map(h=>({total:numOrBlank(h.total), cav:numOrBlank(h.cav)})),
-    runs:prodRunRanges(rec.runs).map((r,k)=>{
-      const run={partId:+r.partId, grade:r.grade||ctx.partById[r.partId]?.grade||'', cavities:prodN(r.cavities)||prodN(ctx.partById[r.partId]?.cavities)||1, fromSlot:k===0?0:prodN(r.fromSlot)};
+    runs:rec.runs.map(r=>{
+      const run={partId:+r.partId, grade:r.grade||ctx.partById[r.partId]?.grade||'', cavities:prodN(r.cavities)||prodN(ctx.partById[r.partId]?.cavities)||1, shots:prodN(r.shots)};
       if(prodN(r.offShots)) run.offShots=prodN(r.offShots);                          // shift total, shots
       const rej={}; for(const [k,v] of Object.entries(r.rej||{})) if(prodN(v)>0) rej[k]=prodN(v);
       if(Object.keys(rej).length) run.rej=rej;                                        // shift total, pcs
       return run;
     }),
-    downtime:rec.downtime.filter(d=>prodN(d.minutes)>0).map(d=>({category:d.category, slot:d.slot===''||d.slot==null?'':prodN(d.slot), minutes:prodN(d.minutes), remark:(d.remark||'').trim()})),
+    downtime:rec.downtime.filter(d=>prodN(d.minutes)>0).map(d=>({category:d.category, minutes:prodN(d.minutes), remark:(d.remark||'').trim()})),
     remarks:(rec.remarks||'').trim(),
     updatedAt:new Date().toISOString(), updatedBy:Auth.user?.name||'',
   };
@@ -824,7 +746,6 @@ const PROD_REPORT_CSS=`<style>
 .pr-note{font-size:11.5px;color:#6b7280;padding:0 16px 12px}
 .pr-warn{font-size:12px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:7px 12px;margin-bottom:12px}
 .pr-empty{color:#9ca3af;text-align:center;padding:22px;font-size:12.5px}
-.pr-heat td{text-align:center;font-size:12px;font-weight:600;border-radius:6px}
 .pr-dot{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:6px;vertical-align:0}
 @media (max-width:1000px){.pr-kpis{grid-template-columns:repeat(2,1fr)}.pr-grid{grid-template-columns:1fr}}
 </style>`;
@@ -899,18 +820,11 @@ function prodPickPart(c,partId){
 function prodRepOEE(ctx,rows){
   if(!rows.length) return PROD_EMPTY;
   const agg=prodAgg(rows.map(r=>r.c)), t=agg.t;
-  const good=Math.max(0,t.idealMin-t.qualLossMin), speed=t.shotsNoCT?0:t.perfLossMin;
-  const split=[['Good parts',good,'#16a34a'],['Speed loss',speed,'#d97706'],['Quality loss',t.qualLossMin,'#dc2626'],['Downtime',t.downtime,'#94a3b8']];
+  const good=Math.max(0,t.idealMin-t.qualLossMin), speed=t.shotsNoCT?0:t.speedLossMin;
+  const split=[['Good parts',good,'#16a34a'],['Speed loss',speed,'#d97706'],['Cavity down',t.cavLossMin,'#a855f7'],['Quality loss',t.qualLossMin,'#dc2626'],['Downtime',t.downtime,'#94a3b8']].filter(p=>p[0]!=='Cavity down'||p[1]>0);
   const tot=split.reduce((s,p)=>s+p[1],0)||1;
   const downRows=Object.entries(agg.byDown).sort((a,b)=>b[1]-a[1]).map(([k,v])=>({label:k,value:v,display:prodHrs(v)}));
   const byMachine=ctx.machines.map(m=>({m,a:prodAgg(rows.filter(r=>String(r.s.machineId)===String(m.id)).map(r=>r.c)).t})).filter(x=>x.a.planned);
-
-  // average efficiency for each hour of the shift
-  const slotEff={};
-  for(const {s,c} of rows) c.hours.forEach((h,i)=>{ if(h.eff==null||(!h.shots&&!h.down)) return;
-    const a=(slotEff[s.shift]=slotEff[s.shift]||Array.from({length:PROD_SLOTS},()=>({ideal:0,avail:0})));
-    a[i].ideal+=h.shots*h.ct/60; a[i].avail+=Math.max(0,60-h.down); });
-  const heat=e=>e==null?'background:#f6f8fc;color:#9ca3af':e>=.9?'background:#dcfce7;color:#166534':e>=.75?'background:#fef3c7;color:#92400e':'background:#fee2e2;color:#991b1b';
 
   const topDown=downRows[0];
   return `
@@ -928,7 +842,7 @@ function prodRepOEE(ctx,rows){
     <div style="display:flex;gap:24px;flex-wrap:wrap;margin-top:10px;font-size:12.5px">
       ${split.map(([l,v,c])=>`<div><span class="pr-dot" style="background:${c}"></span>${l} <b>${prodHrs(v)}</b> <span style="color:#6b7280">${prodPct(v/tot,0)}</span></div>`).join('')}
     </div></div>
-    <div class="pr-note">Speed loss = running slower than target cycle time or small stops. Quality loss = time spent on off shots and rejected parts.</div>`,
+    <div class="pr-note">Speed loss = running slower than target cycle time or small stops. Cavity down = time lost running with fewer cavities than the die has. Quality loss = time spent on off shots and rejected parts.</div>`,
     `${prodHrs(t.planned)} planned`)}
   <div class="pr-grid">
     ${prodCard('Downtime by reason',`<div class="b">${downRows.length?prodBars(downRows):'<div class="pr-empty">No downtime recorded.</div>'}</div>`,prodHrs(t.downtime))}
@@ -938,12 +852,6 @@ function prodRepOEE(ctx,rows){
         <td class="n mono">${prodPct(a.A)}</td><td class="n mono">${prodPct(a.P)}</td><td class="n mono">${prodPct(a.Q)}</td>
         <td class="n mono">${prodFmt(a.okPcs)}</td></tr>`).join('')}</tbody></table>`)}
   </div>
-  ${prodCard('Efficiency through the shift',`<div class="b"><table class="pr-heat" style="border-collapse:separate;border-spacing:3px">
-    <thead><tr><th style="background:none;color:#6b7280;width:70px"></th>${Array.from({length:PROD_SLOTS},(_,i)=>`<th style="background:none;color:#6b7280;text-align:center;font-weight:500">${i+1}</th>`).join('')}</tr></thead>
-    <tbody>${Object.keys(PROD_SHIFTS).filter(k=>slotEff[k]).map(k=>`<tr><td style="text-align:left;font-weight:600;color:#374151">Shift ${k}</td>${slotEff[k].map((a,i)=>{
-      const e=a.avail?a.ideal/a.avail:null;
-      return `<td style="${heat(e)};padding:7px 0" title="${prodSlotLabel(k,i)}">${e==null?'—':Math.round(e*100)+'%'}</td>`;}).join('')}</tr>`).join('')||`<tr><td colspan="13" class="pr-empty">Needs target cycle times.</td></tr>`}</tbody>
-  </table></div><div class="pr-note">Average efficiency in each hour of the shift (1 = first hour). A weak first hour usually means slow start-up or die heating.</div>`,'hour of shift')}
   ${prodCard('Shift by shift',`<table class="pr-tbl"><thead><tr><th>Date</th><th>Machine · Shift</th><th class="n">OK parts</th><th class="n">Downtime</th><th class="n">OEE</th><th>Biggest downtime</th></tr></thead>
     <tbody>${rows.map(({s,c},k)=>{ const x=c.t, top=Object.entries(c.byDown).sort((a,b)=>b[1]-a[1])[0], first=k===0||rows[k-1].s.date!==s.date;
       return `<tr class="${first&&k?'grp':''}"><td class="mono">${first?esc(s.date):''}</td>
@@ -1086,9 +994,9 @@ function prodRepCustomers(ctx,rows){
 // ── Capacity ─────────────────────────────────────────
 // Available  = working days × shifts × hours (per machine, per month).
 // Load       = hours the machine needs for the work, at a given OEE:
-//              ideal hours (good shots × target cycle time) ÷ OEE.
+//              ideal hours (good parts × target cycle time ÷ cavities) ÷ OEE.
 //   • Schedule: monthly pcs per part (Part Master) ÷ cavities × CT.
-//   • Last 30 days: OK shots actually made × CT (from shift entries),
+//   • Last 30 days: OK parts actually made × CT ÷ cavities (from shift entries),
 //     averaged per day with entries and scaled to the working days.
 // Free       = Available − Load; sellable = free hours × OEE ÷ CT × cavities.
 async function prodCapData(ctx){
@@ -1102,7 +1010,7 @@ async function prodCapData(ctx){
     const t=prodAgg(mine.map(r=>r.c)).t;
     // good-part hours at target cycle time over the last 30 days
     let histIdeal=0;
-    for(const {c} of mine) for(const r of c.runs) if(r.ct) histIdeal+=r.okShots*r.ct/3600;
+    for(const {c} of mine) for(const r of c.runs) if(r.ct) histIdeal+=r.okPcs*r.ct/r.dieCav/3600;
     if(days) histIdeal=histIdeal/days*prodN(cfg.workDays);          // per-day average → one month
     const actual=t.oee>0? t.oee : null;
     const sched=ctx.parts.filter(p=>p.active!==false&&prodN(p.monthlySchedule)>0&&String(prodSchedMachine(p,ctx))===String(m.id));
@@ -1546,7 +1454,7 @@ async function prodRenderParts(){
   <div class="ph"><h2>🔩 Production Part Master</h2>
     <div style="display:flex;gap:8px"><button class="btn btn-o" onclick="prodImportPqParts()">⤓ Import from Process Quality parts</button>
     <button class="btn btn-p" onclick="prodOpenPart()">➕ Add Part</button></div></div>
-  <div class="alert al-w" style="background:#f6f8fc;border-color:var(--border);color:#374151">ℹ️ Net weight drives metal consumption; target cycle time (seconds per shot, per machine) drives Performance / OEE and hourly targets.</div>
+  <div class="alert al-w" style="background:#f6f8fc;border-color:var(--border);color:#374151">ℹ️ Net weight drives metal consumption; target cycle time (seconds per shot, per machine) drives Performance / OEE (target time per part = cycle time ÷ cavities, so running with a cavity down shows as a loss).</div>
   <div class="card"><div class="tw"><table>
     <thead><tr><th>Part No.</th><th>Part Name</th><th>Customer</th><th>Grade</th><th style="text-align:right">Net wt (kg)</th><th style="text-align:right">Metal/pc +${prodFmt(ctx.cfg.meltLossPct,1)}% (kg)</th><th style="text-align:right">Cavities</th>
       ${mcs.map(m=>`<th style="text-align:right">CT ${esc(m.code)} (s)</th>`).join('')}<th>Status</th><th></th></tr></thead>
@@ -1703,30 +1611,33 @@ async function prodDemoGenerate(){
       if(existing.has(`${date}|${m.id}|${sh}`)) continue;
       const main=plan[mi][Math.floor(rnd()*plan[mi].length)], alt=plan[mi].find(x=>x!==main);
       const change=rnd()<.25? 5+Math.floor(rnd()*5) : 0;
-      const run=(id,fromSlot)=>({partId:id, grade:defById[id]?.grade||'', cavities:defById[id]?.cavities||1, fromSlot});
-      const runs=[run(main,0)];
-      if(change&&alt) runs.push(run(alt,change));
+      // Simulated hour by hour, keyed as shift totals: one line per part and
+      // cavity count (a cavity going down mid-shift becomes a second line)
+      const lines=[];
+      const line=(id,cav)=>{ let l=lines.find(x=>x.partId===id&&x.cavities===cav);
+        if(!l) lines.push(l={partId:id, grade:defById[id]?.grade||'', cavities:cav, shots:0});
+        return l; };
       const downtime=[];
       const nDown=rnd()<.25?0:1+Math.floor(rnd()*2);
-      for(let k=0;k<nDown;k++) downtime.push({category:cats[Math.floor(rnd()*rnd()*cats.length)], slot:Math.floor(rnd()*12), minutes:10+Math.round(rnd()*50), remark:''});
-      if(change) downtime.push({category:'Die Loading / Unloading', slot:change, minutes:25+Math.round(rnd()*20), remark:'Part change'});
+      for(let k=0;k<nDown;k++) downtime.push({category:cats[Math.floor(rnd()*rnd()*cats.length)], hour:Math.floor(rnd()*12), minutes:10+Math.round(rnd()*50), remark:''});
+      if(change&&alt) downtime.push({category:'Die Loading / Unloading', hour:change, minutes:25+Math.round(rnd()*20), remark:'Part change'});
       const cavDropFrom=rnd()<.12? 6+Math.floor(rnd()*4) : 99;
-      const hours=Array.from({length:12},(_,i)=>{
-        const run=i>=change&&change? alt : main, dp=defById[run]||PROD_DEMO_PARTS[0];
-        const ct=dp.ct[mi]??dp.ct[0], down=downtime.filter(x=>x.slot===i).reduce((s,x)=>s+x.minutes,0);
+      for(let i=0;i<12;i++){
+        const id=i>=change&&change&&alt? alt : main, dp=defById[id]||PROD_DEMO_PARTS[0];
+        const ct=dp.ct[mi]??dp.ct[0], down=downtime.filter(x=>x.hour===i).reduce((s,x)=>s+x.minutes,0);
         const avail=Math.max(0,60-down), speed=.84+rnd()*.14;
         const total=Math.max(0,Math.round(avail*60/ct*speed*(i===0?.7:1)));
-        const cav=i>=cavDropFrom&&dp.cavities>1? 1 : '';
-        // rejections are keyed per part for the whole shift, in pcs
-        const r=runs[runs.length>1&&i>=change?1:0]; r.rej=r.rej||{};
-        const nRej=Math.round(total*(cav||dp.cavities||1)*(.004+rnd()*.03));
-        for(let k=0;k<nRej;k++){ const c=pickDefect(); r.rej[c]=(r.rej[c]||0)+1; }
+        const cav=i>=cavDropFrom&&dp.cavities>1? dp.cavities-1 : dp.cavities;
+        const l=line(id,cav); l.shots+=total; l.rej=l.rej||{};
+        const nRej=Math.round(total*cav*(.004+rnd()*.03));
+        for(let k=0;k<nRej;k++){ const c=pickDefect(); l.rej[c]=(l.rej[c]||0)+1; }
         const off=i===0||i===change? Math.min(total,Math.round(2+rnd()*6)) : 0;   // warm-up after start / die change
-        if(off) r.offShots=prodN(r.offShots)+off;
-        return {total, cav};
-      });
+        if(off) l.offShots=prodN(l.offShots)+off;
+      }
+      const runs=lines.filter(l=>l.shots);
+      downtime.forEach(x=>delete x.hour);
       await db.prodShifts.add({date, shift:sh, machineId:m.id, operator1:names[mi][0], operator2:names[mi][1], supervisor:'',
-        plannedMinutes:720, dieCoatL:4, hours, runs, downtime, remarks:'Sample data', demo:true,
+        plannedMinutes:720, dieCoatL:4, runs, downtime, remarks:'Sample data', demo:true,
         createdAt:new Date().toISOString(), createdBy:Auth.user?.name||''});
       made++;
     }
