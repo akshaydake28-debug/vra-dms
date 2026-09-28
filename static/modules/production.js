@@ -23,9 +23,11 @@ const PROD_SHIFTS = {
 };
 const PROD_DOWN_CATS = ['Die Loading / Unloading','Die Maintenance','Machine & Furnace Maintenance',
   'Melting / Metal Not Ready','Shot End Component','Spray Gun / Die Coat','Central Compressor','Crane',
-  'Power Cut','Manpower','Material Shortage','No Plan','Quality Hold','Other'];
+  'Power Cut','Manpower','Material Shortage','No Plan','Plan Completed','Quality Hold','Other'];
+// Time with no work planned — taken off planned time, never counts against OEE
+const PROD_NOT_PLANNED = ['No Plan','Plan Completed'];
 // Reasons for a machine not running a whole shift ("No Plan" first: doesn't count against OEE)
-const PROD_NOT_RUN = ['No Plan',...PROD_DOWN_CATS.filter(c=>c!=='No Plan')];
+const PROD_NOT_RUN = ['No Plan',...PROD_DOWN_CATS.filter(c=>!PROD_NOT_PLANNED.includes(c))];
 const PROD_DEFAULT_MACHINES = [
   {code:'280T', name:'280 Ton HPDC', tonnage:280, active:true},
   {code:'400T', name:'400 Ton HPDC', tonnage:400, active:true},
@@ -129,18 +131,19 @@ const PROD_SUM_KEYS=['planned','noPlanMin','downtime','runtime','shots','off','o
 // cavity down makes half the parts in the same time, so it shows as a
 // performance loss ("cavity down") rather than being hidden.
 //
-// "No Plan" time is not planned time, so it never counts against OEE:
-// "No Plan" downtime lines are taken off planned time instead of being
-// downtime. A machine that did not run a shift is saved with
+// Time with no work planned is not planned time, so it never counts
+// against OEE: "No Plan" / "Plan Completed" downtime lines (e.g. the plan
+// finished early and the machine stood for the rest of the shift) are
+// taken off planned time instead of being downtime. A machine that did not run a shift is saved with
 // notRun = reason: "No Plan" takes the whole shift off planned time; any
 // other reason counts the whole shift as downtime for that reason.
 function prodCalc(sheet,ctx){
   const loss=prodN(ctx.cfg.meltLossPct)/100, basisOk=ctx.cfg.consumptionBasis==='ok';
   const notRun=sheet.notRun||'', shift=prodN(sheet.plannedMinutes)||prodN(ctx.cfg.plannedMinutes)||720;
   const lines=notRun? [{category:notRun, minutes:shift, remark:'Did not run'}] : (sheet.downtime||[]).filter(d=>prodN(d.minutes)>0);
-  const noPlanMin=Math.min(shift,lines.filter(d=>d.category==='No Plan').reduce((s,d)=>s+prodN(d.minutes),0));
+  const noPlanMin=Math.min(shift,lines.filter(d=>PROD_NOT_PLANNED.includes(d.category)).reduce((s,d)=>s+prodN(d.minutes),0));
   const planned=shift-noPlanMin;
-  const downs=lines.filter(d=>d.category!=='No Plan');
+  const downs=lines.filter(d=>!PROD_NOT_PLANNED.includes(d.category));
   const downtime=Math.min(planned,downs.reduce((s,d)=>s+prodN(d.minutes),0));
 
   const runs=(notRun?[]:sheet.runs||[]).map((r,i)=>{
@@ -455,13 +458,13 @@ function prodPsRender(){
     <div style="display:flex;flex-direction:column;gap:6px" id="pd-tabs">${prodPdTabsHtml()}</div>
   </div></div>
   <div class="card"><div class="ch"><h5>1 · ${esc(PROD_SHIFTS[rec.shift]?.label||'Shift '+rec.shift)} · ${esc(m?`${m.code} — ${m.name||''}`:'')}</h5>
-    ${rec.notRun?`<button class="btn btn-o btn-sm" onclick="prodPsNotRun('')">↩ Machine did run</button>`:
-      `<select class="fc" style="width:auto;height:30px;font-size:12px" onchange="prodPsNotRun(this.value)"><option value="">⛔ Did not run…</option>${PROD_NOT_RUN.map(c=>`<option>${esc(c)}</option>`).join('')}</select>`}</div>
-    ${rec.notRun?`<div class="cb">
+    ${rec.notRun||window._ps.picking?`<button class="btn btn-o btn-sm" onclick="prodPsNotRun('')">↩ Machine did run</button>`:
+      `<button class="btn btn-o btn-sm" onclick="prodPsNotRunPick()">Machine didn't run this shift?</button>`}</div>
+    ${rec.notRun||window._ps.picking?`<div class="cb">
       <div class="alert al-w" style="margin:0 0 12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
         <b>⛔ Did not run this shift</b>
-        <span>Reason</span><select class="fc" style="width:auto" onchange="prodPsNotRun(this.value)">${prodOpts(PROD_NOT_RUN,rec.notRun)}</select>
-        <span style="font-size:12px">${rec.notRun==='No Plan'?'No work was planned — not counted against OEE.':`The whole shift (${prodFmt(prodN(rec.plannedMinutes)||prodN(ctx.cfg.plannedMinutes)||720)} min) counts as downtime: ${esc(rec.notRun)}.`}</span>
+        <span>Reason *</span><select class="fc" style="width:auto" onchange="prodPsNotRun(this.value)">${prodOpts(PROD_NOT_RUN,rec.notRun,{blank:'— select reason —'})}</select>
+        <span style="font-size:12px">${!rec.notRun?'Pick why — "No Plan" doesn\'t count against OEE; any other reason counts the whole shift as downtime.':rec.notRun==='No Plan'?'No work was planned — not counted against OEE.':`The whole shift (${prodFmt(prodN(rec.plannedMinutes)||prodN(ctx.cfg.plannedMinutes)||720)} min) counts as downtime: ${esc(rec.notRun)}.`}</span>
       </div>
       <div class="fg" style="margin:0"><label class="lbl">Remarks</label>
         <input class="fc" value="${esc(rec.remarks)}" oninput="prodPsHead('remarks',this.value)" placeholder="e.g. hydraulic pump failure, waiting for spare"></div>
@@ -480,7 +483,8 @@ function prodPsRender(){
     <span style="font-size:11px;color:#6b7280">Enter rejected parts by type for the whole shift — OK parts and Rej % are calculated.</span></div>
     <div class="tw" id="ps-rej"></div></div>
   <div class="card"><div class="ch"><h5>4 · Downtime / breakdown</h5>
-    <button class="btn btn-o btn-sm" onclick="prodPsAddDown()">➕ Add downtime</button></div>
+    <div style="display:flex;gap:6px"><button class="btn btn-o btn-sm" onclick="prodPsPlanDone()" title="Plan finished before the shift ended — the rest of the shift isn't counted against OEE">✅ Plan completed early</button>
+    <button class="btn btn-o btn-sm" onclick="prodPsAddDown()">➕ Add downtime</button></div></div>
     <div class="cb" id="ps-down"></div></div>
   <div class="card"><div class="cb"><div class="fg" style="margin:0"><label class="lbl">Remarks</label>
     <input class="fc" value="${esc(rec.remarks)}" oninput="prodPsHead('remarks',this.value)"></div></div></div>
@@ -492,7 +496,7 @@ function prodPsRender(){
     <button class="btn btn-p" onclick="prodPsSave(false)">💾 Save Day</button>
   </div>
   </div>`);
-  if(!rec.notRun){ prodPsRenderRuns(); prodPsRenderRej(); prodPsRenderDown(); }
+  if(!rec.notRun&&!window._ps.picking){ prodPsRenderRuns(); prodPsRenderRej(); prodPsRenderDown(); }
   prodPsRefresh();
 }
 
@@ -561,7 +565,7 @@ function prodPsRenderDown(){
       <td><input class="fc" value="${esc(d.remark||'')}" oninput="prodPsDown(${i},'remark',this.value,false)"></td>
       <td><button class="btn btn-r btn-xs" onclick="prodPsDelDown(${i})">✕</button></td></tr>`).join('')}
     </tbody></table>
-    <div style="font-size:11px;color:#6b7280;margin-top:6px">"No Plan" minutes are taken off planned time — they don't count against OEE.</div>`:`<div style="color:#9ca3af;font-size:12px">No downtime — machine ran the full planned time.</div>`);
+    <div style="font-size:11px;color:#6b7280;margin-top:6px">"No Plan" and "Plan Completed" minutes are taken off planned time — they don't count against OEE.</div>`:`<div style="color:#9ca3af;font-size:12px">No downtime — machine ran the full planned time.</div>`);
 }
 
 function prodPsRefresh(){
@@ -620,7 +624,7 @@ function prodPsRefresh(){
       </div>
       <div style="display:grid;grid-template-columns:1fr auto;gap:3px 10px;align-content:start">
         <span style="grid-column:span 2;font-weight:600;font-size:11px;color:#6b7280">WHERE THE ${prodFmt(t.planned)} PLANNED MIN WENT</span>
-        ${t.noPlanMin?`<span style="grid-column:span 2;font-size:11px;color:#6b7280">${prodFmt(t.noPlanMin)} min No Plan — not counted</span>`:''}
+        ${t.noPlanMin?`<span style="grid-column:span 2;font-size:11px;color:#6b7280">${prodFmt(t.noPlanMin)} min not planned (No Plan / Plan Completed) — not counted</span>`:''}
         ${kv('Good parts',prodFmt(Math.max(0,t.idealMin-t.qualLossMin))+' min')}
         ${kv('Quality loss',prodFmt(t.qualLossMin)+' min')}
         ${kv('Speed loss',(t.shotsNoCT?'—':prodFmt(t.speedLossMin))+' min')}
@@ -643,10 +647,15 @@ function prodPsHead(k,v){ window._ps.rec[k]=v; prodPsRefresh(); }
 // Mark the tab as "did not run" (reason) or back to a normal entry ('').
 // Lines keyed before are kept on screen in case it's undone, but not saved.
 function prodPsNotRun(reason){
-  const rec=window._ps.rec;
-  if(reason) rec.notRun=reason; else delete rec.notRun;
+  const ps=window._ps;
+  if(reason) ps.rec.notRun=reason; else delete ps.rec.notRun;
+  ps.picking=false;
   prodPsRender();
 }
+// Show the reason picker; the tab only becomes "did not run" once a reason is chosen
+function prodPsNotRunPick(){ window._ps.picking=true; prodPsRender(); }
+// Plan finished before the shift ended: the rest of the shift isn't planned time
+function prodPsPlanDone(){ window._ps.rec.downtime.push({category:'Plan Completed',minutes:'',remark:''}); prodPsRenderDown(); prodPsRefresh(); }
 function prodPsRunRej(i,code,v){ const r=window._ps.rec.runs[i]; r.rej=r.rej||{}; r.rej[code]=v; prodPsRefresh(); }
 function prodPsRun(i,k,v,rerender=false){ window._ps.rec.runs[i][k]=v; if(rerender){ prodPsRenderRuns(); prodPsRenderRej(); } prodPsRefresh(); }
 function prodPsRunPart(i,pid){

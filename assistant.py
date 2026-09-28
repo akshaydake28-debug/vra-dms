@@ -34,6 +34,7 @@ MAX_TOOL_ROUNDS = 6
 # ══════════════════════════════════════════════════════
 SUM_KEYS = ['planned', 'noPlanMin', 'downtime', 'runtime', 'shots', 'off', 'offPcs', 'rejPcs', 'castPcs', 'okPcs',
             'idealMin', 'ctMin', 'cavLossMin', 'qualLossMin', 'netKg', 'lossKg', 'totalKg', 'shotsNoCT', 'shotsNoWt']
+NOT_PLANNED = ('No Plan', 'Plan Completed')
 CFG_DEFAULT = {'meltLossPct': 6, 'consumptionBasis': 'all', 'plannedMinutes': 720,
                'workDays': 26, 'shiftsPerDay': 2, 'hoursPerShift': 12, 'targetOeePct': 75}
 
@@ -76,15 +77,16 @@ def calc_shift(sheet, ctx):
     cfg = ctx['cfg']
     loss = num(cfg['meltLossPct']) / 100
     basis_ok = cfg['consumptionBasis'] == 'ok'
-    # "No Plan" time is taken off planned time (never counts against OEE). A machine that
+    # Not-planned time ("No Plan", "Plan Completed" = plan finished early) is taken off
+    # planned time (never counts against OEE). A machine that
     # did not run is saved with notRun = reason: the whole shift is No Plan or downtime.
     not_run = sheet.get('notRun') or ''
     shift = num(sheet.get('plannedMinutes')) or num(cfg['plannedMinutes']) or 720
     lines = ([{'category': not_run, 'minutes': shift}] if not_run
              else [d for d in (sheet.get('downtime') or []) if num(d.get('minutes')) > 0])
-    no_plan = min(shift, sum(num(d.get('minutes')) for d in lines if d.get('category') == 'No Plan'))
+    no_plan = min(shift, sum(num(d.get('minutes')) for d in lines if d.get('category') in NOT_PLANNED))
     planned = shift - no_plan
-    downs = [d for d in lines if d.get('category') != 'No Plan']
+    downs = [d for d in lines if d.get('category') not in NOT_PLANNED]
     downtime = min(planned, sum(num(d.get('minutes')) for d in downs))
 
     # Each line is a shift total; a part change or a cavity going down is another line.
@@ -545,7 +547,7 @@ def t_master_data(ctx, kind='parts'):
 # ══════════════════════════════════════════════════════
 AREA_INFO = {
     # production
-    'prodShifts': 'Production — shift entries (shift totals per part line: shots, cavities, off shots, rejections; downtime per machine/shift; notRun = reason when the machine did not run; "No Plan" time is not planned time). Use production_summary for figures.',
+    'prodShifts': 'Production — shift entries (shift totals per part line: shots, cavities, off shots, rejections; downtime per machine/shift; notRun = reason when the machine did not run; "No Plan" / "Plan Completed" time is not planned time). Use production_summary for figures.',
     'prodParts': 'Production — part master (weight, cavities, cycle times, customer, monthly schedule)',
     'prodFettling': 'Production — fettling entries (per date/shift: person, part, qty fettled, rejected, reason)',
     'prodMachines': 'Production — machines', 'prodDefectCodes': 'Production — rejection/defect codes',
