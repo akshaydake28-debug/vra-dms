@@ -297,7 +297,7 @@ async function prodRenderShifts(f={}){
 
   setC(`
   <div class="ph"><h2>🏭 Shift Production</h2>
-    <button class="btn btn-p" onclick="prodOpenShift()">➕ New Shift Entry</button></div>
+    <button class="btn btn-p" onclick="prodOpenDay()">➕ Day Entry</button></div>
   ${prodFilterBar('psr',f,ctx,{onApply:'prodRenderShifts'})}
   ${prodKpiRow(agg.t)}
   <div class="card"><div class="tw"><table>
@@ -332,31 +332,57 @@ async function prodDeleteShift(id){
 }
 
 // ══════════════════════════════════════════════════════
-//  2. SHIFT ENTRY FORM — laid out top to bottom like the paper sheet:
-//     shift details → part → one row per hour → rejections per part →
-//     downtime → totals.
-//  State lives in window._ps; number inputs update state and call
-//  prodPsRefresh() (updates calculated cells only, so focus is kept);
-//  structural changes (part, run added/removed, shift) re-render.
+//  2. DAY ENTRY — one window per date with a tab for every shift ×
+//     machine (A·280T, A·400T, B·280T, B·400T…) and one Save for all.
+//     Each tab is still stored as its own shift entry. A tab is laid out
+//     like the paper sheet: shift details → part → one row per hour →
+//     rejections per part → downtime → totals.
+//  State: window._pd holds the day; window._ps is the active tab's sheet.
+//  Number inputs update state and call prodPsRefresh() (updates
+//  calculated cells only, so focus is kept); structural changes
+//  (part, run added/removed, tab) re-render.
 // ══════════════════════════════════════════════════════
 function prodNewRun(ctx,part,fromSlot=0){
   return {partId:part?.id||'', grade:part?.grade||'', cavities:prodN(part?.cavities)||1, fromSlot};
 }
 function prodBlankHours(){ return Array.from({length:PROD_SLOTS},()=>({total:'',cav:''})); }
-async function prodOpenShift(id=null,preset={}){
+// Edit an entry = open its day with that tab selected
+async function prodOpenShift(id=null){
+  if(!id) return prodOpenDay();
+  const rec=(await db.prodShifts.toArray().catch(()=>[])).find(s=>s.id===id);
+  if(!rec){ toast('Entry not found','d'); return; }
+  prodOpenDay(rec.date,{shift:rec.shift,machineId:rec.machineId});
+}
+async function prodOpenDay(date=prodToday(),focus={}){
   const ctx=await prodCtx();
   const all=await db.prodShifts.toArray().catch(()=>[]);
-  let rec=id? all.find(s=>s.id===id) : null;
-  if(id&&!rec){ toast('Entry not found','d'); return; }
-  if(!rec){
-    const machineId=preset.machineId||ctx.machines.find(m=>m.active!==false)?.id||'';
-    rec={date:preset.date||prodToday(), shift:preset.shift||'A', machineId,
-      operator1:'', operator2:'', supervisor:'', plannedMinutes:ctx.cfg.plannedMinutes, dieCoatL:'',
-      hours:prodBlankHours(), runs:[], downtime:[], remarks:''};
-    prodCarryOver(rec,all,ctx);
-  } else {
-    rec=JSON.parse(JSON.stringify(rec));
+  const names=new Set();
+  all.forEach(s=>{ s.operator1&&names.add(s.operator1); s.operator2&&names.add(s.operator2); s.supervisor&&names.add(s.supervisor); });
+  const emps=await db.hrEmployees.toArray().catch(()=>[]);
+  emps.forEach(e=>e.name&&names.add(e.name));
+  const day=all.filter(s=>s.date===date);
+  // Active machines, plus any inactive one that already has an entry this day
+  const machines=ctx.machines.filter(m=>m.active!==false||day.some(s=>String(s.machineId)===String(m.id)));
+  if(!machines.length){ toast('Add a machine first','d'); return; }
+  const sheets=[];
+  for(const shift of Object.keys(PROD_SHIFTS)) for(const m of machines){
+    const ex=day.find(s=>s.shift===shift&&String(s.machineId)===String(m.id));
+    sheets.push(prodSheet(ex,{date,shift,machineId:m.id},ctx,all,names));
+  }
+  const active=Math.max(0,sheets.findIndex(x=>x.rec.shift===focus.shift&&String(x.rec.machineId)===String(focus.machineId)));
+  window._pd={date, sheets, active, ctx, all};
+  prodPdCarry();
+  window._ps=sheets[active];
+  prodPsRender();
+}
+function prodSheet(ex,{date,shift,machineId},ctx,all,names){
+  let rec;
+  if(ex){
+    rec=JSON.parse(JSON.stringify(ex));
     rec.hours=prodHours(rec).map(h=>({total:h.total??'', cav:h.cav??''}));
+  } else {
+    rec={date, shift, machineId, operator1:'', operator2:'', supervisor:'', plannedMinutes:ctx.cfg.plannedMinutes, dieCoatL:'',
+      hours:prodBlankHours(), runs:[], downtime:[], remarks:''};
   }
   if(!rec.runs?.length) rec.runs=[prodNewRun(ctx,ctx.parts[0])];
   // Runs saved without cavities / grade: show the part's, so saving keeps them
@@ -364,17 +390,55 @@ async function prodOpenShift(id=null,preset={}){
     if(!prodN(r.cavities)) r.cavities=prodN(p?.cavities)||1;
     if(!r.grade&&p?.grade) r.grade=p.grade; });
   rec.downtime=rec.downtime||[];
-  const names=new Set();
-  all.forEach(s=>{ s.operator1&&names.add(s.operator1); s.operator2&&names.add(s.operator2); s.supervisor&&names.add(s.supervisor); });
-  const emps=await db.hrEmployees.toArray().catch(()=>[]);
-  emps.forEach(e=>e.name&&names.add(e.name));
   // Defect columns: the ones ticked "on entry form" plus any already used on this entry
   const used=new Set(); rec.runs.forEach(r=>Object.keys(r.rej||{}).forEach(c=>used.add(c)));
   const codes=ctx.defects.filter(d=>d.onSheet||used.has(d.code)).map(d=>d.code);
   used.forEach(c=>{ if(!codes.includes(c)) codes.push(c); });
-  window._ps={id, rec, ctx, names:[...names].sort(), all, codes};
+  return {id:ex?.id||null, rec, ctx, names:[...names].sort(), all, codes, orig:JSON.stringify(rec)};
+}
+function prodSheetDirty(x){ return JSON.stringify(x.rec)!==x.orig; }
+function prodSheetLabel(x){ return `Shift ${x.rec.shift} · ${prodMachineLabel(x.ctx.machineById[x.rec.machineId])}`; }
+// Untouched new tabs pick up the part running at the end of the previous
+// shift on that machine — including a shift keyed (not yet saved) in this window.
+function prodPdCarry(){
+  const pd=window._pd, keyed=pd.sheets.filter(x=>!x.id&&prodSheetDirty(x)).map(x=>x.rec);
+  for(const x of pd.sheets){
+    if(x.id||prodSheetDirty(x)) continue;
+    prodCarryOver(x.rec,[...pd.all,...keyed],pd.ctx);
+    x.orig=JSON.stringify(x.rec);
+  }
+}
+function prodPdTab(k){
+  const pd=window._pd; pd.active=k;
+  prodPdCarry();
+  window._ps=pd.sheets[k];
   prodPsRender();
 }
+function prodPdDate(v){
+  const pd=window._pd;
+  if(!v){ prodPsRender(); return; }
+  if(pd.sheets.some(prodSheetDirty)&&!confirm('Unsaved changes on this day will be lost. Change date anyway?')){ prodPsRender(); return; }
+  const a=pd.sheets[pd.active].rec;
+  prodOpenDay(v,{shift:a.shift,machineId:a.machineId});
+}
+function prodPdCancel(){
+  if(window._pd.sheets.some(prodSheetDirty)&&!confirm('Discard unsaved changes?')) return;
+  prodRenderShifts();
+}
+function prodPdTabsHtml(){
+  const pd=window._pd;
+  return Object.keys(PROD_SHIFTS).map(sh=>`<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+    <span style="font-size:11px;font-weight:700;color:#6b7280;width:58px">SHIFT ${sh}</span>
+    ${pd.sheets.map((x,k)=>{ if(x.rec.shift!==sh) return '';
+      const on=k===pd.active, dirty=prodSheetDirty(x);
+      const ok=prodCalc(x.rec,x.ctx).t;
+      const st=dirty?'<span style="color:#d97706">● unsaved</span>':x.id?'<span style="color:#16a34a">✓ saved</span>':'<span style="color:#9ca3af">blank</span>';
+      return `<button class="btn ${on?'btn-p':'btn-o'} btn-sm" style="display:flex;flex-direction:column;align-items:flex-start;line-height:1.25;min-width:130px" onclick="prodPdTab(${k})">
+        <b>${esc(prodMachineLabel(x.ctx.machineById[x.rec.machineId]))}</b>
+        <span style="font-size:10.5px;${on?'opacity:.9':''}">${st}${ok.shots?` · ${prodFmt(ok.okPcs)} OK`:''}</span></button>`; }).join('')}
+  </div>`).join('');
+}
+
 // New entry: continue with whatever part was running at the end of the
 // previous shift on the same machine.
 function prodCarryOver(rec,all,ctx){
@@ -387,17 +451,22 @@ function prodCarryOver(rec,all,ctx){
 }
 
 function prodPsRender(){
-  const {rec,ctx,names,id}=window._ps;
+  const {rec,ctx,names}=window._ps, pd=window._pd;
   const row=(label,control)=>`<div class="fg"><label class="lbl">${label}</label>${control}</div>`;
+  const m=ctx.machineById[rec.machineId];
   setC(`
-  <div class="ph"><h2>🏭 ${id?'Edit':'New'} Shift Production Entry</h2>
-    <button class="btn btn-o" onclick="prodRenderShifts()">← Back</button></div>
+  <div class="ph"><h2>🏭 Day Production Entry</h2>
+    <button class="btn btn-o" onclick="prodPdCancel()">← Back</button></div>
   <datalist id="ps-names">${names.map(n=>`<option value="${esc(n)}">`).join('')}</datalist>
   <div style="max-width:1180px">
-  <div class="card"><div class="ch"><h5>1 · Shift details</h5></div><div class="cb" style="display:grid;grid-template-columns:1fr 1fr;gap:0 16px;max-width:760px">
-    ${row('Date *',`<input class="fc" type="date" value="${esc(rec.date)}" onchange="prodPsHead('date',this.value,true)">`)}
-    ${row('Shift *',`<select class="fc" onchange="prodPsHead('shift',this.value,true)">${prodOpts(Object.keys(PROD_SHIFTS),rec.shift,{label:k=>PROD_SHIFTS[k].label})}</select>`)}
-    ${row('Machine *',`<select class="fc" onchange="prodPsHead('machineId',+this.value,true)">${prodOpts(ctx.machines.filter(m=>m.active!==false||String(m.id)===String(rec.machineId)),rec.machineId,{val:m=>m.id,label:m=>`${m.code} — ${m.name||''}`})}</select>`)}
+  <div class="card"><div class="cb" style="display:flex;gap:18px;align-items:center;flex-wrap:wrap">
+    <div class="fg" style="margin:0"><label class="lbl">Date *</label>
+      <input class="fc" type="date" value="${esc(pd.date)}" onchange="prodPdDate(this.value)" style="width:170px"></div>
+    <div style="display:flex;flex-direction:column;gap:6px" id="pd-tabs">${prodPdTabsHtml()}</div>
+  </div></div>
+  <div class="card"><div class="ch"><h5>1 · ${esc(PROD_SHIFTS[rec.shift]?.label||'Shift '+rec.shift)} · ${esc(m?`${m.code} — ${m.name||''}`:'')}</h5>
+    <span style="font-size:11px;color:#6b7280">Blank tabs are not saved — leave a machine / shift blank if it didn't run.</span></div>
+    <div class="cb" style="display:grid;grid-template-columns:1fr 1fr;gap:0 16px;max-width:760px">
     ${row('Planned time (min)',`<input class="fc" type="number" min="0" value="${esc(rec.plannedMinutes)}" oninput="prodPsHead('plannedMinutes',this.value)" title="12 h = 720. Reduce for planned breaks if you don't want them to count as downtime.">`)}
     ${row('Operator 1',`<input class="fc" list="ps-names" value="${esc(rec.operator1)}" oninput="prodPsHead('operator1',this.value)">`)}
     ${row('Operator 2',`<input class="fc" list="ps-names" value="${esc(rec.operator2)}" oninput="prodPsHead('operator2',this.value)">`)}
@@ -419,10 +488,11 @@ function prodPsRender(){
   <div class="card"><div class="cb"><div class="fg" style="margin:0"><label class="lbl">Remarks</label>
     <input class="fc" value="${esc(rec.remarks)}" oninput="prodPsHead('remarks',this.value)"></div></div></div>
   <div id="ps-sum"></div>
-  <div style="display:flex;gap:8px;justify-content:flex-end;margin:4px 0 30px">
-    <button class="btn btn-o" onclick="prodRenderShifts()">Cancel</button>
-    <button class="btn btn-o" onclick="prodPsSave(true)">💾 Save &amp; Next Shift</button>
-    <button class="btn btn-p" onclick="prodPsSave(false)">💾 Save</button>
+  <div style="display:flex;gap:8px;justify-content:flex-end;align-items:center;margin:4px 0 30px">
+    <span style="font-size:11.5px;color:#6b7280;margin-right:auto">Saves every tab you've changed on this day.</span>
+    <button class="btn btn-o" onclick="prodPdCancel()">Cancel</button>
+    <button class="btn btn-o" onclick="prodPsSave(true)">💾 Save &amp; Next Day</button>
+    <button class="btn btn-p" onclick="prodPsSave(false)">💾 Save Day</button>
   </div>
   </div>`);
   prodPsRenderRuns(); prodPsRenderHours(); prodPsRenderRej(); prodPsRenderDown(); prodPsRefresh();
@@ -564,8 +634,7 @@ function prodPsRefresh(){
   if(rec.runs.some((r,i)=>prodN(r.offShots)>(c.runs.find(x=>x._i===i)?.shots||0))) warn.push('A part has more off shots than shots.');
   if(c.runs.some(r=>r.rejPcs>Math.max(0,r.castPcs-r.offPcs))) warn.push('A part has more rejected pcs than pcs cast.');
   if(t.pRaw>1.02) warn.push(`Shots exceed target rate (${prodPct(t.pRaw,0)}) — check shot counts or the target cycle time.`);
-  const dupe=window._ps.all.find(s=>s.id!==window._ps.id&&s.date===rec.date&&s.shift===rec.shift&&String(s.machineId)===String(rec.machineId));
-  if(dupe) warn.push('An entry already exists for this date, shift and machine.');
+  set('pd-tabs',prodPdTabsHtml());
 
   const grades=Object.entries(c.byGrade).filter(([,g])=>g.castPcs>0);
   const cavs=new Set(c.hours.filter(h=>h.total).map(h=>h.cavEff));
@@ -609,13 +678,7 @@ function prodPsRefresh(){
 }
 
 // ── state setters ────────────────────────────────────
-function prodPsHead(k,v,rerender=false){
-  const ps=window._ps; ps.rec[k]=v;
-  // New entry with nothing keyed yet: re-pick the part that was running on this machine last shift
-  const blank=ps.rec.hours.every(h=>h.total==='')&&!ps.rec.runs.some(r=>(r.offShots??'')!==''||Object.values(r.rej||{}).some(x=>x!==''));
-  if(!ps.id && ['machineId','shift','date'].includes(k) && blank) prodCarryOver(ps.rec,ps.all,ps.ctx);
-  if(rerender) prodPsRender(); else prodPsRefresh();
-}
+function prodPsHead(k,v){ window._ps.rec[k]=v; prodPsRefresh(); }
 function prodPsHour(i,k,v){ window._ps.rec.hours[i][k]=v; prodPsRefresh(); }
 // Store a cavity override only when it differs from the part's cavities
 function prodPsHourCav(i,v){
@@ -647,22 +710,23 @@ function prodPsAddDown(){ window._ps.rec.downtime.push({category:PROD_DOWN_CATS[
 function prodPsDown(i,k,v,refresh=true){ window._ps.rec.downtime[i][k]=v; if(refresh) prodPsRefresh(); }
 function prodPsDelDown(i){ window._ps.rec.downtime.splice(i,1); prodPsRenderDown(); prodPsRefresh(); }
 
-async function prodPsSave(next){
-  const {rec,ctx,id,all}=window._ps;
-  if(!rec.date||!rec.shift||!rec.machineId){ toast('Date, shift and machine are required','d'); return; }
-  if(rec.runs.some(r=>!r.partId)){ toast('Select a part','d'); return; }
+// Check one tab; returns an error message or ''
+function prodSheetError(x){
+  const {rec,ctx}=x;
+  if(rec.runs.some(r=>!r.partId)) return 'select a part';
   const starts=rec.runs.map(r=>prodN(r.fromSlot));
-  if(new Set(starts).size!==starts.length){ toast('Two parts start in the same hour','d'); return; }
-  const dupe=all.find(s=>s.id!==id&&s.date===rec.date&&s.shift===rec.shift&&String(s.machineId)===String(rec.machineId));
-  if(dupe){ toast('An entry already exists for this date, shift and machine — edit that one instead','d'); return; }
+  if(new Set(starts).size!==starts.length) return 'two parts start in the same hour';
   const c=prodCalc(rec,ctx);
   const offRun=c.runs.find(r=>prodN(rec.runs[r._i].offShots)>r.shots);
-  if(offRun){ toast(`${offRun.part?.partNumber||'A part'}: off shots are more than shots`,'d'); return; }
+  if(offRun) return `${offRun.part?.partNumber||'a part'}: off shots are more than shots`;
   const badRun=c.runs.find(r=>r.rejPcs>Math.max(0,r.castPcs-r.offPcs));
-  if(badRun){ toast(`${badRun.part?.partNumber||'A part'}: rejected pcs are more than pcs cast`,'d'); return; }
-  if(!c.t.shots&&!c.t.downtime&&!confirm('No shots and no downtime entered. Save anyway?')) return;
+  if(badRun) return `${badRun.part?.partNumber||'a part'}: rejected pcs are more than pcs cast`;
+  return '';
+}
+function prodSheetClean(x){
+  const {rec,ctx}=x;
   const numOrBlank=v=>v===''||v==null?'':prodN(v);
-  const clean={
+  return {
     date:rec.date, shift:rec.shift, machineId:+rec.machineId,
     operator1:(rec.operator1||'').trim(), operator2:(rec.operator2||'').trim(), supervisor:(rec.supervisor||'').trim(),
     plannedMinutes:prodN(rec.plannedMinutes)||prodN(ctx.cfg.plannedMinutes)||720,
@@ -679,15 +743,32 @@ async function prodPsSave(next){
     remarks:(rec.remarks||'').trim(),
     updatedAt:new Date().toISOString(), updatedBy:Auth.user?.name||'',
   };
-  let ok;
-  if(id) ok=await db.prodShifts.update(id,clean);
-  else { clean.createdAt=clean.updatedAt; clean.createdBy=clean.updatedBy; ok=await db.prodShifts.add(clean); }
-  if(!ok){ toast('Save failed — check your connection and try again','d'); return; }
-  toast('✅ Shift entry saved');
-  if(next){
-    const preset=rec.shift==='A'? {date:rec.date,shift:'B',machineId:rec.machineId} : {date:prodAddDays(rec.date,1),shift:'A',machineId:rec.machineId};
-    prodOpenShift(null,preset);
-  } else prodRenderShifts();
+}
+// Save every changed tab of the day (untouched blank tabs are skipped)
+async function prodPsSave(next){
+  const pd=window._pd, todo=pd.sheets.filter(prodSheetDirty);
+  for(const x of todo){
+    const err=prodSheetError(x);
+    if(err){ prodPdTab(pd.sheets.indexOf(x)); toast(`${prodSheetLabel(x)}: ${err}`,'d'); return; }
+  }
+  const empty=todo.filter(x=>{ const t=prodCalc(x.rec,x.ctx).t; return !t.shots&&!t.downtime; });
+  if(empty.length&&!confirm(`No shots and no downtime on ${empty.map(prodSheetLabel).join(', ')}. Save anyway?`)) return;
+  let saved=0;
+  for(const x of todo){
+    const clean=prodSheetClean(x);
+    let ok;
+    if(x.id) ok=await db.prodShifts.update(x.id,clean);
+    else { clean.createdAt=clean.updatedAt; clean.createdBy=clean.updatedBy; ok=await db.prodShifts.add(clean); if(ok) x.id=ok; }
+    if(!ok){
+      prodPdTab(pd.sheets.indexOf(x));
+      toast(`${prodSheetLabel(x)}: save failed — check your connection and try again${saved?` (${saved} other tab${saved>1?'s':''} saved)`:''}`,'d');
+      return;
+    }
+    x.orig=JSON.stringify(x.rec); saved++;
+  }
+  toast(saved?`✅ ${saved} shift entr${saved>1?'ies':'y'} saved`:'Nothing to save — no tab was changed', saved?'s':'w');
+  if(next){ const a=pd.sheets[pd.active].rec; prodOpenDay(prodAddDays(pd.date,1),{shift:'A',machineId:a.machineId}); }
+  else if(saved) prodRenderShifts();
 }
 
 // ══════════════════════════════════════════════════════
