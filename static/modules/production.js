@@ -418,20 +418,41 @@ function prodPdCancel(){
   if(window._pd.sheets.some(prodSheetDirty)&&!confirm('Discard unsaved changes?')) return;
   prodRenderShifts();
 }
+// One chip per machine × shift: open it, and mark it ✓ Ran or ✕ Didn't run
+// (with the reason picked right in the chip). Save Day needs every chip decided.
 function prodPdTabsHtml(){
   const pd=window._pd;
-  return Object.keys(PROD_SHIFTS).map(sh=>`<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-    <span style="font-size:11px;font-weight:700;color:#6b7280;width:58px">SHIFT ${sh}</span>
+  return Object.keys(PROD_SHIFTS).map(sh=>`<div style="display:flex;gap:8px;align-items:stretch;flex-wrap:wrap">
+    <span style="font-size:11px;font-weight:700;color:#6b7280;width:58px;align-self:center">SHIFT ${sh}</span>
     ${pd.sheets.map((x,k)=>{ if(x.rec.shift!==sh) return '';
-      const on=k===pd.active, dirty=prodSheetDirty(x);
-      const ok=prodCalc(x.rec,x.ctx).t;
-      const st=(dirty?'<span style="color:#d97706">● unsaved</span>':x.id?'<span style="color:#16a34a">✓ saved</span>':'<span style="color:#9ca3af">blank</span>')
-        +(x.rec.notRun?` · ⛔ ${esc(x.rec.notRun)}`:'');
-      return `<button class="btn ${on?'btn-p':'btn-o'} btn-sm" style="display:flex;flex-direction:column;align-items:flex-start;line-height:1.25;min-width:130px" onclick="prodPdTab(${k})">
-        <b>${esc(prodMachineLabel(x.ctx.machineById[x.rec.machineId]))}</b>
-        <span style="font-size:10.5px;${on?'opacity:.9':''}">${st}${ok.shots?` · ${prodFmt(ok.okPcs)} OK`:''}</span></button>`; }).join('')}
+      const on=k===pd.active, st=prodSheetState(x), t=prodCalc(x.rec,x.ctx).t;
+      const ran=st==='ran'||st==='ran-empty', nr=st==='notrun'||st==='picking';
+      const line=st==='notrun'? `⛔ ${esc(x.rec.notRun)}` : st==='picking'? '<span style="color:#dc2626">pick a reason ↓</span>'
+        : st==='ran'? `${t.shots?`${prodFmt(t.okPcs)} OK`:'downtime only'}` : st==='ran-empty'? '<span style="color:#d97706">enter production</span>'
+        : '<span style="color:#dc2626">not marked</span>';
+      const save=prodSheetDirty(x)?' · <span style="color:#d97706">● unsaved</span>':x.id?' · <span style="color:#16a34a">✓ saved</span>':'';
+      const btn=(active,col,label,fn)=>`<button class="btn btn-xs" style="flex:1;border:1px solid ${col};${active?`background:${col};color:#fff`:`background:#fff;color:${col}`}" onclick="event.stopPropagation();${fn}">${label}</button>`;
+      return `<div style="border:${on?'2px solid var(--navy)':'1px solid var(--border)'};border-radius:8px;padding:6px 8px;min-width:200px;background:${on?'#eef2fb':st==='none'?'#fff7f7':'#fff'};cursor:pointer" onclick="prodPdTab(${k})">
+        <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline"><b style="color:var(--navy)">${esc(prodMachineLabel(x.ctx.machineById[x.rec.machineId]))}</b>
+          <span style="font-size:10.5px;color:#6b7280">${line}${save}</span></div>
+        <div style="display:flex;gap:4px;margin-top:5px">
+          ${btn(ran,'#16a34a','✓ Ran',`prodPdRan(${k})`)}${btn(nr,'#dc2626','✕ Didn\'t run',`prodPdNotRan(${k})`)}
+        </div>
+        ${nr?`<select class="fc" style="margin-top:5px;height:28px;font-size:12px;${x.rec.notRun?'':'border-color:#dc2626'}" onclick="event.stopPropagation()" onchange="prodPdReason(${k},this.value)">${prodOpts(PROD_NOT_RUN,x.rec.notRun,{blank:'— reason —'})}</select>`:''}
+      </div>`; }).join('')}
   </div>`).join('');
 }
+// none | picking (didn't run, no reason yet) | notrun | ran-empty (ran, nothing entered) | ran
+function prodSheetState(x){
+  if(x.rec.notRun) return 'notrun';
+  if(x.picking) return 'picking';
+  const t=prodCalc(x.rec,x.ctx).t;
+  if(t.shots>0||t.downtime>0||t.noPlanMin>0) return 'ran';
+  return x.ran? 'ran-empty' : 'none';
+}
+function prodPdRan(k){ const x=window._pd.sheets[k]; delete x.rec.notRun; x.picking=false; x.ran=true; prodPdTab(k); }
+function prodPdNotRan(k){ const x=window._pd.sheets[k]; x.ran=false; if(!x.rec.notRun) x.picking=true; prodPdTab(k); }
+function prodPdReason(k,v){ const x=window._pd.sheets[k]; if(v){ x.rec.notRun=v; x.picking=false; } else { delete x.rec.notRun; x.picking=true; } prodPdTab(k); }
 
 // New entry: continue with whatever part (and cavities) was running at the
 // end of the previous shift on the same machine.
@@ -458,12 +479,11 @@ function prodPsRender(){
     <div style="display:flex;flex-direction:column;gap:6px" id="pd-tabs">${prodPdTabsHtml()}</div>
   </div></div>
   <div class="card"><div class="ch"><h5>1 · ${esc(PROD_SHIFTS[rec.shift]?.label||'Shift '+rec.shift)} · ${esc(m?`${m.code} — ${m.name||''}`:'')}</h5>
-    ${rec.notRun||window._ps.picking?`<button class="btn btn-o btn-sm" onclick="prodPsNotRun('')">↩ Machine did run</button>`:
-      `<button class="btn btn-o btn-sm" onclick="prodPsNotRunPick()">Machine didn't run this shift?</button>`}</div>
+    </div>
     ${rec.notRun||window._ps.picking?`<div class="cb">
       <div class="alert al-w" style="margin:0 0 12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
         <b>⛔ Did not run this shift</b>
-        <span>Reason *</span><select class="fc" style="width:auto" onchange="prodPsNotRun(this.value)">${prodOpts(PROD_NOT_RUN,rec.notRun,{blank:'— select reason —'})}</select>
+        <span>Reason *</span><select class="fc" style="width:auto" onchange="prodPdReason(window._pd.active,this.value)">${prodOpts(PROD_NOT_RUN,rec.notRun,{blank:'— select reason —'})}</select>
         <span style="font-size:12px">${!rec.notRun?'Pick why — "No Plan" doesn\'t count against OEE; any other reason counts the whole shift as downtime.':rec.notRun==='No Plan'?'No work was planned — not counted against OEE.':`The whole shift (${prodFmt(prodN(rec.plannedMinutes)||prodN(ctx.cfg.plannedMinutes)||720)} min) counts as downtime: ${esc(rec.notRun)}.`}</span>
       </div>
       <div class="fg" style="margin:0"><label class="lbl">Remarks</label>
@@ -490,7 +510,7 @@ function prodPsRender(){
     <input class="fc" value="${esc(rec.remarks)}" oninput="prodPsHead('remarks',this.value)"></div></div></div>
   <div id="ps-sum"></div>`}
   <div style="display:flex;gap:8px;justify-content:flex-end;align-items:center;margin:4px 0 30px">
-    <span style="font-size:11.5px;color:#6b7280;margin-right:auto">Saves every tab you've changed on this day.</span>
+    <span style="font-size:11.5px;color:#6b7280;margin-right:auto">Every machine / shift must be marked ✓ Ran (with production) or ✕ Didn't run (with a reason) before the day can be saved.</span>
     <button class="btn btn-o" onclick="prodPdCancel()">Cancel</button>
     <button class="btn btn-o" onclick="prodPsSave(true)">💾 Save &amp; Next Day</button>
     <button class="btn btn-p" onclick="prodPsSave(false)">💾 Save Day</button>
@@ -644,16 +664,6 @@ function prodPsRefresh(){
 
 // ── state setters ────────────────────────────────────
 function prodPsHead(k,v){ window._ps.rec[k]=v; prodPsRefresh(); }
-// Mark the tab as "did not run" (reason) or back to a normal entry ('').
-// Lines keyed before are kept on screen in case it's undone, but not saved.
-function prodPsNotRun(reason){
-  const ps=window._ps;
-  if(reason) ps.rec.notRun=reason; else delete ps.rec.notRun;
-  ps.picking=false;
-  prodPsRender();
-}
-// Show the reason picker; the tab only becomes "did not run" once a reason is chosen
-function prodPsNotRunPick(){ window._ps.picking=true; prodPsRender(); }
 // Plan finished before the shift ended: the rest of the shift isn't planned time
 function prodPsPlanDone(){ window._ps.rec.downtime.push({category:'Plan Completed',minutes:'',remark:''}); prodPsRenderDown(); prodPsRefresh(); }
 function prodPsRunRej(i,code,v){ const r=window._ps.rec.runs[i]; r.rej=r.rej||{}; r.rej[code]=v; prodPsRefresh(); }
@@ -720,12 +730,19 @@ function prodSheetClean(x){
 // Save every changed tab of the day (untouched blank tabs are skipped)
 async function prodPsSave(next){
   const pd=window._pd, todo=pd.sheets.filter(prodSheetDirty);
+  // The whole day must be accounted for: every machine / shift ran (with production) or didn't (with a reason)
+  const why={none:'mark ✓ Ran or ✕ Didn\'t run', picking:'pick why it didn\'t run', 'ran-empty':'enter production or downtime'};
+  const open=pd.sheets.filter(x=>why[prodSheetState(x)]);
+  if(open.length){
+    const x=open[0];
+    prodPdTab(pd.sheets.indexOf(x));
+    toast(`Day not complete — ${prodSheetLabel(x)}: ${why[prodSheetState(x)]}${open.length>1?` (+${open.length-1} more)`:''}`,'d');
+    return;
+  }
   for(const x of todo){
     const err=prodSheetError(x);
     if(err){ prodPdTab(pd.sheets.indexOf(x)); toast(`${prodSheetLabel(x)}: ${err}`,'d'); return; }
   }
-  const empty=todo.filter(x=>{ const t=prodCalc(x.rec,x.ctx).t; return !x.rec.notRun&&!t.shots&&!t.downtime; });
-  if(empty.length&&!confirm(`No shots and no downtime on ${empty.map(prodSheetLabel).join(', ')}. Save anyway?`)) return;
   let saved=0;
   for(const x of todo){
     const clean=prodSheetClean(x);
