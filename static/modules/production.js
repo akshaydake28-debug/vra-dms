@@ -6,15 +6,15 @@
 //    • header    — date, shift A/B, machine, 2 operators, planned time
 //    • part runs — part, grade, cavities (a mid-shift part / grade change
 //                  is just another run starting at a later hour)
-//    • hourly    — 12 rows: total shots, cavities, off shots
-//    • rejection — shift total per part, pcs by defect
+//    • hourly    — 12 rows: total shots, cavities
+//    • per part  — shift totals: off shots, rejected pcs by defect
 //    • downtime  — category, minutes, optional hour
 //  Everything else is calculated: OK parts, rejection % / PPM, OEE and
 //  where the time went, melting loss and metal consumed per grade, and
 //  raw-material / part stock (tied to the RM Lot Register + Dispatch).
 //
-//  Units: the hourly rows are in shots (machine cycles), as on the paper
-//  sheet; rejections are in pcs; reports convert: pcs = shots × cavities.
+//  Units: shots and off shots are machine cycles, as on the paper sheet;
+//  rejections are in pcs; reports convert: pcs = shots × cavities.
 //  Off shots are warm-up / trial shots scrapped.
 // ══════════════════════════════════════════════════════
 
@@ -130,10 +130,10 @@ function prodRunRanges(runs){
 const PROD_SUM_KEYS=['planned','downtime','runtime','shots','off','offPcs','rejPcs','castPcs','okPcs',
   'idealMin','qualLossMin','netKg','lossKg','totalKg','shotsNoCT','shotsNoWt'];
 
-// Hourly rows are {total, cav, off}; rejections are shift totals in pcs on
-// the run (run.rej = {code:pcs}). Older entries stored rejected shots per
-// hour (hour.rej) or `hourly` as plain shot counts with off shots on the
-// run — still read here so they keep reporting.
+// Hourly rows are {total, cav}; off shots and rejections are shift totals
+// on the run (run.offShots in shots, run.rej = {code:pcs}). Older entries
+// stored off / rejected shots per hour (hour.off, hour.rej) or `hourly` as
+// plain shot counts — still read here so they keep reporting.
 function prodHours(sheet){
   if(Array.isArray(sheet.hours)) return Array.from({length:PROD_SLOTS},(_,i)=>sheet.hours[i]||{});
   return Array.from({length:PROD_SLOTS},(_,i)=>({total:(sheet.hourly||[])[i]??''}));
@@ -159,8 +159,8 @@ function prodCalc(sheet,ctx){
     const cav=prodN(r.cavities)||prodN(part?.cavities)||1;
     // Cavities can drop for some hours (one cavity damaged): each hour's
     // shots convert to pcs with that hour's cavity count, default the run's.
-    const legacyOff=prodN(r.offShots);
-    let shots=0, off=legacyOff, rejS=0, castPcs=0, offPcs=legacyOff*cav, rejPcs=0; const rej={};
+    const runOff=prodN(r.offShots);                                    // shift total, shots
+    let shots=0, off=runOff, rejS=0, castPcs=0, offPcs=runOff*cav, rejPcs=0; const rej={};
     for(let s=r.from;s<=r.to;s++){
       const h=hrs[s], hc=prodN(h.cav)||cav;
       h.cavEff=hc; h.okPcs=h.ok*hc;
@@ -355,7 +355,7 @@ async function prodDeleteShift(id){
 function prodNewRun(ctx,part,fromSlot=0){
   return {partId:part?.id||'', grade:part?.grade||'', cavities:prodN(part?.cavities)||1, fromSlot};
 }
-function prodBlankHours(){ return Array.from({length:PROD_SLOTS},()=>({total:'',cav:'',off:''})); }
+function prodBlankHours(){ return Array.from({length:PROD_SLOTS},()=>({total:'',cav:''})); }
 async function prodOpenShift(id=null,preset={}){
   const ctx=await prodCtx();
   const all=await db.prodShifts.toArray().catch(()=>[]);
@@ -370,15 +370,18 @@ async function prodOpenShift(id=null,preset={}){
   } else {
     rec=JSON.parse(JSON.stringify(rec));
     const hrs=prodHours(rec);
-    // Entries keyed with rejected shots per hour: fold them into each part's shift total (pcs)
+    // Entries keyed with off / rejected shots per hour: fold them into each part's shift totals
     for(const r of prodRunRanges(rec.runs)){
       const run=rec.runs[r._i], cav=prodN(r.cavities)||prodN(ctx.partById[r.partId]?.cavities)||1;
-      for(let s=r.from;s<=r.to;s++) for(const [c,v] of Object.entries(hrs[s].rej||{})){
-        const n=prodN(v)*(prodN(hrs[s].cav)||cav);
-        if(n>0){ run.rej=run.rej||{}; run.rej[c]=prodN(run.rej[c])+n; }
+      for(let s=r.from;s<=r.to;s++){
+        if(prodN(hrs[s].off)>0) run.offShots=prodN(run.offShots)+prodN(hrs[s].off);
+        for(const [c,v] of Object.entries(hrs[s].rej||{})){
+          const n=prodN(v)*(prodN(hrs[s].cav)||cav);
+          if(n>0){ run.rej=run.rej||{}; run.rej[c]=prodN(run.rej[c])+n; }
+        }
       }
     }
-    rec.hours=hrs.map(h=>({total:h.total??'', cav:h.cav??'', off:h.off??''}));
+    rec.hours=hrs.map(h=>({total:h.total??'', cav:h.cav??''}));
     delete rec.hourly;
   }
   if(!rec.runs?.length) rec.runs=[prodNewRun(ctx,ctx.parts[0])];
@@ -426,10 +429,10 @@ function prodPsRender(){
     <button class="btn btn-o btn-sm" onclick="prodPsAddRun()">➕ Part / grade change mid-shift</button></div>
     <div class="cb" id="ps-runs"></div></div>
   <div class="card"><div class="ch"><h5>3 · Hourly production (shots)</h5>
-    <span style="font-size:11px;color:#6b7280">Enter total shots and off shots — Target, Pcs and Eff. are calculated. Tab moves along the row.</span></div>
+    <span style="font-size:11px;color:#6b7280">Enter total shots — Target, Pcs and Eff. are calculated. Tab moves along the row.</span></div>
     <div class="tw" id="ps-hours"></div></div>
-  <div class="card"><div class="ch"><h5>4 · Rejections (shift total per part, pcs)</h5>
-    <span style="font-size:11px;color:#6b7280">Enter rejected parts by type for the whole shift — OK parts and Rej % are calculated.</span></div>
+  <div class="card"><div class="ch"><h5>4 · Off shots &amp; rejections (shift total per part)</h5>
+    <span style="font-size:11px;color:#6b7280">Enter off shots and rejected parts by type for the whole shift — OK parts and Rej % are calculated.</span></div>
     <div class="tw" id="ps-rej"></div></div>
   <div class="card"><div class="ch"><h5>5 · Downtime / breakdown</h5>
     <button class="btn btn-o btn-sm" onclick="prodPsAddDown()">➕ Add downtime</button></div>
@@ -470,24 +473,23 @@ function prodPsRenderHours(){
   const r='text-align:right';
   document.getElementById('ps-hours').innerHTML=`<table>
     <thead><tr><th style="width:80px">Time</th><th>Part</th><th style="${r};width:64px">Target</th>
-      <th style="${r};width:90px">Total shots</th><th style="${r};width:64px" title="Cavities running this hour — pre-filled from the part; change it if a cavity is down">Cav</th><th style="${r};width:80px">Off shots</th>
-      <th style="${r};width:80px" title="(Total − off shots) × Cav">Pcs cast</th><th style="${r};width:58px">Down</th><th style="${r};width:58px">Eff.</th></tr></thead>
+      <th style="${r};width:90px">Total shots</th><th style="${r};width:64px" title="Cavities running this hour — pre-filled from the part; change it if a cavity is down">Cav</th>
+      <th style="${r};width:80px" title="Total shots × Cav">Pcs cast</th><th style="${r};width:58px">Down</th><th style="${r};width:58px">Eff.</th></tr></thead>
     <tbody>${rec.hours.map((h,i)=>`<tr>
       <td class="mono" style="font-weight:600">${prodSlotLabel(rec.shift,i)}</td>
       <td style="font-size:11px;color:#6b7280;white-space:nowrap" id="ps-hp-${i}"></td>
       <td class="mono" style="${r};color:#6b7280" id="ps-ht-${i}"></td>
       <td>${num(i,`prodPsHour(${i},'total',this.value)`,h.total)}</td>
       <td>${num(i,`prodPsHourCav(${i},this.value)`,'',`id="ps-hc-${i}" min="1" onblur="prodPsRefresh()"`)}</td>
-      <td>${num(i,`prodPsHour(${i},'off',this.value)`,h.off)}</td>
       <td class="mono" style="${r}" id="ps-hpc-${i}"></td>
       <td class="mono" style="${r}" id="ps-hd-${i}"></td>
       <td class="mono" style="${r};font-weight:600" id="ps-he-${i}"></td></tr>`).join('')}
     </tbody>
     <tfoot><tr style="font-weight:700;background:#f6f8fc">
-      <td colspan="2">TOTAL</td><td class="mono" style="${r}" id="ps-tt"></td><td class="mono" style="${r}" id="ps-ts"></td><td></td><td class="mono" style="${r}" id="ps-to"></td>
+      <td colspan="2">TOTAL</td><td class="mono" style="${r}" id="ps-tt"></td><td class="mono" style="${r}" id="ps-ts"></td><td></td>
       <td class="mono" style="${r}" id="ps-tpc"></td><td class="mono" style="${r}" id="ps-td"></td><td class="mono" style="${r}" id="ps-te"></td></tr></tfoot>
   </table>
-  <div style="font-size:11px;color:#6b7280;padding:6px 12px">Target = 3600 ÷ target cycle time. Cav is pre-filled from the part — change it for hours when a cavity is down. Pcs cast = (total − off shots) × Cav. Eff. = shots × cycle time ÷ time available in the hour (60 min − downtime logged against it).</div>`;
+  <div style="font-size:11px;color:#6b7280;padding:6px 12px">Target = 3600 ÷ target cycle time. Cav is pre-filled from the part — change it for hours when a cavity is down. Pcs cast = total shots × Cav. Eff. = shots × cycle time ÷ time available in the hour (60 min − downtime logged against it).</div>`;
 }
 
 // One row per part run: rejected pcs by type, keyed as shift totals.
@@ -498,12 +500,14 @@ function prodPsRenderRej(){
   const ordered=prodRunRanges(rec.runs), multi=ordered.length>1;
   const r='text-align:right';
   document.getElementById('ps-rej').innerHTML=`<table>
-    <thead><tr><th>Part</th><th style="${r};width:84px" title="Parts cast excluding off shots">Pcs cast</th>
+    <thead><tr><th>Part</th><th style="${r};width:72px">Shots</th><th style="${r};width:84px" title="Warm-up / trial shots scrapped, for the whole shift">Off shots</th><th style="${r};width:84px" title="(Shots − off shots) × cavities">Pcs cast</th>
       ${codes.map(c=>`<th style="${r};width:84px" title="${esc(dname(c))}">${esc(dname(c))}</th>`).join('')}
       <th style="${r};width:76px">Rejected</th><th style="${r};width:76px">OK pcs</th><th style="${r};width:64px">Rej %</th></tr></thead>
     <tbody>${ordered.map(x=>{ const i=x._i, p=ctx.partById[x.partId];
       return `<tr>
       <td style="white-space:nowrap">${p?esc(prodPartLabel(p)):'<span style="color:#9ca3af">— select part —</span>'}${multi?`<div style="font-size:11px;color:#6b7280">${prodSlotLabel(rec.shift,x.from).slice(0,2)}–${prodSlotLabel(rec.shift,x.to).slice(3)}</div>`:''}</td>
+      <td class="mono" style="${r};color:#6b7280" id="ps-rs-${i}"></td>
+      <td><input class="fc mono" style="padding:5px 6px;text-align:right" type="number" min="0" inputmode="numeric" value="${esc(rec.runs[i].offShots??'')}" oninput="prodPsRun(${i},'offShots',this.value)"></td>
       <td class="mono" style="${r}" id="ps-rc-${i}"></td>
       ${codes.map(c=>`<td><input class="fc mono" style="padding:5px 6px;text-align:right" type="number" min="0" inputmode="numeric" value="${esc(rec.runs[i].rej?.[c]??'')}" oninput="prodPsRunRej(${i},'${esc(c)}',this.value)"></td>`).join('')}
       <td class="mono" style="${r};color:#dc2626" id="ps-rr-${i}"></td>
@@ -511,12 +515,12 @@ function prodPsRenderRej(){
       <td class="mono" style="${r}" id="ps-rp-${i}"></td></tr>`;}).join('')}
     </tbody>
     ${multi?`<tfoot><tr style="font-weight:700;background:#f6f8fc">
-      <td>TOTAL</td><td class="mono" style="${r}" id="ps-rtc"></td>
+      <td>TOTAL</td><td class="mono" style="${r};color:#6b7280" id="ps-rts"></td><td class="mono" style="${r}" id="ps-rtf"></td><td class="mono" style="${r}" id="ps-rtc"></td>
       ${codes.map(c=>`<td class="mono" style="${r}" id="ps-rtd-${esc(c)}"></td>`).join('')}
       <td class="mono" style="${r};color:#dc2626" id="ps-rtr"></td><td class="mono" style="${r};color:#16a34a" id="ps-rto"></td><td class="mono" style="${r}" id="ps-rtp"></td></tr></tfoot>`:''}
   </table>
   <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 12px;gap:10px;flex-wrap:wrap">
-    <span style="font-size:11px;color:#6b7280">Pcs cast excludes off shots. OK pcs = pcs cast − rejected. Rej % = rejected ÷ pcs cast.</span>
+    <span style="font-size:11px;color:#6b7280">Pcs cast = (shots − off shots) × cavities. OK pcs = pcs cast − rejected. Rej % = rejected ÷ pcs cast.</span>
     ${others.length?`<select class="fc" style="width:190px" onchange="if(this.value){window._ps.codes.push(this.value);prodPsRenderRej();prodPsRefresh();}"><option value="">+ add rejection type column…</option>${others.map(d=>`<option value="${esc(d.code)}">${esc(d.description)}</option>`).join('')}</select>`:''}
   </div>`;
 }
@@ -539,9 +543,9 @@ function prodPsRefresh(){
   const {rec,ctx,codes}=window._ps;
   const c=prodCalc(rec,ctx), t=c.t;
   const set=(id,h)=>{ const e=document.getElementById(id); if(e) e.innerHTML=h; };
-  const tot={tgt:0,shots:0,off:0,pcs:0,down:0};
+  const tot={tgt:0,shots:0,pcs:0,down:0};
   c.hours.forEach((h,i)=>{
-    const has=h.total||h.off, pcs=Math.max(0,h.total-h.off)*(h.cavEff||0);
+    const has=h.total, pcs=h.total*(h.cavEff||0);
     set(`ps-hp-${i}`, esc(h.run?.part?.partNumber||''));
     set(`ps-ht-${i}`, h.target??'—');
     set(`ps-hpc-${i}`, has? prodFmt(pcs) : '');
@@ -552,24 +556,25 @@ function prodPsRefresh(){
     }
     set(`ps-hd-${i}`, h.down||'');
     set(`ps-he-${i}`, h.eff==null||!h.total&&!h.down?'':`<span style="color:${prodTier(h.eff,.9,.75)}">${Math.round(h.eff*100)}%</span>`);
-    tot.tgt+=h.target||0; tot.shots+=h.total; tot.off+=h.off; tot.pcs+=pcs; tot.down+=h.down;
+    tot.tgt+=h.target||0; tot.shots+=h.total; tot.pcs+=pcs; tot.down+=h.down;
   });
-  set('ps-tt',tot.tgt?prodFmt(tot.tgt):'—'); set('ps-ts',prodFmt(tot.shots)); set('ps-to',prodFmt(tot.off));
+  set('ps-tt',tot.tgt?prodFmt(tot.tgt):'—'); set('ps-ts',prodFmt(tot.shots));
   set('ps-tpc',prodFmt(tot.pcs)); set('ps-td',tot.down?prodFmt(tot.down):'');
   set('ps-te',tot.tgt?`${prodPct(t.shots&&t.runtime?t.pRaw:NaN,0)}`:'');
 
   // Rejections per part (shift totals, pcs)
-  const good=r=>Math.max(0,r.castPcs-r.offPcs), rt={cast:0,rej:0,ok:0,codes:{}};
+  const good=r=>Math.max(0,r.castPcs-r.offPcs), rt={shots:0,off:0,cast:0,rej:0,ok:0,codes:{}};
   c.runs.forEach(r=>{
-    const g=good(r), has=g||r.rejPcs;
+    const g=good(r), has=g||r.rejPcs||r.off;
+    set(`ps-rs-${r._i}`, r.shots? prodFmt(r.shots) : '');
     set(`ps-rc-${r._i}`, has? prodFmt(g) : '');
     set(`ps-rr-${r._i}`, has? prodFmt(r.rejPcs) : '');
     set(`ps-ro-${r._i}`, has? prodFmt(r.okPcs) : '');
     set(`ps-rp-${r._i}`, g? `<span style="color:${prodTier(1-r.rejPcs/g,.97,.93)}">${prodPct(r.rejPcs/g)}</span>` : '');
-    rt.cast+=g; rt.rej+=r.rejPcs; rt.ok+=r.okPcs;
+    rt.shots+=r.shots; rt.off+=r.off; rt.cast+=g; rt.rej+=r.rejPcs; rt.ok+=r.okPcs;
     for(const [k,n] of Object.entries(r.rej)) rt.codes[k]=(rt.codes[k]||0)+n;
   });
-  set('ps-rtc',prodFmt(rt.cast)); set('ps-rtr',prodFmt(rt.rej)); set('ps-rto',prodFmt(rt.ok));
+  set('ps-rts',prodFmt(rt.shots)); set('ps-rtf',prodFmt(rt.off)); set('ps-rtc',prodFmt(rt.cast)); set('ps-rtr',prodFmt(rt.rej)); set('ps-rto',prodFmt(rt.ok));
   set('ps-rtp',rt.cast?prodPct(rt.rej/rt.cast):'');
   codes.forEach(k=>set(`ps-rtd-${k}`,prodFmt(rt.codes[k]||0)));
 
@@ -577,7 +582,7 @@ function prodPsRefresh(){
   if(t.shotsNoCT) warn.push('Target cycle time missing for a part on this machine — Target and Performance/OEE can\'t be calculated. Set it in Part Master.');
   if(t.shotsNoWt) warn.push('Net weight missing for a part — metal consumption understated.');
   if(c.runs.some(r=>!r.partId)) warn.push('Select a part.');
-  if(rec.hours.some(h=>prodN(h.off)>prodN(h.total))) warn.push('An hour has more off shots than total shots.');
+  if(rec.runs.some((r,i)=>prodN(r.offShots)>(c.runs.find(x=>x._i===i)?.shots||0))) warn.push('A part has more off shots than shots.');
   if(c.runs.some(r=>r.rejPcs>Math.max(0,r.castPcs-r.offPcs))) warn.push('A part has more rejected pcs than pcs cast.');
   if(t.pRaw>1.02) warn.push(`Shots exceed target rate (${prodPct(t.pRaw,0)}) — check shot counts or the target cycle time.`);
   const dupe=window._ps.all.find(s=>s.id!==window._ps.id&&s.date===rec.date&&s.shift===rec.shift&&String(s.machineId)===String(rec.machineId));
@@ -628,7 +633,7 @@ function prodPsRefresh(){
 function prodPsHead(k,v,rerender=false){
   const ps=window._ps; ps.rec[k]=v;
   // New entry with nothing keyed yet: re-pick the part that was running on this machine last shift
-  const blank=ps.rec.hours.every(h=>h.total===''&&h.off==='')&&!ps.rec.runs.some(r=>Object.values(r.rej||{}).some(x=>x!==''));
+  const blank=ps.rec.hours.every(h=>h.total==='')&&!ps.rec.runs.some(r=>(r.offShots??'')!==''||Object.values(r.rej||{}).some(x=>x!==''));
   if(!ps.id && ['machineId','shift','date'].includes(k) && blank) prodCarryOver(ps.rec,ps.all,ps.ctx);
   if(rerender) prodPsRender(); else prodPsRefresh();
 }
@@ -671,9 +676,9 @@ async function prodPsSave(next){
   if(new Set(starts).size!==starts.length){ toast('Two parts start in the same hour','d'); return; }
   const dupe=all.find(s=>s.id!==id&&s.date===rec.date&&s.shift===rec.shift&&String(s.machineId)===String(rec.machineId));
   if(dupe){ toast('An entry already exists for this date, shift and machine — edit that one instead','d'); return; }
-  const badHour=rec.hours.findIndex(h=>prodN(h.off)>prodN(h.total));
-  if(badHour>=0){ toast(`${prodSlotLabel(rec.shift,badHour)}: off shots are more than total shots`,'d'); return; }
   const c=prodCalc(rec,ctx);
+  const offRun=c.runs.find(r=>prodN(rec.runs[r._i].offShots)>r.shots);
+  if(offRun){ toast(`${offRun.part?.partNumber||'A part'}: off shots are more than shots`,'d'); return; }
   const badRun=c.runs.find(r=>r.rejPcs>Math.max(0,r.castPcs-r.offPcs));
   if(badRun){ toast(`${badRun.part?.partNumber||'A part'}: rejected pcs are more than pcs cast`,'d'); return; }
   if(!c.t.shots&&!c.t.downtime&&!confirm('No shots and no downtime entered. Save anyway?')) return;
@@ -683,11 +688,11 @@ async function prodPsSave(next){
     operator1:(rec.operator1||'').trim(), operator2:(rec.operator2||'').trim(), supervisor:(rec.supervisor||'').trim(),
     plannedMinutes:prodN(rec.plannedMinutes)||prodN(ctx.cfg.plannedMinutes)||720,
     dieCoatL:numOrBlank(rec.dieCoatL),
-    hours:rec.hours.map(h=>({total:numOrBlank(h.total), cav:numOrBlank(h.cav), off:numOrBlank(h.off)})),
+    hours:rec.hours.map(h=>({total:numOrBlank(h.total), cav:numOrBlank(h.cav)})),
     hourly:null,
     runs:prodRunRanges(rec.runs).map((r,k)=>{
       const run={partId:+r.partId, grade:r.grade||ctx.partById[r.partId]?.grade||'', cavities:prodN(r.cavities)||1, fromSlot:k===0?0:prodN(r.fromSlot)};
-      if(prodN(r.offShots)) run.offShots=prodN(r.offShots);                          // first-version entries
+      if(prodN(r.offShots)) run.offShots=prodN(r.offShots);                          // shift total, shots
       const rej={}; for(const [k,v] of Object.entries(r.rej||{})) if(prodN(v)>0) rej[k]=prodN(v);
       if(Object.keys(rej).length) run.rej=rej;                                        // shift total, pcs
       return run;
@@ -1656,8 +1661,9 @@ async function prodDemoGenerate(){
         const r=runs[runs.length>1&&i>=change?1:0]; r.rej=r.rej||{};
         const nRej=Math.round(total*(cav||dp.cavities||1)*(.004+rnd()*.03));
         for(let k=0;k<nRej;k++){ const c=pickDefect(); r.rej[c]=(r.rej[c]||0)+1; }
-        const off=i===0||i===change? Math.round(2+rnd()*6) : '';
-        return {total, cav, off:off===''?'':Math.min(off,total)};
+        const off=i===0||i===change? Math.min(total,Math.round(2+rnd()*6)) : 0;   // warm-up after start / die change
+        if(off) r.offShots=prodN(r.offShots)+off;
+        return {total, cav};
       });
       await db.prodShifts.add({date, shift:sh, machineId:m.id, operator1:names[mi][0], operator2:names[mi][1], supervisor:'',
         plannedMinutes:720, dieCoatL:4, hours, runs, downtime, remarks:'Sample data', demo:true,

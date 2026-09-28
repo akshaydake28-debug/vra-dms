@@ -111,8 +111,8 @@ def calc_shift(sheet, ctx):
     for r in run_ranges(sheet.get('runs')):
         part = ctx['parts'].get(_key(r.get('partId')))
         cav = num(r.get('cavities')) or num((part or {}).get('cavities')) or 1
-        legacy_off = num(r.get('offShots'))
-        shots, off, rej_s, cast, off_pcs, rej_pcs, rej = 0, legacy_off, 0, 0, legacy_off * cav, 0, {}
+        run_off = num(r.get('offShots'))              # shift total per part, shots
+        shots, off, rej_s, cast, off_pcs, rej_pcs, rej = 0, run_off, 0, 0, run_off * cav, 0, {}
         for s in range(r['_from'], r['_to'] + 1):
             h = hrs[s]
             hc = num(h['cav']) or cav
