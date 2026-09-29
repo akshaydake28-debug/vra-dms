@@ -499,6 +499,12 @@ def backup():
         except (TypeError, ValueError):
             backup_errors.append(f'{r.module} record {r.id}: unreadable data, skipped')
             continue
+        # Non-setting records are stored as objects; a row holding `null`, a
+        # list or a bare string (the update endpoints don't enforce a shape)
+        # would crash the whole backup on `parsed['id'] = ...` below.
+        if not r.module.startswith('setting_') and not isinstance(parsed, dict):
+            backup_errors.append(f'{r.module} record {r.id}: data is not an object, skipped')
+            continue
         if r.module.startswith('setting_'):
             key = r.module.replace('setting_','')
             if 'settings' not in data: data['settings'] = {}
@@ -516,13 +522,29 @@ def backup():
 def restore():
     err = require_admin()
     if err: return err
-    data = request.json
-    if not data: return jsonify({'error':'No data'}),400
+    data = request.get_json(silent=True)
+    if not data or not isinstance(data, dict): return jsonify({'error':'No data'}),400
 
-    # Documents — clear all and restore fresh
-    Document.query.delete()
+    # Validate the shapes up front, before anything is deleted, so a wrong or
+    # partial file is rejected cleanly instead of failing half-way through.
+    docs_in = data.get('documents')
+    if docs_in is not None and (not isinstance(docs_in, list) or not all(isinstance(x, dict) for x in docs_in)):
+        return jsonify({'error':'Invalid backup: "documents" must be a list of objects'}), 400
+    if data.get('settings') is not None and not isinstance(data['settings'], dict):
+        return jsonify({'error':'Invalid backup: "settings" must be an object'}), 400
+    for key, value in data.items():
+        if key in ('exportedAt','exportedBy','appVersion','company','documents','versions',
+                   'audit','users','customDocTypes','settings','records'):
+            continue
+        if isinstance(value, list) and not all(isinstance(x, dict) for x in value):
+            return jsonify({'error':f'Invalid backup: "{key}" must be a list of objects'}), 400
+
+    # Documents — clear all and restore fresh, but only if the file actually
+    # contains a documents list; a file without one must not wipe them.
     doc_count = 0
-    for d in data.get('documents',[]):
+    if docs_in is not None:
+        Document.query.delete()
+    for d in (docs_in or []):
         doc = Document(
             doc_number=d.get('docNumber'), title=d.get('title'),
             doc_type=d.get('docType'), revision=d.get('revision'),
