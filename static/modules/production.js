@@ -767,6 +767,7 @@ async function prodPsSave(next){
 //     open tab are kept while you move between tabs.
 // ══════════════════════════════════════════════════════
 const PROD_REPORT_TABS=[
+  {k:'gemba', l:'🚶 Yesterday'},
   {k:'viz', l:'📈 Charts'},
   {k:'oee', l:'OEE & Losses'},
   {k:'rej', l:'Rejection'},
@@ -777,11 +778,12 @@ const PROD_REPORT_TABS=[
 ];
 const PROD_PERIODS=[
   {k:'today', l:'Today',      range:()=>[prodToday(),prodToday()]},
+  {k:'yday',  l:'Yesterday',  range:()=>[prodDaysAgo(1),prodDaysAgo(1)]},
   {k:'7d',    l:'7 days',     range:()=>[prodDaysAgo(6),prodToday()]},
   {k:'30d',   l:'30 days',    range:()=>[prodDaysAgo(29),prodToday()]},
   {k:'month', l:'This month', range:()=>[prodToday().slice(0,8)+'01',prodToday()]},
 ];
-const _prodRep={tab:'oee', f:{period:'7d', from:prodDaysAgo(6), to:prodToday(), machineId:'', shift:'', partId:'', person:'', off:false, basis:'pcs'}};
+const _prodRep={tab:'oee', gembaDate:'', f:{period:'7d', from:prodDaysAgo(6), to:prodToday(), machineId:'', shift:'', partId:'', person:'', off:false, basis:'pcs'}};
 
 const PROD_REPORT_CSS=`<style>
 .pr-top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
@@ -845,7 +847,24 @@ const PROD_REPORT_CSS=`<style>
   .pr-card,.pr-kpi,.pr-grid>*{break-inside:avoid;box-shadow:none}
   .pr-grid{grid-template-columns:1fr 1fr!important}
   .pr-kpis{grid-template-columns:repeat(4,1fr)!important}
+  /* one chart only: everything off the path to the chosen card is hidden */
+  body.pr-one .pr-path>:not(.pr-path):not(.pr-print-card){display:none!important}
+  body.pr-one .pr-path{display:block!important;margin:0!important;padding:0!important}
+  body.pr-one .pr-print-card{border:none!important;margin:0!important;width:100%!important}
+  body.pr-one .pr-print-card .b{padding:6px 0 0!important}
+  body.pr-one .pr-print-card>.h{padding:0 0 4px!important}
+  body.pr-one .pr-print-card>.h b{font-size:16px!important}
 }
+.pr-card>.h .r{display:flex;align-items:baseline;gap:8px}
+.pr-cardprint{border:1px solid transparent;background:none;border-radius:6px;padding:1px 6px;font-size:12px;color:#9ca3af;cursor:pointer;line-height:1.4}
+.pr-card:hover .pr-cardprint{color:#6b7280;border-color:var(--border)}
+.pr-cardprint:hover{background:#f0f3f9;color:var(--navy)!important}
+.pr-pmenu{position:absolute;z-index:1000;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 6px 18px rgba(13,47,110,.15);padding:4px;min-width:170px}
+.pr-pmenu div{font-size:10.5px;font-weight:700;letter-spacing:.5px;color:#9ca3af;padding:5px 8px 2px}
+.pr-pmenu button{display:block;width:100%;text-align:left;border:none;background:none;padding:6px 10px;border-radius:6px;font:13px 'Inter',sans-serif;color:#1a1a2e;cursor:pointer}
+.pr-pmenu button:hover{background:#edf1fb;color:var(--navy)}
+.pr-card-ctx{display:none}
+@media print{ body.pr-one .pr-card-ctx{display:block;font-size:11px;color:#6b7280;margin:0 0 8px} }
 #pr-tip{position:fixed;z-index:999;pointer-events:none;background:#0b1b3a;color:#fff;font:12px/1.45 'Inter',sans-serif;padding:7px 10px;border-radius:7px;box-shadow:0 4px 14px rgba(0,0,0,.18);white-space:pre;display:none}
 @media (max-width:1000px){.pr-kpis{grid-template-columns:repeat(2,1fr)}.pr-grid{grid-template-columns:1fr}}
 </style>`;
@@ -853,7 +872,42 @@ const PROD_REPORT_CSS=`<style>
 function prodKpi(label,value,sub='',color=''){
   return `<div class="pr-kpi"><div class="l">${label}</div><div class="v" ${color?`style="color:${color}"`:''}>${value}</div>${sub?`<div class="s">${sub}</div>`:''}</div>`;
 }
-function prodCard(title,body,right=''){ return `<div class="pr-card"><div class="h"><b>${title}</b>${right?`<span>${right}</span>`:''}</div>${body}</div>`; }
+function prodCard(title,body,right=''){
+  return `<div class="pr-card"><div class="h"><b>${title}</b><span class="r">${right?`<span>${right}</span>`:''}<button class="pr-cardprint pr-noprint" title="Print this chart (A4 / A5)" onclick="prodCardPrintMenu(this,event)">🖨</button></span></div>${body}</div>`;
+}
+// ── Print one card ───────────────────────────────────
+const PROD_PAGE_SIZES=[['A4 landscape','A4 landscape'],['A4 portrait','A4 portrait'],['A5 landscape','A5 landscape'],['A5 portrait','A5 portrait']];
+function prodCardPrintMenu(btn,e){
+  e.stopPropagation();
+  const old=document.querySelector('.pr-pmenu'); if(old){ old.remove(); if(old._btn===btn) return; }
+  const m=document.createElement('div'); m.className='pr-pmenu'; m._btn=btn;
+  m.innerHTML=`<div>PRINT THIS CHART ON</div>${PROD_PAGE_SIZES.map(([k,l])=>`<button data-size="${k}">${l}</button>`).join('')}`;
+  document.body.appendChild(m);
+  const r=btn.getBoundingClientRect();
+  m.style.top=(window.scrollY+r.bottom+4)+'px';
+  m.style.left=Math.max(8,window.scrollX+r.right-m.offsetWidth)+'px';
+  m.onclick=ev=>{ const b=ev.target.closest('button[data-size]'); if(!b) return; m.remove(); prodPrintCard(btn.closest('.pr-card'),b.dataset.size); };
+  setTimeout(()=>document.addEventListener('click',function close(ev){ if(!m.contains(ev.target)){ m.remove(); document.removeEventListener('click',close); } }),0);
+}
+function prodPrintCard(card,size){
+  if(!card) return;
+  // Keep only the path from <body> down to this card; add the report / filter line on top
+  const path=[]; for(let el=card.parentElement; el&&el!==document.documentElement; el=el.parentElement){ el.classList.add('pr-path'); path.push(el); }
+  card.classList.add('pr-print-card');
+  const ctxLine=document.querySelector('.pr-print-only')?.textContent||'';
+  const ctx=document.createElement('div'); ctx.className='pr-card-ctx'; ctx.textContent=ctxLine; card.prepend(ctx);
+  const page=document.createElement('style'); page.id='pr-page-size';
+  page.textContent=`@media print{@page{size:${size};margin:${size.startsWith('A5')?'8mm':'10mm'}}}`;
+  document.body.appendChild(page);      // after the report's own @page rule, so this size wins
+  document.body.classList.add('pr-one');
+  let done=false;
+  const cleanup=()=>{ if(done) return; done=true;
+    document.body.classList.remove('pr-one'); card.classList.remove('pr-print-card'); ctx.remove(); page.remove();
+    path.forEach(el=>el.classList.remove('pr-path')); window.removeEventListener('afterprint',cleanup); };
+  window.addEventListener('afterprint',cleanup);
+  window.print();
+  setTimeout(cleanup,1500);     // browsers that don't fire afterprint
+}
 
 // ── Charts (inline SVG) ──────────────────────────────
 // Categorical colours in fixed order (validated for colour-blind separation);
@@ -1074,6 +1128,7 @@ async function prodRenderReports(opts={}){
   const partFilter=tab==='rej'||tab==='mat'||tab==='viz'? f.partId : '';
   let body, people=[];
   if(tab==='cap') body=await prodRepCapacity(ctx);
+  else if(tab==='gemba') body=await prodRepGemba(ctx);
   else if(tab==='fet'){
     const all=await prodFetLoad();
     people=[...new Set(all.flatMap(e=>(e.rows||[]).map(r=>r.person)).filter(Boolean))].sort();
@@ -1097,8 +1152,8 @@ async function prodRenderReports(opts={}){
       <button class="btn btn-o btn-sm pr-noprint" onclick="window.print()" title="Print or save as PDF (A4)">🖨 Print</button>
     </div>
   </div>
-  <div class="pr-print-only">${esc(PROD_REPORT_TABS.find(t=>t.k===tab)?.l.replace(/^\W+\s*/,'')||'')} · ${prodDayLabel(f.from)} – ${prodDayLabel(f.to)} ${f.to.slice(0,4)} · ${esc(f.machineId?prodMachineLabel(ctx.machineById[f.machineId]):'All machines')} · ${f.shift?'Shift '+esc(f.shift):'Both shifts'}${partFilter?` · ${esc(ctx.partById[partFilter]?.partNumber||'')}`:''} · printed ${new Date().toLocaleString('en-IN',{dateStyle:'medium',timeStyle:'short'})}</div>
-  ${tab==='cap'?'':prodRepFilters(ctx,tab,people)}
+  <div class="pr-print-only">${tab==='gemba'?`Gemba walk sheet · ${prodGembaDate()} · printed ${new Date().toLocaleString('en-IN',{dateStyle:'medium',timeStyle:'short'})}`:`${esc(PROD_REPORT_TABS.find(t=>t.k===tab)?.l.replace(/^\W+\s*/,'')||'')} · ${prodDayLabel(f.from)} – ${prodDayLabel(f.to)} ${f.to.slice(0,4)} · ${esc(f.machineId?prodMachineLabel(ctx.machineById[f.machineId]):'All machines')} · ${f.shift?'Shift '+esc(f.shift):'Both shifts'}${partFilter?` · ${esc(ctx.partById[partFilter]?.partNumber||'')}`:''} · printed ${new Date().toLocaleString('en-IN',{dateStyle:'medium',timeStyle:'short'})}`}</div>
+  ${tab==='cap'||tab==='gemba'?'':prodRepFilters(ctx,tab,people)}
   ${body}`);
   if(tab==='cap') prodCapCalc();
 }
@@ -1110,6 +1165,105 @@ function prodPickPart(c,partId){
   const x={t:{},byGrade:{},byPart:{},byDefect:{},byDown:{}};
   for(const k of PROD_SUM_KEYS) x.t[k]=runs.reduce((s,r)=>s+(r[k]||0),0);
   prodMergeMaps(x,runs,[]); x.t=prodRatios(x.t); return x;
+}
+
+// ── Yesterday (Gemba walk sheet) ─────────────────────
+// One page for the morning walk: how yesterday went, what to look at on
+// the floor, and who to talk to. ◀ ▶ steps through days.
+function prodGembaDate(){ return _prodRep.gembaDate||prodDaysAgo(1); }
+function prodGembaStep(n){ const d=prodAddDays(prodGembaDate(),n); if(d>prodToday()) return; _prodRep.gembaDate=d; prodRenderReports(); }
+async function prodRepGemba(ctx){
+  prodVizTipInit();
+  const d=prodGembaDate(), dPrev=prodAddDays(d,-1), yday=d===prodDaysAgo(1);
+  const [rows,prevRows,fetAll]=await Promise.all([prodLoadShifts(ctx,{from:d,to:d}),prodLoadShifts(ctx,{from:dPrev,to:dPrev}),prodFetLoad()]);
+  const target=Math.min(1,prodN(ctx.cfg.targetOeePct)/100)||.75;
+  const t=prodAgg(rows.map(r=>r.c)).t, pt=prevRows.length? prodAgg(prevRows.map(r=>r.c)).t : null;
+  const rejPct=x=>(x.castPcs-x.offPcs)>0? x.rejPcs/(x.castPcs-x.offPcs) : 0;
+  const pts=v=>prodFmt(v*100,1)+' pts';
+  const mLab=id=>prodMachineLabel(ctx.machineById[id]);
+  const navHtml=`<div class="pr-filters pr-noprint" style="justify-content:space-between">
+    <div style="display:flex;gap:8px;align-items:center">
+      <button class="pr-chip" onclick="prodGembaStep(-1)">◀ Previous day</button>
+      <input type="date" value="${d}" max="${prodToday()}" onchange="_prodRep.gembaDate=this.value;prodRenderReports()">
+      <button class="pr-chip" ${d>=prodToday()?'disabled style="opacity:.4"':''} onclick="prodGembaStep(1)">Next day ▶</button>
+      ${yday?'':`<button class="pr-chip on" onclick="_prodRep.gembaDate='';prodRenderReports()">Back to yesterday</button>`}
+    </div>
+    <span style="font-size:12px;color:#6b7280">Tip: 🖨 Print gives an A4 sheet to carry on the walk.</span></div>`;
+  const title=`<div style="font-size:15px;font-weight:700;color:var(--navy);margin:2px 2px 10px">${yday?'Yesterday — ':''}${new Date(d+'T00:00:00').toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}</div>`;
+
+  // Expected machine × shift slots (active machines, both shifts)
+  const mcs=ctx.machines.filter(m=>m.active!==false||rows.some(r=>String(r.s.machineId)===String(m.id)));
+  const slots=Object.keys(PROD_SHIFTS).flatMap(sh=>mcs.map(m=>({sh,m,r:rows.find(r=>r.s.shift===sh&&String(r.s.machineId)===String(m.id))})));
+
+  // Fettling that day
+  const fr=fetAll.filter(e=>e.date===d).flatMap(e=>(e.rows||[]).filter(r=>prodN(r.qty)>0));
+  const ft=prodFetTotals(fr);
+
+  // ── Talking points (most important first) ──
+  const tp=[];   // {lvl:0 critical,1 warn,2 info, html}
+  const missing=slots.filter(x=>!x.r);
+  if(missing.length) tp.push({lvl:0,html:`<b>No entry</b> for ${missing.map(x=>`${esc(prodMachineLabel(x.m))} · Shift ${x.sh}`).join(', ')} — day's report is incomplete.`});
+  for(const x of slots){ if(!x.r) continue; const s=x.r.s, c=x.r.c, xt=c.t, where=`${esc(prodMachineLabel(x.m))} · Shift ${x.sh}`;
+    if(s.notRun){ if(s.notRun!=='No Plan') tp.push({lvl:0,html:`<b>${where} did not run</b> — ${esc(s.notRun)}${s.remarks?`: ${esc(s.remarks)}`:''}.`}); continue; }
+    if(xt.planned&&xt.oee<target){
+      const loss=[['downtime',xt.downtime],['speed loss',xt.shotsNoCT?0:xt.speedLossMin],['cavity down',xt.cavLossMin],['quality loss',xt.qualLossMin]].sort((a,b)=>b[1]-a[1])[0];
+      const top=Object.entries(c.byDown).sort((a,b)=>b[1]-a[1])[0];
+      tp.push({lvl:xt.oee<target-.1?0:1,html:`<b>${where}: OEE ${prodPct(xt.oee,0)}</b> — ${pts(target-xt.oee)} below target. Biggest loss: ${loss[0]} ${prodFmt(loss[1])} min${loss[0]==='downtime'&&top?` (mostly ${esc(top[0])}, ${prodFmt(top[1])} min)`:''}.`}); }
+    for(const r of c.runs) if(r.part&&r.cav<r.dieCav&&r.shots) tp.push({lvl:1,html:`<b>${where}: cavity down</b> — ${esc(r.part.partNumber)} ran ${prodFmt(r.shots)} shots on ${r.cav} of ${r.dieCav} cavities (${prodFmt(r.cavLossMin)} min lost). Check die repair status.`});
+    for(const dl of (s.downtime||[])) if(prodN(dl.minutes)>=60&&!PROD_NOT_PLANNED.includes(dl.category)) tp.push({lvl:1,html:`<b>${where}: ${prodFmt(prodN(dl.minutes))} min ${esc(dl.category)}</b>${dl.remark?` — ${esc(dl.remark)}`:''}. Is the cause fixed?`});
+    for(const r of c.runs){ const rp=rejPct(r); if(r.rejPcs>=5&&rp>=Math.max(.03,2*rejPct(t))){ const top=Object.entries(r.rej).sort((a,b)=>b[1]-a[1])[0];
+      tp.push({lvl:1,html:`<b>${where}: ${esc(r.part?.partNumber||'')} rejection ${prodPct(rp,1)}</b> (${prodFmt(r.rejPcs)} pcs)${top?` — mostly ${esc(ctx.defectByCode[top[0]]?.description||top[0])} (${prodFmt(top[1])})`:''}. Look at the die / process.`}); } }
+  }
+  const pile=t.okPcs-ft.qty;
+  if(t.okPcs&&pile>t.okPcs*.25) tp.push({lvl:2,html:`<b>Fettling fell behind by ${prodFmt(pile)} parts</b> (${prodFmt(t.okPcs)} OK castings made, ${prodFmt(ft.qty)} fettled).`});
+  if(ft.qty&&ft.rejPct>.02) tp.push({lvl:2,html:`<b>Fettling rejection ${prodPct(ft.rejPct,1)}</b> (${prodFmt(ft.rej)} parts).`});
+  tp.sort((a,b)=>a.lvl-b.lvl);
+  const icon=['🔴','🟠','🔵'];
+  const tpHtml=tp.length?`<ol style="margin:0;padding:0 0 0 4px;list-style:none;display:grid;gap:7px">${tp.map(x=>`<li style="display:flex;gap:8px;font-size:13px;line-height:1.45"><span>${icon[x.lvl]}</span><span>${x.html}</span></li>`).join('')}</ol>`
+    :`<div style="font-size:13px;color:#16a34a;font-weight:600">✅ Nothing flagged — every shift at or above target with no long stops.</div>`;
+
+  // ── Machine × shift cards ──
+  const card=x=>{ const where=`${esc(prodMachineLabel(x.m))} · Shift ${x.sh}`;
+    if(!x.r) return `<div class="pr-kpi" style="border-color:#fecaca;background:#fff7f7"><div class="l">${where}</div><div class="v" style="font-size:16px;color:#dc2626">No entry</div></div>`;
+    const s=x.r.s, xt=x.r.c.t;
+    if(s.notRun) return `<div class="pr-kpi"><div class="l">${where}</div><div class="v" style="font-size:16px;color:${s.notRun==='No Plan'?'#6b7280':'#dc2626'}">⛔ Did not run</div><div class="s">${esc(s.notRun)}${s.remarks?` — ${esc(s.remarks)}`:''}</div></div>`;
+    const below=xt.planned&&xt.oee<target, top=Object.entries(x.r.c.byDown).sort((a,b)=>b[1]-a[1])[0];
+    return `<div class="pr-kpi"><div class="l">${where}</div>
+      <div class="v" style="font-size:22px;${below?'color:#dc2626':''}">${prodPct(xt.oee,0)} <span style="font-size:11px;font-weight:600;color:${below?'#dc2626':'#6b7280'}">OEE${below?' · below target':''}</span></div>
+      <div class="s" style="line-height:1.55">${x.r.c.runs.map(r=>esc(r.part?.partNumber||'—')+(r.cav<r.dieCav?` <span style="color:#d97706">(${r.cav}/${r.dieCav} cav)</span>`:'')).join(', ')}<br>
+        <b style="color:#1a1a2e">${prodFmt(xt.okPcs)}</b> OK · rej ${prodPct(rejPct(xt),1)} · down ${prodFmt(xt.downtime)} min${top?` (${esc(top[0])})`:''}<br>
+        ${esc([s.operator1,s.operator2].filter(Boolean).join(', ')||'—')}${s.remarks?`<br><i>${esc(s.remarks)}</i>`:''}</div></div>`; };
+
+  // ── Downtime events & rejections that day ──
+  const events=rows.flatMap(({s})=>s.notRun?[]:(s.downtime||[]).filter(x=>prodN(x.minutes)>0).map(x=>({...x,where:`${mLab(s.machineId)} · ${s.shift}`}))).sort((a,b)=>prodN(b.minutes)-prodN(a.minutes));
+  const rejRows=rows.flatMap(({s,c})=>c.runs.filter(r=>r.castPcs).map(r=>({r,where:`${mLab(s.machineId)} · ${s.shift}`}))).sort((a,b)=>b.r.rejPcs-a.r.rejPcs);
+
+  return navHtml+title+`
+  <div class="pr-kpis">
+    ${prodDeltaKpi('OEE',t.oee,pt?.planned?pt.oee:null,{fmt:v=>prodPct(v),dfmt:pts,color:t.planned&&t.oee<target?PROD_VIZ_BELOW:'',note:t.planned&&t.oee<target?`below target ${prodPct(target,0)}`:''})}
+    ${prodDeltaKpi('OK parts',t.okPcs,pt?pt.okPcs:null)}
+    ${prodDeltaKpi('Rejection %',rejPct(t),pt?rejPct(pt):null,{fmt:v=>prodPct(v,2),dfmt:pts,better:-1})}
+    ${prodDeltaKpi('Downtime',t.downtime/60,pt?pt.downtime/60:null,{fmt:v=>prodFmt(v,1)+' h',better:-1})}
+  </div>
+  ${prodCard('Talking points for the walk',`<div class="b">${tpHtml}</div>`,`${tp.length} item${tp.length===1?'':'s'} · vs day before`)}
+  <div class="pr-sec">Each machine &amp; shift</div>
+  <div class="pr-kpis" style="grid-template-columns:repeat(${Math.min(4,Math.max(2,mcs.length))},1fr)">${slots.map(card).join('')}</div>
+  <div class="pr-grid">
+    ${prodCard('Downtime events',events.length?`<table class="pr-tbl"><thead><tr><th>Machine · shift</th><th>Reason</th><th class="n">Min</th><th>Remark</th></tr></thead><tbody>
+      ${events.map(x=>`<tr><td>${esc(x.where)}</td><td>${esc(x.category)}${PROD_NOT_PLANNED.includes(x.category)?' <span style="color:#9ca3af">(not counted)</span>':''}</td><td class="n mono" style="${prodN(x.minutes)>=60&&!PROD_NOT_PLANNED.includes(x.category)?'color:#dc2626;font-weight:700':''}">${prodFmt(prodN(x.minutes))}</td><td style="color:#6b7280">${esc(x.remark||'')}</td></tr>`).join('')}</tbody></table>`:'<div class="pr-empty">No downtime logged.</div>',`${prodFmt(t.downtime)} min counted`)}
+    ${prodCard('Rejections by part',rejRows.length?`<table class="pr-tbl"><thead><tr><th>Part</th><th>Machine · shift</th><th class="n">Rejected</th><th class="n">Rej %</th><th>Top defect</th></tr></thead><tbody>
+      ${rejRows.map(({r,where})=>{ const top=Object.entries(r.rej).sort((a,b)=>b[1]-a[1])[0], rp=rejPct(r);
+        return `<tr><td><b>${esc(r.part?.partNumber||'—')}</b></td><td>${esc(where)}</td><td class="n mono">${prodFmt(r.rejPcs)}</td><td class="n mono" style="${rp>=.03?'color:#dc2626;font-weight:700':''}">${prodPct(rp,1)}</td><td style="color:#6b7280">${top?`${esc(ctx.defectByCode[top[0]]?.description||top[0])} (${prodFmt(top[1])})`:'—'}</td></tr>`; }).join('')}</tbody></table>`:'<div class="pr-empty">No production.</div>',`${prodFmt(t.rejPcs)} pcs · ${prodPct(rejPct(t),2)}`)}
+  </div>
+  <div class="pr-grid">
+    ${prodCard('Where the day\'s time went',`<div class="b">${t.planned?prodDonut(prodTimeSplit(t),{fmt:v=>prodFmt(v)+' min',center:prodPct(t.oee,0),sub:'OEE'}):'<div class="pr-empty">No planned time.</div>'}</div>`,`${prodFmt(t.planned)} min planned`)}
+    ${prodCard('Fettling',fr.length?`<div class="b" style="display:grid;grid-template-columns:1fr auto;gap:5px 14px;font-size:13px">
+        <span>Parts fettled</span><b class="mono">${prodFmt(ft.qty)}</b>
+        <span>OK / rejected</span><b class="mono">${prodFmt(ft.ok)} / <span style="color:${ft.rej?'#dc2626':''}">${prodFmt(ft.rej)}</span> (${prodPct(ft.rejPct,1)})</b>
+        <span>OK castings made</span><b class="mono">${prodFmt(t.okPcs)}</b>
+        <span>${pile>=0?'Added to the waiting pile':'Taken from the waiting pile'}</span><b class="mono" style="color:${pile>0?'#d97706':'#16a34a'}">${prodFmt(Math.abs(pile))}</b>
+        <span>People</span><b>${[...new Set(fr.map(r=>r.person).filter(Boolean))].length}</b></div>`:'<div class="pr-empty">No fettling entered for this day.</div>')}
+  </div>`;
 }
 
 // ── Charts: fettling ─────────────────────────────────
