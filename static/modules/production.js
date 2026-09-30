@@ -845,7 +845,24 @@ const PROD_REPORT_CSS=`<style>
   .pr-card,.pr-kpi,.pr-grid>*{break-inside:avoid;box-shadow:none}
   .pr-grid{grid-template-columns:1fr 1fr!important}
   .pr-kpis{grid-template-columns:repeat(4,1fr)!important}
+  /* one chart only: everything off the path to the chosen card is hidden */
+  body.pr-one .pr-path>:not(.pr-path):not(.pr-print-card){display:none!important}
+  body.pr-one .pr-path{display:block!important;margin:0!important;padding:0!important}
+  body.pr-one .pr-print-card{border:none!important;margin:0!important;width:100%!important}
+  body.pr-one .pr-print-card .b{padding:6px 0 0!important}
+  body.pr-one .pr-print-card>.h{padding:0 0 4px!important}
+  body.pr-one .pr-print-card>.h b{font-size:16px!important}
 }
+.pr-card>.h .r{display:flex;align-items:baseline;gap:8px}
+.pr-cardprint{border:1px solid transparent;background:none;border-radius:6px;padding:1px 6px;font-size:12px;color:#9ca3af;cursor:pointer;line-height:1.4}
+.pr-card:hover .pr-cardprint{color:#6b7280;border-color:var(--border)}
+.pr-cardprint:hover{background:#f0f3f9;color:var(--navy)!important}
+.pr-pmenu{position:absolute;z-index:1000;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 6px 18px rgba(13,47,110,.15);padding:4px;min-width:170px}
+.pr-pmenu div{font-size:10.5px;font-weight:700;letter-spacing:.5px;color:#9ca3af;padding:5px 8px 2px}
+.pr-pmenu button{display:block;width:100%;text-align:left;border:none;background:none;padding:6px 10px;border-radius:6px;font:13px 'Inter',sans-serif;color:#1a1a2e;cursor:pointer}
+.pr-pmenu button:hover{background:#edf1fb;color:var(--navy)}
+.pr-card-ctx{display:none}
+@media print{ body.pr-one .pr-card-ctx{display:block;font-size:11px;color:#6b7280;margin:0 0 8px} }
 #pr-tip{position:fixed;z-index:999;pointer-events:none;background:#0b1b3a;color:#fff;font:12px/1.45 'Inter',sans-serif;padding:7px 10px;border-radius:7px;box-shadow:0 4px 14px rgba(0,0,0,.18);white-space:pre;display:none}
 @media (max-width:1000px){.pr-kpis{grid-template-columns:repeat(2,1fr)}.pr-grid{grid-template-columns:1fr}}
 </style>`;
@@ -853,7 +870,42 @@ const PROD_REPORT_CSS=`<style>
 function prodKpi(label,value,sub='',color=''){
   return `<div class="pr-kpi"><div class="l">${label}</div><div class="v" ${color?`style="color:${color}"`:''}>${value}</div>${sub?`<div class="s">${sub}</div>`:''}</div>`;
 }
-function prodCard(title,body,right=''){ return `<div class="pr-card"><div class="h"><b>${title}</b>${right?`<span>${right}</span>`:''}</div>${body}</div>`; }
+function prodCard(title,body,right=''){
+  return `<div class="pr-card"><div class="h"><b>${title}</b><span class="r">${right?`<span>${right}</span>`:''}<button class="pr-cardprint pr-noprint" title="Print this chart (A4 / A5)" onclick="prodCardPrintMenu(this,event)">🖨</button></span></div>${body}</div>`;
+}
+// ── Print one card ───────────────────────────────────
+const PROD_PAGE_SIZES=[['A4 landscape','A4 landscape'],['A4 portrait','A4 portrait'],['A5 landscape','A5 landscape'],['A5 portrait','A5 portrait']];
+function prodCardPrintMenu(btn,e){
+  e.stopPropagation();
+  const old=document.querySelector('.pr-pmenu'); if(old){ old.remove(); if(old._btn===btn) return; }
+  const m=document.createElement('div'); m.className='pr-pmenu'; m._btn=btn;
+  m.innerHTML=`<div>PRINT THIS CHART ON</div>${PROD_PAGE_SIZES.map(([k,l])=>`<button data-size="${k}">${l}</button>`).join('')}`;
+  document.body.appendChild(m);
+  const r=btn.getBoundingClientRect();
+  m.style.top=(window.scrollY+r.bottom+4)+'px';
+  m.style.left=Math.max(8,window.scrollX+r.right-m.offsetWidth)+'px';
+  m.onclick=ev=>{ const b=ev.target.closest('button[data-size]'); if(!b) return; m.remove(); prodPrintCard(btn.closest('.pr-card'),b.dataset.size); };
+  setTimeout(()=>document.addEventListener('click',function close(ev){ if(!m.contains(ev.target)){ m.remove(); document.removeEventListener('click',close); } }),0);
+}
+function prodPrintCard(card,size){
+  if(!card) return;
+  // Keep only the path from <body> down to this card; add the report / filter line on top
+  const path=[]; for(let el=card.parentElement; el&&el!==document.documentElement; el=el.parentElement){ el.classList.add('pr-path'); path.push(el); }
+  card.classList.add('pr-print-card');
+  const ctxLine=document.querySelector('.pr-print-only')?.textContent||'';
+  const ctx=document.createElement('div'); ctx.className='pr-card-ctx'; ctx.textContent=ctxLine; card.prepend(ctx);
+  const page=document.createElement('style'); page.id='pr-page-size';
+  page.textContent=`@media print{@page{size:${size};margin:${size.startsWith('A5')?'8mm':'10mm'}}}`;
+  document.body.appendChild(page);      // after the report's own @page rule, so this size wins
+  document.body.classList.add('pr-one');
+  let done=false;
+  const cleanup=()=>{ if(done) return; done=true;
+    document.body.classList.remove('pr-one'); card.classList.remove('pr-print-card'); ctx.remove(); page.remove();
+    path.forEach(el=>el.classList.remove('pr-path')); window.removeEventListener('afterprint',cleanup); };
+  window.addEventListener('afterprint',cleanup);
+  window.print();
+  setTimeout(cleanup,1500);     // browsers that don't fire afterprint
+}
 
 // ── Charts (inline SVG) ──────────────────────────────
 // Categorical colours in fixed order (validated for colour-blind separation);
