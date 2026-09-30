@@ -893,9 +893,10 @@ function prodAxisTitles(W,h,L,T,ph,xTitle,yTitle){
 // Columns over categories (x). series: [{name,color,values[]}], stacked when >1.
 // colorOf(i,v): optional per-column colour (single series), e.g. red below target.
 // ref: optional {value,label} dashed reference line. tips[i]: tooltip for column i.
-function prodColumns(xs,series,{fmt=prodFmt,ref=null,tips=[],yMax=null,h=210,int=false,xTitle='',yTitle='',colorOf=null,extraLegend='',W=640}={}){
+// grouped: series side by side instead of stacked.
+function prodColumns(xs,series,{fmt=prodFmt,ref=null,tips=[],yMax=null,h=210,int=false,xTitle='',yTitle='',colorOf=null,extraLegend='',W=640,grouped=false}={}){
   const L=yTitle?62:46, R=10, T=12, B=xTitle?42:26; h+=xTitle?16:0; const ph=h-T-B, pw=W-L-R;
-  const tot=xs.map((_,i)=>series.reduce((s,x)=>s+(x.values[i]||0),0));
+  const tot=xs.map((_,i)=>grouped? Math.max(0,...series.map(x=>x.values[i]||0)) : series.reduce((s,x)=>s+(x.values[i]||0),0));
   const max=yMax??prodNiceMax(Math.max(...tot,ref?.value||0),int);
   const y=v=>T+ph-(v/max)*ph, bw=pw/Math.max(1,xs.length), cw=Math.max(2,Math.min(38,bw*.62));
   const every=Math.ceil(xs.length/10);
@@ -903,6 +904,11 @@ function prodColumns(xs,series,{fmt=prodFmt,ref=null,tips=[],yMax=null,h=210,int
   for(let k=0;k<=4;k++){ const v=max*k/4; g+=`<line x1="${L}" x2="${W-R}" y1="${y(v)}" y2="${y(v)}" stroke="${PROD_VIZ_GRID}"/><text x="${L-6}" y="${y(v)+4}" text-anchor="end">${fmt(v)}</text>`; }
   xs.forEach((lab,i)=>{
     const cx=L+bw*i+bw/2; let base=0, bars='';
+    if(grouped){ const n=series.length, gw=Math.min(22,(bw*.72-(n-1)*2)/n);
+      series.forEach((sr,j)=>{ const v=sr.values[i]||0; if(v<=0) return;
+        const bx=cx-(n*gw+(n-1)*2)/2+j*(gw+2), y1=y(v), hh=Math.max(0,y(0)-y1), r=Math.min(4,gw/2,hh);
+        bars+=`<path d="M${bx},${y(0)} V${y1+r} q0,-${r} ${r},-${r} H${bx+gw-r} q${r},0 ${r},${r} V${y(0)} Z" fill="${sr.color}"/>`; });
+    } else
     series.forEach((sr,j)=>{ const v=sr.values[i]||0; if(v<=0) return;
       const y0=y(base), y1=y(base+v), top=j===series.length-1||series.slice(j+1).every(x=>!(x.values[i]>0));
       const hh=Math.max(0,y0-y1-(base>0?2:0));      // 2px surface gap between stacked segments
@@ -914,9 +920,10 @@ function prodColumns(xs,series,{fmt=prodFmt,ref=null,tips=[],yMax=null,h=210,int
     g+=bars+`<rect class="hit" x="${L+bw*i}" y="${T}" width="${bw}" height="${ph}" fill="transparent" ${prodTip(tips[i]||`${lab}: ${fmt(tot[i])}`)}/>`;
     if(i%every===0) g+=`<text x="${cx}" y="${T+ph+16}" text-anchor="middle">${esc(lab)}</text>`;
   });
-  if(ref) g+=`<line x1="${L}" x2="${W-R}" y1="${y(ref.value)}" y2="${y(ref.value)}" stroke="#374151" stroke-dasharray="4 4" stroke-width="1.2" pointer-events="none"/><text x="${W-R}" y="${y(ref.value)-5}" text-anchor="end" style="fill:#374151">${esc(ref.label)}</text>`;
+  if(ref) g+=`<line x1="${L}" x2="${W-R}" y1="${y(ref.value)}" y2="${y(ref.value)}" stroke="#374151" stroke-dasharray="4 4" stroke-width="1.2" pointer-events="none"/>`;
   g+=`<line x1="${L}" x2="${W-R}" y1="${T+ph}" y2="${T+ph}" stroke="#cbd2e0"/>`+prodAxisTitles(W,h,L,T,ph,xTitle,yTitle);
-  const legend=series.length>1||extraLegend?`<div class="pr-legend">${series.length>1?series.map(sr=>`<span><span class="pr-dot" style="background:${sr.color}"></span>${esc(sr.name)}</span>`).join(''):''}${extraLegend}</div>`:'';
+  const refKey=ref?`<span><svg width="18" height="8" style="display:inline;width:18px;vertical-align:1px;margin-right:6px"><line x1="0" x2="18" y1="4" y2="4" stroke="#374151" stroke-dasharray="4 3" stroke-width="1.5"/></svg>${esc(ref.label)}</span>`:'';
+  const legend=series.length>1||extraLegend||ref?`<div class="pr-legend">${series.length>1?series.map(sr=>`<span><span class="pr-dot" style="background:${sr.color}"></span>${esc(sr.name)}</span>`).join(''):''}${extraLegend}${refKey}</div>`:'';
   return `<div class="pr-viz"><svg viewBox="0 0 ${W} ${h}">${g}</svg>${legend}</div>`;
 }
 // Line over categories with markers; null values leave a gap.
@@ -1078,7 +1085,8 @@ async function prodRenderReports(opts={}){
     let prev=[];
     if(tab==='viz'){ const n=Math.round((new Date(f.to)-new Date(f.from))/864e5)+1;
       prev=await prodLoadShifts(ctx,{from:prodAddDays(f.from,-n),to:prodAddDays(f.from,-1),machineId:f.machineId,shift:f.shift,partId:partFilter}); }
-    body = tab==='viz'? prodRepCharts(ctx,rows,prev) : tab==='oee'? prodRepOEE(ctx,rows) : tab==='rej'? prodRepRejection(ctx,rows) : tab==='mat'? prodRepMaterial(ctx,rows) : prodRepCustomers(ctx,rows);
+    const fet=tab==='viz'? (await prodFetLoad()).filter(e=>e.date>=f.from&&e.date<=f.to) : [];
+    body = tab==='viz'? prodRepCharts(ctx,rows,prev,fet) : tab==='oee'? prodRepOEE(ctx,rows) : tab==='rej'? prodRepRejection(ctx,rows) : tab==='mat'? prodRepMaterial(ctx,rows) : prodRepCustomers(ctx,rows);
   }
   if(seq!==_prodRepSeq) return;
   setC(`${PROD_REPORT_CSS}
@@ -1104,10 +1112,57 @@ function prodPickPart(c,partId){
   prodMergeMaps(x,runs,[]); x.t=prodRatios(x.t); return x;
 }
 
+// ── Charts: fettling ─────────────────────────────────
+// Fettling isn't tied to a machine or shift, so only the period and part
+// filters apply. Castings vs fettled shows whether fettling keeps pace.
+function prodChartsFettling(ctx,fet,rows,{keys,xs,keyOf,xT,bucket,partId}){
+  const fr=fet.flatMap(e=>(e.rows||[]).map(r=>({...r,date:e.date}))).filter(r=>prodN(r.qty)>0&&(!partId||String(r.partId)===String(partId)));
+  const head='<div class="pr-sec">Fettling <span style="text-transform:none;letter-spacing:0;font-weight:500">— period &amp; part filters only (fettling isn\'t per machine / shift)</span></div>';
+  if(!fr.length) return head+prodCard('Fettling','<div class="pr-empty">No fettling recorded for this period.</div>');
+  const t=prodFetTotals(fr);
+  // OK castings from die casting in the same period (all machines / shifts, same part filter)
+  const castRows=rows;   // already period + part filtered; machine / shift filters narrow it
+  const castOk=prodAgg(castRows.map(r=>r.c)).t.okPcs;
+  const castPer=keys.map(k=>prodAgg(castRows.filter(r=>keyOf(r.s.date)===k).map(r=>r.c)).t.okPcs);
+  const fetPer=keys.map(k=>prodFetTotals(fr.filter(r=>keyOf(r.date)===k)));
+  const people={}; fr.forEach(r=>(people[r.person||'(no name)']=people[r.person||'(no name)']||[]).push(r));
+  const ppl=Object.entries(people).map(([name,rs])=>({name,t:prodFetTotals(rs),days:new Set(rs.map(r=>r.date)).size})).sort((a,b)=>b.t.qty-a.t.qty);
+  const reasons={}; fr.forEach(r=>{ const n=Math.min(prodN(r.rej),prodN(r.qty)); if(n>0){ const k=r.reason||'Not specified'; reasons[k]=(reasons[k]||0)+n; } });
+  const gap=castOk-t.qty;
+  const filtered=_prodRep.f.machineId||_prodRep.f.shift;
+  return head+`
+  <div class="pr-kpis">
+    ${prodKpi('Parts fettled',prodFmt(t.qty),`${ppl.length} ${ppl.length===1?'person':'people'} · ${prodFmt(t.ok)} OK`)}
+    ${prodKpi('Fettling rejection',prodPct(t.rejPct,2),`${prodFmt(t.rej)} parts rejected`,t.rejPct>.02?PROD_VIZ_BELOW:'')}
+    ${prodKpi('OK castings made',prodFmt(castOk),filtered?'machine / shift filter applied':'die casting, same period')}
+    ${prodKpi(gap>=0?'Castings not yet fettled':'Fettled from earlier stock',prodFmt(Math.abs(gap)),gap>0?'pile grew this period':gap<0?'pile shrank this period':'kept pace',gap>0?'#d97706':'#16a34a')}
+  </div>
+  ${prodCard(`Castings made vs fettled by ${bucket}`,`<div class="b">${prodColumns(xs,[
+      {name:'OK castings made',color:PROD_VIZ_CAT[0],values:castPer},
+      {name:'Parts fettled',color:PROD_VIZ_CAT[1],values:fetPer.map(x=>x.qty)}],
+    {W:1300,grouped:true,xTitle:xT,yTitle:'Parts (pcs)',tips:keys.map((k,i)=>`${xs[i]}\nOK castings made: ${prodFmt(castPer[i])}\nFettled: ${prodFmt(fetPer[i].qty)} (${prodFmt(fetPer[i].ok)} OK)\n${castPer[i]-fetPer[i].qty>=0?'Added to the pile: ':'Taken from the pile: '}${prodFmt(Math.abs(castPer[i]-fetPer[i].qty))}`)})}</div>
+    <div class="pr-note">When the orange bar is shorter than the blue one, castings are piling up waiting for fettling.</div>`,`${prodFmt(castOk)} made · ${prodFmt(t.qty)} fettled`)}
+  <div class="pr-grid">
+    ${prodCard('Parts fettled by person',`<div class="b">${prodColumns(ppl.map(x=>x.name),[{name:'Fettled',color:PROD_VIZ_CAT[1],values:ppl.map(x=>x.t.qty)}],
+      {xTitle:'Person',yTitle:'Parts fettled (pcs)',tips:ppl.map(x=>`${x.name}\n${prodFmt(x.t.qty)} fettled · ${prodFmt(x.t.ok)} OK\n${x.days} day${x.days===1?'':'s'} · ${prodFmt(x.days?x.t.qty/x.days:0)} per day`)})}</div>`,
+      `avg ${prodFmt(ppl.length?t.qty/ppl.length:0)} per person`)}
+    ${prodCard('Fettling rejection % by person',`<div class="b">${prodColumns(ppl.map(x=>x.name),[{name:'Rejection %',color:PROD_VIZ_CAT[0],values:ppl.map(x=>x.t.rejPct)}],
+      {fmt:v=>prodPct(v,1),xTitle:'Person',yTitle:'Rejection %',colorOf:(i,v)=>v>t.rejPct?PROD_VIZ_BELOW:'',
+       ref:{value:t.rejPct,label:`average ${prodPct(t.rejPct,2)}`},
+       extraLegend:`<span><span class="pr-dot" style="background:${PROD_VIZ_CAT[0]}"></span>at / better than average</span><span><span class="pr-dot" style="background:${PROD_VIZ_BELOW}"></span>worse than average</span>`,
+       tips:ppl.map(x=>`${x.name}\nRejection ${prodPct(x.t.rejPct,2)}\n${prodFmt(x.t.rej)} of ${prodFmt(x.t.qty)} fettled`)})}</div>`)}
+  </div>
+  <div class="pr-grid">
+    ${prodCard(`Fettling rejection % by ${bucket}`,`<div class="b">${prodLine(xs,fetPer.map(x=>x.qty?x.rejPct:null),{fmt:v=>prodPct(v,1),color:PROD_VIZ_CAT[1],xTitle:xT,yTitle:'Rejection %',
+      tips:fetPer.map((x,i)=>`${xs[i]}\n${x.qty?`Rejection ${prodPct(x.rejPct,2)}\n${prodFmt(x.rej)} of ${prodFmt(x.qty)} fettled`:'no fettling'}`)})}</div>`,`overall ${prodPct(t.rejPct,2)}`)}
+    ${prodCard('Fettling rejection reasons',`<div class="b">${Object.keys(reasons).length?prodDonut(prodTopN(Object.entries(reasons),5),{fmt:v=>prodFmt(v)+' pcs',center:prodFmt(t.rej),sub:'rejected'}):'<div class="pr-empty">No fettling rejections.</div>'}</div>`)}
+  </div>`;
+}
+
 // ── Charts ───────────────────────────────────────────
 // A visual overview of the same data: trends, part-to-whole (donuts),
 // and distributions (histograms). Buckets by day, or by week / month for long ranges.
-function prodRepCharts(ctx,rows,prev=[]){
+function prodRepCharts(ctx,rows,prev=[],fet=[]){
   if(!rows.length) return PROD_EMPTY;
   prodVizTipInit();
   const f=_prodRep.f, agg=prodAgg(rows.map(r=>r.c)), t=agg.t;
@@ -1236,6 +1291,7 @@ function prodRepCharts(ctx,rows,prev=[]){
     ${prodCard('Shift A vs Shift B',`<div class="b pr-viz">${shiftHtml}</div>`,'(n) = shifts run')}
     ${prodCard('Operator-wise',opHtml,`${opRows.length} operators`)}
   </div>
+  ${prodChartsFettling(ctx,fet,rows,{keys,xs,keyOf,xT,bucket,partId:_prodRep.f.partId})}
   <div class="pr-sec">Distributions</div>
   <div class="pr-grid">
     ${prodCard('How OEE is spread across shifts (histogram)',`<div class="b">${prodHist(shiftsP.map(r=>r.c.t.oee),oeeBins,{what:'OEE',xTitle:'OEE of the shift (band)',colorOf:i=>oeeBins[i].hi<=target+1e-9?PROD_VIZ_BELOW:'',
