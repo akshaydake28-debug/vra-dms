@@ -827,6 +827,25 @@ const PROD_REPORT_CSS=`<style>
 .pr-donut svg{width:170px;flex:none}
 .pr-donut .pr-legend{flex-direction:column;flex:1;min-width:180px;margin:0}
 .pr-donut .pr-legend div{display:flex;justify-content:space-between;gap:10px}
+.pr-sec{font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:#6b7280;margin:18px 2px 8px}
+.pr-delta{font-size:12px;margin-top:3px;font-variant-numeric:tabular-nums}
+.pr-heat{border-collapse:separate;border-spacing:2px;width:100%}
+.pr-heat td,.pr-heat th{text-align:center;font-size:11px;padding:6px 2px;border-radius:4px;font-variant-numeric:tabular-nums}
+.pr-heat th{color:#6b7280;font-weight:500;background:none}
+.pr-heat td.m{text-align:left;font-weight:600;color:#374151;padding-right:8px;white-space:nowrap}
+.pr-cmp{display:grid;grid-template-columns:130px 1fr;gap:6px 12px;align-items:center;font-size:12px}
+.pr-cmp .bar{height:14px;border-radius:0 4px 4px 0}
+.pr-print-only{display:none}
+@media print{
+  @page{size:A4;margin:12mm}
+  .sidebar,.topbar,.pr-filters,.pr-noprint,#pr-tip,.pr-tabs{display:none!important}
+  .main{margin-left:0!important}.content{padding:0!important}
+  body{background:#fff!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .pr-print-only{display:block;font-size:12px;color:#374151;margin:-4px 0 10px}
+  .pr-card,.pr-kpi,.pr-grid>*{break-inside:avoid;box-shadow:none}
+  .pr-grid{grid-template-columns:1fr 1fr!important}
+  .pr-kpis{grid-template-columns:repeat(4,1fr)!important}
+}
 #pr-tip{position:fixed;z-index:999;pointer-events:none;background:#0b1b3a;color:#fff;font:12px/1.45 'Inter',sans-serif;padding:7px 10px;border-radius:7px;box-shadow:0 4px 14px rgba(0,0,0,.18);white-space:pre;display:none}
 @media (max-width:1000px){.pr-kpis{grid-template-columns:repeat(2,1fr)}.pr-grid{grid-template-columns:1fr}}
 </style>`;
@@ -945,6 +964,58 @@ function prodHist(values,bins,{unit='shifts',what='',ref=null}={}){
   const tips=bins.map((b,i)=>`${what} ${b.label}: ${counts[i]} ${unit} (${prodPct(values.length?counts[i]/values.length:0,0)})`);
   return prodColumns(bins.map(b=>b.label),[{name:unit,color:PROD_VIZ_CAT[0],values:counts}],{tips,fmt:v=>prodFmt(v),ref,int:true});
 }
+// Pareto on ONE axis (share of total, 0–100%): bars = each cause's share,
+// line = cumulative share. The "vital few" up to 80% are in the accent colour.
+function prodPareto(entries,{fmt=prodFmt,max=8}={}){
+  const all=[...entries].filter(x=>x[1]>0).sort((a,b)=>b[1]-a[1]);
+  if(!all.length) return '<div class="pr-empty">Nothing to show.</div>';
+  const top=all.slice(0,max), rest=all.slice(max).reduce((t,x)=>t+x[1],0);
+  if(rest>0) top.push([`Other (${all.length-max})`,rest]);
+  const tot=all.reduce((t,x)=>t+x[1],0); let cum=0;
+  const rows=top.map(([l,v])=>{ const before=cum; cum+=v; return {l,v,share:v/tot,cum:cum/tot,vital:before/tot<.8}; });
+  const W=640,h=230,L=40,R=10,T=12,B=40,ph=h-T-B,pw=W-L-R, bw=pw/rows.length, cw=Math.min(46,bw*.6);
+  const y=v=>T+ph-v*ph, x=i=>L+bw*i+bw/2;
+  let g='';
+  for(let k=0;k<=4;k++){ const v=k/4; g+=`<line x1="${L}" x2="${W-R}" y1="${y(v)}" y2="${y(v)}" stroke="${PROD_VIZ_GRID}"/><text x="${L-6}" y="${y(v)+4}" text-anchor="end">${k*25}%</text>`; }
+  g+=`<line x1="${L}" x2="${W-R}" y1="${y(.8)}" y2="${y(.8)}" stroke="#374151" stroke-dasharray="4 4" stroke-width="1"/>`;
+  rows.forEach((r,i)=>{ const hh=Math.max(0,y(0)-y(r.share)), rr=Math.min(4,cw/2,hh);
+    g+=rr?`<path d="M${x(i)-cw/2},${y(0)} V${y(r.share)+rr} q0,-${rr} ${rr},-${rr} H${x(i)+cw/2-rr} q${rr},0 ${rr},${rr} V${y(0)} Z" fill="${r.vital?PROD_VIZ_CAT[0]:'#9ec5f4'}"/>`:'';
+    const lab=r.l.length>13? r.l.slice(0,12)+'…' : r.l;
+    g+=`<text x="${x(i)}" y="${h-B+14}" text-anchor="middle">${esc(lab)}</text>`; });
+  g+=`<path d="${rows.map((r,i)=>`${i?'L':'M'}${x(i)},${y(r.cum)}`).join(' ')}" fill="none" stroke="${PROD_VIZ_CAT[1]}" stroke-width="2"/>`;
+  rows.forEach((r,i)=>{ g+=`<circle cx="${x(i)}" cy="${y(r.cum)}" r="4" fill="${PROD_VIZ_CAT[1]}" stroke="#fff" stroke-width="2"/>`;
+    g+=`<rect class="hit" x="${L+bw*i}" y="${T}" width="${bw}" height="${ph}" fill="transparent" ${prodTip(`${r.l}\n${fmt(r.v)} · ${prodPct(r.share)} of total\nCumulative ${prodPct(r.cum)}`)}/>`; });
+  g+=`<line x1="${L}" x2="${W-R}" y1="${y(0)}" y2="${y(0)}" stroke="#cbd2e0"/>`;
+  return `<div class="pr-viz"><svg viewBox="0 0 ${W} ${h}">${g}</svg>
+    <div class="pr-legend"><span><span class="pr-dot" style="background:${PROD_VIZ_CAT[0]}"></span>Share — the vital few (first 80%)</span><span><span class="pr-dot" style="background:#9ec5f4"></span>Share — the rest</span><span><span class="pr-dot" style="background:${PROD_VIZ_CAT[1]};border-radius:50%"></span>Cumulative %</span>
+    <span><svg width="18" height="8" style="display:inline;width:18px;vertical-align:1px;margin-right:6px"><line x1="0" x2="18" y1="4" y2="4" stroke="#374151" stroke-dasharray="4 3" stroke-width="1.5"/></svg>80% line</span></div></div>`;
+}
+// Diverging colour around the target: blue above, red below, grey near it (±2.5 points)
+function prodHeatColor(v,target){
+  if(v==null) return {bg:'#f6f8fc',fg:'#9ca3af'};
+  const d=v-target, a=Math.abs(d);
+  if(a<.025) return {bg:'#f0efec',fg:'#374151'};
+  const step=a<.075?0:a<.15?1:2;
+  return d>0? [{bg:'#cde2fb',fg:'#0d2f6e'},{bg:'#86b6ef',fg:'#0d2f6e'},{bg:'#2a78d6',fg:'#fff'}][step]
+            : [{bg:'#fbd5d2',fg:'#7f1d1d'},{bg:'#f4a29d',fg:'#7f1d1d'},{bg:'#d63b3a',fg:'#fff'}][step];
+}
+// Stat tile with change vs the previous period. better: +1 if up is good, -1 if down is good.
+function prodDeltaKpi(label,cur,prev,{fmt=prodFmt,dfmt=null,better=1,unit=''}={}){
+  let delta='<span style="color:#9ca3af">no data for the previous period</span>';
+  if(prev!=null&&isFinite(prev)){
+    const d=cur-prev, flat=Math.abs(d)<1e-9, good=flat?null:(d>0)===(better>0);
+    const col=flat?'#6b7280':good?'#16a34a':'#dc2626', arrow=flat?'▬':d>0?'▲':'▼';
+    delta=`<span style="color:${col};font-weight:600">${arrow} ${(dfmt||fmt)(Math.abs(d))}${unit}</span> <span style="color:#6b7280">vs ${fmt(prev)} before</span>`;
+  }
+  return `<div class="pr-kpi"><div class="l">${label}</div><div class="v">${fmt(cur)}</div><div class="pr-delta">${delta}</div></div>`;
+}
+// Side-by-side bars for a few groups on one measure (e.g. Shift A vs B)
+function prodCmpBars(groups,{fmt=prodFmt,max=null}={}){
+  const m=max??(Math.max(...groups.map(g=>g.value||0),0)||1);
+  return groups.map(g=>`<span style="color:#374151">${esc(g.label)}</span>
+    <div style="display:flex;align-items:center;gap:8px" ${prodTip(g.tip||`${g.label}: ${fmt(g.value)}`)}><div class="bar" style="width:${Math.max(1,(g.value||0)/m*100)}%;max-width:78%;background:${g.color}"></div><b style="font-variant-numeric:tabular-nums">${fmt(g.value)}</b></div>`).join('');
+}
+
 // Where the planned time went, in fixed colours (same everywhere)
 function prodTimeSplit(t){
   return [
@@ -995,14 +1066,21 @@ async function prodRenderReports(opts={}){
   }
   else {
     const rows=await prodLoadShifts(ctx,{from:f.from,to:f.to,machineId:f.machineId,shift:f.shift,partId:partFilter});
-    body = tab==='viz'? prodRepCharts(ctx,rows) : tab==='oee'? prodRepOEE(ctx,rows) : tab==='rej'? prodRepRejection(ctx,rows) : tab==='mat'? prodRepMaterial(ctx,rows) : prodRepCustomers(ctx,rows);
+    let prev=[];
+    if(tab==='viz'){ const n=Math.round((new Date(f.to)-new Date(f.from))/864e5)+1;
+      prev=await prodLoadShifts(ctx,{from:prodAddDays(f.from,-n),to:prodAddDays(f.from,-1),machineId:f.machineId,shift:f.shift,partId:partFilter}); }
+    body = tab==='viz'? prodRepCharts(ctx,rows,prev) : tab==='oee'? prodRepOEE(ctx,rows) : tab==='rej'? prodRepRejection(ctx,rows) : tab==='mat'? prodRepMaterial(ctx,rows) : prodRepCustomers(ctx,rows);
   }
   if(seq!==_prodRepSeq) return;
   setC(`${PROD_REPORT_CSS}
   <div class="pr-top">
     <h2 style="font-size:16px;font-weight:700;color:var(--navy)">📊 Production Reports</h2>
-    <div class="pr-tabs">${PROD_REPORT_TABS.map(t=>`<button class="pr-tab ${t.k===tab?'on':''}" onclick="prodRepTab('${t.k}')">${t.l}</button>`).join('')}</div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <div class="pr-tabs">${PROD_REPORT_TABS.map(t=>`<button class="pr-tab ${t.k===tab?'on':''}" onclick="prodRepTab('${t.k}')">${t.l}</button>`).join('')}</div>
+      <button class="btn btn-o btn-sm pr-noprint" onclick="window.print()" title="Print or save as PDF (A4)">🖨 Print</button>
+    </div>
   </div>
+  <div class="pr-print-only">${esc(PROD_REPORT_TABS.find(t=>t.k===tab)?.l.replace(/^\W+\s*/,'')||'')} · ${prodDayLabel(f.from)} – ${prodDayLabel(f.to)} ${f.to.slice(0,4)} · ${esc(f.machineId?prodMachineLabel(ctx.machineById[f.machineId]):'All machines')} · ${f.shift?'Shift '+esc(f.shift):'Both shifts'}${partFilter?` · ${esc(ctx.partById[partFilter]?.partNumber||'')}`:''} · printed ${new Date().toLocaleString('en-IN',{dateStyle:'medium',timeStyle:'short'})}</div>
   ${tab==='cap'?'':prodRepFilters(ctx,tab,people)}
   ${body}`);
   if(tab==='cap') prodCapCalc();
@@ -1020,7 +1098,7 @@ function prodPickPart(c,partId){
 // ── Charts ───────────────────────────────────────────
 // A visual overview of the same data: trends, part-to-whole (donuts),
 // and distributions (histograms). Buckets by day, or by week / month for long ranges.
-function prodRepCharts(ctx,rows){
+function prodRepCharts(ctx,rows,prev=[]){
   if(!rows.length) return PROD_EMPTY;
   prodVizTipInit();
   const f=_prodRep.f, agg=prodAgg(rows.map(r=>r.c)), t=agg.t;
@@ -1059,12 +1137,57 @@ function prodRepCharts(ctx,rows){
   const downs=prodTopN(Object.entries(agg.byDown),5);
   const bucket=by==='day'?'day':by==='week'?'week':'month';
 
+  // Previous period of the same length
+  const pt=prev.length? prodAgg(prev.map(r=>r.c)).t : null;
+  const pRej=pt? rejPct(pt) : null, cRej=rejPct(t)??0;
+  const pts=v=>prodFmt(v*100,1)+' pts';
+
+  // Heatmap: machine × bucket, OEE vs target
+  const heat=mcs.map(m=>({m, cells:keys.map(k=>{ const x=prodAgg(rows.filter(r=>keyOf(r.s.date)===k&&String(r.s.machineId)===String(m.id)).map(r=>r.c)).t; return x.planned?x:null; })}));
+  const heatHtml=`<div style="overflow-x:auto"><table class="pr-heat pr-viz"><thead><tr><th></th>${xs.map(l=>`<th>${esc(l)}</th>`).join('')}</tr></thead><tbody>
+    ${heat.map(({m,cells})=>`<tr><td class="m">${esc(prodMachineLabel(m))}</td>${cells.map((x,i)=>{ const c=prodHeatColor(x?x.oee:null,target);
+      return `<td style="background:${c.bg};color:${c.fg}" ${prodTip(x?`${prodMachineLabel(m)} · ${xs[i]}\nOEE ${prodPct(x.oee)} (target ${prodPct(target,0)})\nAvailability ${prodPct(x.A)} · Performance ${prodPct(x.P)} · Quality ${prodPct(x.Q)}\nOK parts ${prodFmt(x.okPcs)}`:`${prodMachineLabel(m)} · ${xs[i]}: no production`)}>${x?Math.round(x.oee*100):'–'}</td>`; }).join('')}</tr>`).join('')}
+  </tbody></table></div>
+  <div class="pr-legend">${[['#d63b3a','15+ pts below target'],['#f4a29d','7.5–15 below'],['#fbd5d2','2.5–7.5 below'],['#f0efec','on target (±2.5)'],['#cde2fb','2.5–7.5 above'],['#86b6ef','7.5–15 above'],['#2a78d6','15+ above']].map(([c,l])=>`<span><span class="pr-dot" style="background:${c};border:1px solid #e5e7eb"></span>${l}</span>`).join('')}</div>`;
+
+  // Shift A vs Shift B
+  const shifts=Object.keys(PROD_SHIFTS).map((k,i)=>{ const rs=rows.filter(r=>r.s.shift===k&&!r.s.notRun), x=prodAgg(rs.map(r=>r.c)).t, n=rs.filter(r=>r.c.t.planned>0).length;
+    return {k, x, n, color:PROD_VIZ_CAT[i], rej:rejPct(x)??0}; });
+  const sLab=x=>`Shift ${x.k} (${x.n})`;
+  const shiftHtml=`<div class="pr-cmp">
+    <b style="grid-column:span 2;font-size:11px;color:#6b7280">OEE</b>${prodCmpBars(shifts.map(x=>({label:sLab(x),value:x.x.oee,color:x.color,tip:`Shift ${x.k}: OEE ${prodPct(x.x.oee)}\nA ${prodPct(x.x.A)} · P ${prodPct(x.x.P)} · Q ${prodPct(x.x.Q)}`})),{fmt:v=>prodPct(v),max:1})}
+    <b style="grid-column:span 2;font-size:11px;color:#6b7280;margin-top:6px">OK parts per shift</b>${prodCmpBars(shifts.map(x=>({label:sLab(x),value:x.n?x.x.okPcs/x.n:0,color:x.color})),{fmt:v=>prodFmt(v)})}
+    <b style="grid-column:span 2;font-size:11px;color:#6b7280;margin-top:6px">Rejection %</b>${prodCmpBars(shifts.map(x=>({label:sLab(x),value:x.rej,color:x.color})),{fmt:v=>prodPct(v,2)})}
+    <b style="grid-column:span 2;font-size:11px;color:#6b7280;margin-top:6px">Downtime per shift</b>${prodCmpBars(shifts.map(x=>({label:sLab(x),value:x.n?x.x.downtime/x.n:0,color:x.color})),{fmt:v=>prodFmt(v)+' min'})}
+  </div>`;
+
+  // Operator-wise: a shift counts for each of its operators
+  const ops={};
+  for(const r of rows){ if(r.s.notRun) continue;
+    for(const name of new Set([r.s.operator1,r.s.operator2].map(x=>(x||'').trim()).filter(Boolean))){ (ops[name]=ops[name]||[]).push(r.c); } }
+  const opRows=Object.entries(ops).map(([name,cs])=>({name,n:cs.length,t:prodAgg(cs).t})).sort((a,b)=>b.t.oee-a.t.oee);
+  const opHtml=opRows.length?`<table class="pr-tbl"><thead><tr><th>Operator</th><th class="n">Shifts</th><th class="n">OK parts / shift</th><th style="width:34%">OEE</th><th class="n">Rej %</th><th class="n">Downtime / shift</th></tr></thead><tbody>
+    ${opRows.map(o=>`<tr><td><b>${esc(o.name)}</b></td><td class="n mono">${o.n}</td><td class="n mono">${prodFmt(o.t.okPcs/o.n)}</td>
+      <td><div class="pr-viz" style="display:flex;align-items:center;gap:8px" ${prodTip(`${o.name}: OEE ${prodPct(o.t.oee)}\nA ${prodPct(o.t.A)} · P ${prodPct(o.t.P)} · Q ${prodPct(o.t.Q)}`)}><div style="flex:1;height:10px;background:#eef1f7;border-radius:0 4px 4px 0;position:relative"><div style="width:${Math.min(100,o.t.oee*100)}%;height:10px;background:${PROD_VIZ_CAT[0]};border-radius:0 4px 4px 0"></div><div style="position:absolute;left:${target*100}%;top:-3px;height:16px;border-left:2px dashed #374151"></div></div><b class="mono" style="width:44px;text-align:right">${prodPct(o.t.oee,0)}</b></div></td>
+      <td class="n mono">${prodPct(rejPct(o.t)??0,2)}</td><td class="n mono">${prodFmt(o.t.downtime/o.n)} min</td></tr>`).join('')}
+  </tbody></table><div class="pr-note" style="padding-top:8px">Each shift counts for both of its operators. Dashed mark = target OEE ${prodPct(target,0)}. Operators with few shifts can swing a lot — compare over a month.</div>`
+    :'<div class="pr-empty">No operator names on these shift entries.</div>';
+
   return `
+  <div class="pr-sec" style="margin-top:4px">Compared with the previous ${span} day${span>1?'s':''}</div>
+  <div class="pr-kpis">
+    ${prodDeltaKpi('OEE',t.oee,pt?.planned?pt.oee:null,{fmt:v=>prodPct(v),dfmt:pts})}
+    ${prodDeltaKpi('OK parts',t.okPcs,pt?pt.okPcs:null)}
+    ${prodDeltaKpi('Rejection %',cRej,pRej,{fmt:v=>prodPct(v,2),dfmt:pts,better:-1})}
+    ${prodDeltaKpi('Downtime',t.downtime/60,pt?pt.downtime/60:null,{fmt:v=>prodFmt(v,1)+' h',better:-1})}
+  </div>
+  <div class="pr-sec">Trends</div>
   <div class="pr-grid">
     ${prodCard(`OEE by ${bucket}`,`<div class="b">${prodLine(xs,per.map(x=>x.planned?x.oee:null),{yMax:1,name:'OEE',ref:{value:target,label:`target ${prodPct(target,0)}`},tips:per.map((x,k)=>x.planned?pctTip(k,x):`${xs[k]}: no production`)})}</div>`,
       `overall ${prodPct(t.oee)}`)}
     ${prodCard(`OK parts by ${bucket}`,`<div class="b">${prodColumns(xs,okSeries,{tips:okTips})}</div>`,`${prodFmt(t.okPcs)} total`)}
   </div>
+  <div class="pr-sec">Where the losses are</div>
   <div class="pr-grid">
     ${prodCard('Where the planned time went',`<div class="b">${prodDonut(prodTimeSplit(t),{fmt:v=>prodHrs(v),center:prodPct(t.oee,0),sub:'OEE'})}</div>`,`${prodHrs(t.planned)} planned`)}
     ${prodCard('Downtime by reason',`<div class="b">${downs.length?prodDonut(downs,{fmt:v=>prodHrs(v),center:prodHrs(t.downtime),sub:'downtime'}):'<div class="pr-empty">No downtime recorded.</div>'}</div>`)}
@@ -1075,14 +1198,25 @@ function prodRepCharts(ctx,rows){
       `overall ${prodPct(rejPct(t)??0,2)}`)}
   </div>
   <div class="pr-grid">
+    ${prodCard('Rejection Pareto',`<div class="b">${prodPareto(Object.entries(agg.byDefect).map(([c,n])=>[ctx.defectByCode[c]?.description||c,n]),{fmt:v=>prodFmt(v)+' pcs'})}</div>`,'fix the tall dark bars first')}
+    ${prodCard('Downtime Pareto',`<div class="b">${prodPareto(Object.entries(agg.byDown),{fmt:v=>prodHrs(v)})}</div>`,'fix the tall dark bars first')}
+  </div>
+  <div class="pr-sec">Machines, shifts &amp; people</div>
+  ${prodCard(`OEE heatmap — machine × ${bucket}`,`<div class="b">${heatHtml}</div>`,`vs target ${prodPct(target,0)}`)}
+  <div class="pr-grid">
+    ${prodCard('Shift A vs Shift B',`<div class="b pr-viz">${shiftHtml}</div>`,'(n) = shifts run')}
+    ${prodCard('OEE by machine',`<div class="b">${prodColumns(mOee.map(x=>prodMachineLabel(x.m)),[{name:'OEE',color:PROD_VIZ_CAT[0],values:mOee.map(x=>x.t.oee)}],
+      {yMax:1,fmt:v=>prodPct(v,0),ref:{value:target,label:`target ${prodPct(target,0)}`},tips:mOee.map(x=>`${prodMachineLabel(x.m)}\nOEE ${prodPct(x.t.oee)}\nAvailability ${prodPct(x.t.A)}\nPerformance ${prodPct(x.t.P)}\nQuality ${prodPct(x.t.Q)}`)})}</div>`)}
+  </div>
+  ${prodCard('Operator-wise',opHtml,`${opRows.length} operators`)}
+  <div class="pr-sec">Distributions &amp; mix</div>
+  <div class="pr-grid">
     ${prodCard('How OEE is spread across shifts',`<div class="b">${prodHist(shiftsP.map(r=>r.c.t.oee),oeeBins,{what:'OEE'})}</div>
       <div class="pr-note">Each bar counts shifts whose OEE fell in that band. A tall cluster on the left means many weak shifts, not just one bad day.</div>`,`${shiftsP.length} shifts`)}
     ${prodCard('How rejection % is spread across shifts',`<div class="b">${prodHist(shiftsRej,rejBins,{what:'Rejection'})}</div>
       <div class="pr-note">Each bar counts shifts in that rejection band. Shifts on the right are the ones to investigate.</div>`,`${shiftsRej.length} shifts`)}
   </div>
   <div class="pr-grid">
-    ${prodCard('OEE by machine',`<div class="b">${prodColumns(mOee.map(x=>prodMachineLabel(x.m)),[{name:'OEE',color:PROD_VIZ_CAT[0],values:mOee.map(x=>x.t.oee)}],
-      {yMax:1,fmt:v=>prodPct(v,0),ref:{value:target,label:`target ${prodPct(target,0)}`},tips:mOee.map(x=>`${prodMachineLabel(x.m)}\nOEE ${prodPct(x.t.oee)}\nAvailability ${prodPct(x.t.A)}\nPerformance ${prodPct(x.t.P)}\nQuality ${prodPct(x.t.Q)}`)})}</div>`)}
     ${prodCard('Production mix by part',`<div class="b">${partMix.length?prodDonut(partMix,{fmt:v=>prodFmt(v)+' pcs',center:prodFmt(t.okPcs),sub:'OK parts'}):'<div class="pr-empty">No production.</div>'}</div>`)}
   </div>
   <div class="pr-note" style="padding:0 2px 14px">Hover any bar, point or slice for the numbers. Charts follow the filters above.</div>`;
