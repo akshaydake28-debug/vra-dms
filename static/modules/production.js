@@ -884,10 +884,17 @@ function prodNiceMax(v,int=false){
   return step*4;
 }
 function prodDayLabel(d){ const [y,m,dd]=d.split('-'); return `${+dd} ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+m-1]}`; }
+// Axis titles: y runs up the left side, x sits under the axis labels
+const PROD_VIZ_BELOW='#dc2626';      // "below target" (status red, always with a legend label)
+function prodAxisTitles(W,h,L,T,ph,xTitle,yTitle){
+  return (yTitle?`<text x="12" y="${T+ph/2}" text-anchor="middle" transform="rotate(-90 12 ${T+ph/2})" style="font-weight:600;fill:#374151">${esc(yTitle)}</text>`:'')
+    +(xTitle?`<text x="${L+(W-L-10)/2}" y="${h-4}" text-anchor="middle" style="font-weight:600;fill:#374151">${esc(xTitle)}</text>`:'');
+}
 // Columns over categories (x). series: [{name,color,values[]}], stacked when >1.
+// colorOf(i,v): optional per-column colour (single series), e.g. red below target.
 // ref: optional {value,label} dashed reference line. tips[i]: tooltip for column i.
-function prodColumns(xs,series,{fmt=prodFmt,ref=null,tips=[],yMax=null,h=210,int=false}={}){
-  const W=640, L=46, R=10, T=12, B=26, ph=h-T-B, pw=W-L-R;
+function prodColumns(xs,series,{fmt=prodFmt,ref=null,tips=[],yMax=null,h=210,int=false,xTitle='',yTitle='',colorOf=null,extraLegend='',W=640}={}){
+  const L=yTitle?62:46, R=10, T=12, B=xTitle?42:26; h+=xTitle?16:0; const ph=h-T-B, pw=W-L-R;
   const tot=xs.map((_,i)=>series.reduce((s,x)=>s+(x.values[i]||0),0));
   const max=yMax??prodNiceMax(Math.max(...tot,ref?.value||0),int);
   const y=v=>T+ph-(v/max)*ph, bw=pw/Math.max(1,xs.length), cw=Math.max(2,Math.min(38,bw*.62));
@@ -900,20 +907,22 @@ function prodColumns(xs,series,{fmt=prodFmt,ref=null,tips=[],yMax=null,h=210,int
       const y0=y(base), y1=y(base+v), top=j===series.length-1||series.slice(j+1).every(x=>!(x.values[i]>0));
       const hh=Math.max(0,y0-y1-(base>0?2:0));      // 2px surface gap between stacked segments
       const r=top?Math.min(4,cw/2,hh):0;
-      bars+=r? `<path d="M${cx-cw/2},${y1+hh} V${y1+r} q0,-${r} ${r},-${r} H${cx+cw/2-r} q${r},0 ${r},${r} V${y1+hh} Z" fill="${sr.color}"/>`
-             : `<rect x="${cx-cw/2}" y="${y1}" width="${cw}" height="${hh}" fill="${sr.color}"/>`;
+      const col=colorOf? colorOf(i,v)||sr.color : sr.color;
+      bars+=r? `<path d="M${cx-cw/2},${y1+hh} V${y1+r} q0,-${r} ${r},-${r} H${cx+cw/2-r} q${r},0 ${r},${r} V${y1+hh} Z" fill="${col}"/>`
+             : `<rect x="${cx-cw/2}" y="${y1}" width="${cw}" height="${hh}" fill="${col}"/>`;
       base+=v; });
     g+=bars+`<rect class="hit" x="${L+bw*i}" y="${T}" width="${bw}" height="${ph}" fill="transparent" ${prodTip(tips[i]||`${lab}: ${fmt(tot[i])}`)}/>`;
-    if(i%every===0) g+=`<text x="${cx}" y="${h-8}" text-anchor="middle">${esc(lab)}</text>`;
+    if(i%every===0) g+=`<text x="${cx}" y="${T+ph+16}" text-anchor="middle">${esc(lab)}</text>`;
   });
   if(ref) g+=`<line x1="${L}" x2="${W-R}" y1="${y(ref.value)}" y2="${y(ref.value)}" stroke="#374151" stroke-dasharray="4 4" stroke-width="1.2" pointer-events="none"/><text x="${W-R}" y="${y(ref.value)-5}" text-anchor="end" style="fill:#374151">${esc(ref.label)}</text>`;
-  g+=`<line x1="${L}" x2="${W-R}" y1="${T+ph}" y2="${T+ph}" stroke="#cbd2e0"/>`;
-  const legend=series.length>1?`<div class="pr-legend">${series.map(sr=>`<span><span class="pr-dot" style="background:${sr.color}"></span>${esc(sr.name)}</span>`).join('')}</div>`:'';
+  g+=`<line x1="${L}" x2="${W-R}" y1="${T+ph}" y2="${T+ph}" stroke="#cbd2e0"/>`+prodAxisTitles(W,h,L,T,ph,xTitle,yTitle);
+  const legend=series.length>1||extraLegend?`<div class="pr-legend">${series.length>1?series.map(sr=>`<span><span class="pr-dot" style="background:${sr.color}"></span>${esc(sr.name)}</span>`).join(''):''}${extraLegend}</div>`:'';
   return `<div class="pr-viz"><svg viewBox="0 0 ${W} ${h}">${g}</svg>${legend}</div>`;
 }
 // Line over categories with markers; null values leave a gap.
-function prodLine(xs,values,{fmt=v=>prodPct(v,0),ref=null,tips=[],yMax=null,color=PROD_VIZ_CAT[0],h=210,name=''}={}){
-  const W=640, L=46, R=10, T=12, B=26, ph=h-T-B, pw=W-L-R;
+// below: optional threshold — points under it are drawn red ("below target").
+function prodLine(xs,values,{fmt=v=>prodPct(v,0),ref=null,tips=[],yMax=null,color=PROD_VIZ_CAT[0],h=210,name='',xTitle='',yTitle='',below=null,W=640}={}){
+  const L=yTitle?62:46, R=10, T=12, B=xTitle?42:26; h+=xTitle?16:0; const ph=h-T-B, pw=W-L-R;
   const max=yMax??prodNiceMax(Math.max(...values.filter(v=>v!=null),ref?.value||0));
   const y=v=>T+ph-(v/max)*ph, bw=pw/Math.max(1,xs.length), x=i=>L+bw*i+bw/2;
   const every=Math.ceil(xs.length/10);
@@ -923,13 +932,13 @@ function prodLine(xs,values,{fmt=v=>prodPct(v,0),ref=null,tips=[],yMax=null,colo
   let d='', pen=false;
   values.forEach((v,i)=>{ if(v==null){ pen=false; return; } d+=`${pen?'L':'M'}${x(i)},${y(Math.min(v,max))} `; pen=true; });
   g+=`<path d="${d}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
-  values.forEach((v,i)=>{ if(v!=null) g+=`<circle cx="${x(i)}" cy="${y(Math.min(v,max))}" r="4" fill="${color}" stroke="#fff" stroke-width="2"/>`; });
+  values.forEach((v,i)=>{ if(v!=null) g+=`<circle cx="${x(i)}" cy="${y(Math.min(v,max))}" r="${below!=null&&v<below?5:4}" fill="${below!=null&&v<below?PROD_VIZ_BELOW:color}" stroke="#fff" stroke-width="2"/>`; });
   xs.forEach((lab,i)=>{
     g+=`<rect class="hit" x="${L+bw*i}" y="${T}" width="${bw}" height="${ph}" fill="transparent" ${prodTip(tips[i]||`${lab}: ${values[i]==null?'—':fmt(values[i])}`)}/>`;
-    if(i%every===0) g+=`<text x="${x(i)}" y="${h-8}" text-anchor="middle">${esc(lab)}</text>`;
+    if(i%every===0) g+=`<text x="${x(i)}" y="${T+ph+16}" text-anchor="middle">${esc(lab)}</text>`;
   });
-  g+=`<line x1="${L}" x2="${W-R}" y1="${T+ph}" y2="${T+ph}" stroke="#cbd2e0"/>`;
-  const legend=ref?`<div class="pr-legend"><span><span class="pr-dot" style="background:${color}"></span>${esc(name)}</span><span><svg width="18" height="8" style="display:inline;width:18px;vertical-align:1px;margin-right:6px"><line x1="0" x2="18" y1="4" y2="4" stroke="#374151" stroke-dasharray="4 3" stroke-width="1.5"/></svg>${esc(ref.label)}</span></div>`:'';
+  g+=`<line x1="${L}" x2="${W-R}" y1="${T+ph}" y2="${T+ph}" stroke="#cbd2e0"/>`+prodAxisTitles(W,h,L,T,ph,xTitle,yTitle);
+  const legend=ref?`<div class="pr-legend"><span><span class="pr-dot" style="background:${color}"></span>${esc(name)}</span>${below!=null?`<span><span class="pr-dot" style="background:${PROD_VIZ_BELOW};border-radius:50%"></span>below target</span>`:''}<span><svg width="18" height="8" style="display:inline;width:18px;vertical-align:1px;margin-right:6px"><line x1="0" x2="18" y1="4" y2="4" stroke="#374151" stroke-dasharray="4 3" stroke-width="1.5"/></svg>${esc(ref.label)}</span></div>`:'';
   return `<div class="pr-viz"><svg viewBox="0 0 ${W} ${h}">${g}</svg>${legend}</div>`;
 }
 // Donut for part-to-whole: items [{label,value,color}] — keep to ≤6 slices (fold the rest into "Other").
@@ -959,21 +968,21 @@ function prodTopN(entries,n=5){
   return top;
 }
 // Histogram: how many shifts fall in each band. bins [{lo,hi,label}] (hi exclusive; last bin open-ended)
-function prodHist(values,bins,{unit='shifts',what='',ref=null}={}){
+function prodHist(values,bins,{unit='shifts',what='',ref=null,xTitle='',yTitle='Number of shifts',colorOf=null,extraLegend=''}={}){
   const counts=bins.map((b,i)=>values.filter(v=>v>=b.lo&&(i===bins.length-1?true:v<b.hi)).length);
   const tips=bins.map((b,i)=>`${what} ${b.label}: ${counts[i]} ${unit} (${prodPct(values.length?counts[i]/values.length:0,0)})`);
-  return prodColumns(bins.map(b=>b.label),[{name:unit,color:PROD_VIZ_CAT[0],values:counts}],{tips,fmt:v=>prodFmt(v),ref,int:true});
+  return prodColumns(bins.map(b=>b.label),[{name:unit,color:PROD_VIZ_CAT[0],values:counts}],{tips,fmt:v=>prodFmt(v),ref,int:true,xTitle,yTitle,colorOf,extraLegend});
 }
 // Pareto on ONE axis (share of total, 0–100%): bars = each cause's share,
 // line = cumulative share. The "vital few" up to 80% are in the accent colour.
-function prodPareto(entries,{fmt=prodFmt,max=8}={}){
+function prodPareto(entries,{fmt=prodFmt,max=8,xTitle='',yTitle='Share of total'}={}){
   const all=[...entries].filter(x=>x[1]>0).sort((a,b)=>b[1]-a[1]);
   if(!all.length) return '<div class="pr-empty">Nothing to show.</div>';
   const top=all.slice(0,max), rest=all.slice(max).reduce((t,x)=>t+x[1],0);
   if(rest>0) top.push([`Other (${all.length-max})`,rest]);
   const tot=all.reduce((t,x)=>t+x[1],0); let cum=0;
   const rows=top.map(([l,v])=>{ const before=cum; cum+=v; return {l,v,share:v/tot,cum:cum/tot,vital:before/tot<.8}; });
-  const W=640,h=230,L=40,R=10,T=12,B=40,ph=h-T-B,pw=W-L-R, bw=pw/rows.length, cw=Math.min(46,bw*.6);
+  const W=640,h=246,L=58,R=10,T=12,B=56,ph=h-T-B,pw=W-L-R, bw=pw/rows.length, cw=Math.min(46,bw*.6);
   const y=v=>T+ph-v*ph, x=i=>L+bw*i+bw/2;
   let g='';
   for(let k=0;k<=4;k++){ const v=k/4; g+=`<line x1="${L}" x2="${W-R}" y1="${y(v)}" y2="${y(v)}" stroke="${PROD_VIZ_GRID}"/><text x="${L-6}" y="${y(v)+4}" text-anchor="end">${k*25}%</text>`; }
@@ -985,7 +994,7 @@ function prodPareto(entries,{fmt=prodFmt,max=8}={}){
   g+=`<path d="${rows.map((r,i)=>`${i?'L':'M'}${x(i)},${y(r.cum)}`).join(' ')}" fill="none" stroke="${PROD_VIZ_CAT[1]}" stroke-width="2"/>`;
   rows.forEach((r,i)=>{ g+=`<circle cx="${x(i)}" cy="${y(r.cum)}" r="4" fill="${PROD_VIZ_CAT[1]}" stroke="#fff" stroke-width="2"/>`;
     g+=`<rect class="hit" x="${L+bw*i}" y="${T}" width="${bw}" height="${ph}" fill="transparent" ${prodTip(`${r.l}\n${fmt(r.v)} · ${prodPct(r.share)} of total\nCumulative ${prodPct(r.cum)}`)}/>`; });
-  g+=`<line x1="${L}" x2="${W-R}" y1="${y(0)}" y2="${y(0)}" stroke="#cbd2e0"/>`;
+  g+=`<line x1="${L}" x2="${W-R}" y1="${y(0)}" y2="${y(0)}" stroke="#cbd2e0"/>`+prodAxisTitles(W,h,L,T,ph,xTitle,yTitle);
   return `<div class="pr-viz"><svg viewBox="0 0 ${W} ${h}">${g}</svg>
     <div class="pr-legend"><span><span class="pr-dot" style="background:${PROD_VIZ_CAT[0]}"></span>Share — the vital few (first 80%)</span><span><span class="pr-dot" style="background:#9ec5f4"></span>Share — the rest</span><span><span class="pr-dot" style="background:${PROD_VIZ_CAT[1]};border-radius:50%"></span>Cumulative %</span>
     <span><svg width="18" height="8" style="display:inline;width:18px;vertical-align:1px;margin-right:6px"><line x1="0" x2="18" y1="4" y2="4" stroke="#374151" stroke-dasharray="4 3" stroke-width="1.5"/></svg>80% line</span></div></div>`;
@@ -1000,14 +1009,14 @@ function prodHeatColor(v,target){
             : [{bg:'#fbd5d2',fg:'#7f1d1d'},{bg:'#f4a29d',fg:'#7f1d1d'},{bg:'#d63b3a',fg:'#fff'}][step];
 }
 // Stat tile with change vs the previous period. better: +1 if up is good, -1 if down is good.
-function prodDeltaKpi(label,cur,prev,{fmt=prodFmt,dfmt=null,better=1,unit=''}={}){
+function prodDeltaKpi(label,cur,prev,{fmt=prodFmt,dfmt=null,better=1,unit='',color='',note=''}={}){
   let delta='<span style="color:#9ca3af">no data for the previous period</span>';
   if(prev!=null&&isFinite(prev)){
     const d=cur-prev, flat=Math.abs(d)<1e-9, good=flat?null:(d>0)===(better>0);
     const col=flat?'#6b7280':good?'#16a34a':'#dc2626', arrow=flat?'▬':d>0?'▲':'▼';
     delta=`<span style="color:${col};font-weight:600">${arrow} ${(dfmt||fmt)(Math.abs(d))}${unit}</span> <span style="color:#6b7280">vs ${fmt(prev)} before</span>`;
   }
-  return `<div class="pr-kpi"><div class="l">${label}</div><div class="v">${fmt(cur)}</div><div class="pr-delta">${delta}</div></div>`;
+  return `<div class="pr-kpi"><div class="l">${label}</div><div class="v" ${color?`style="color:${color}"`:''}>${fmt(cur)}${note?` <span style="font-size:12px;font-weight:600">${note}</span>`:''}</div><div class="pr-delta">${delta}</div></div>`;
 }
 // Side-by-side bars for a few groups on one measure (e.g. Shift A vs B)
 function prodCmpBars(groups,{fmt=prodFmt,max=null}={}){
@@ -1121,8 +1130,6 @@ function prodRepCharts(ctx,rows,prev=[]){
 
   // Rejection % (rejected ÷ good-shot parts) per bucket
   const rejPct=x=>(x.castPcs-x.offPcs)>0? x.rejPcs/(x.castPcs-x.offPcs) : null;
-  const rejVals=per.map(x=>x.castPcs? rejPct(x) : null);
-  const rejTips=per.map((x,i)=>`${xs[i]}\nRejection ${rejVals[i]==null?'—':prodPct(rejVals[i],2)}\n${prodFmt(x.rejPcs)} rejected of ${prodFmt(x.castPcs-x.offPcs)} pcs`);
 
   // Distributions over individual shifts that had planned time / production
   const shiftsP=rows.filter(r=>r.c.t.planned>0&&!r.s.notRun);
@@ -1173,20 +1180,44 @@ function prodRepCharts(ctx,rows,prev=[]){
   </tbody></table><div class="pr-note" style="padding-top:8px">Each shift counts for both of its operators. Dashed mark = target OEE ${prodPct(target,0)}. Operators with few shifts can swing a lot — compare over a month.</div>`
     :'<div class="pr-empty">No operator names on these shift entries.</div>';
 
+  // Per-machine production & rejection % (separate charts, plus combined)
+  const xT=bucket==='day'?'Date':bucket==='week'?'Week starting':'Month';
+  const perM=mcs.map((m,i)=>{ const pm=keys.map(k=>prodAgg(rows.filter(r=>keyOf(r.s.date)===k&&String(r.s.machineId)===String(m.id)).map(r=>r.c)).t);
+    return {m, i, label:prodMachineLabel(m), per:pm, t:prodAgg(rows.filter(r=>String(r.s.machineId)===String(m.id)).map(r=>r.c)).t}; });
+  const prodChart=(pm,color,W=640)=>prodColumns(xs,[{name:'OK parts',color,values:pm.map(x=>x.okPcs)}],
+    {W,xTitle:xT,yTitle:'OK parts (pcs)',tips:pm.map((x,i)=>`${xs[i]}\n${prodFmt(x.okPcs)} OK parts\n${prodFmt(x.shots)} shots · ${prodFmt(x.castPcs)} pcs cast`)});
+  const rejChart=(pm,color,W=640)=>{ const v=pm.map(x=>x.castPcs? rejPct(x) : null);
+    return prodLine(xs,v,{W,fmt:x=>prodPct(x,1),color,xTitle:xT,yTitle:'Rejection %',
+      tips:pm.map((x,i)=>`${xs[i]}\nRejection ${v[i]==null?'—':prodPct(v[i],2)}\n${prodFmt(x.rejPcs)} rejected of ${prodFmt(x.castPcs-x.offPcs)} pcs`)}); };
+  const split=perM.length>1;
+  const oeeCol=t.planned&&t.oee<target? PROD_VIZ_BELOW : '';
+  const belowKey=`<span><span class="pr-dot" style="background:${PROD_VIZ_BELOW}"></span>below target</span>`;
+
   return `
   <div class="pr-sec" style="margin-top:4px">Compared with the previous ${span} day${span>1?'s':''}</div>
   <div class="pr-kpis">
-    ${prodDeltaKpi('OEE',t.oee,pt?.planned?pt.oee:null,{fmt:v=>prodPct(v),dfmt:pts})}
+    ${prodDeltaKpi('OEE',t.oee,pt?.planned?pt.oee:null,{fmt:v=>prodPct(v),dfmt:pts,color:oeeCol,note:oeeCol?`below target ${prodPct(target,0)}`:''})}
     ${prodDeltaKpi('OK parts',t.okPcs,pt?pt.okPcs:null)}
     ${prodDeltaKpi('Rejection %',cRej,pRej,{fmt:v=>prodPct(v,2),dfmt:pts,better:-1})}
     ${prodDeltaKpi('Downtime',t.downtime/60,pt?pt.downtime/60:null,{fmt:v=>prodFmt(v,1)+' h',better:-1})}
   </div>
-  <div class="pr-sec">Trends</div>
+  <div class="pr-sec">OEE</div>
   <div class="pr-grid">
-    ${prodCard(`OEE by ${bucket}`,`<div class="b">${prodLine(xs,per.map(x=>x.planned?x.oee:null),{yMax:1,name:'OEE',ref:{value:target,label:`target ${prodPct(target,0)}`},tips:per.map((x,k)=>x.planned?pctTip(k,x):`${xs[k]}: no production`)})}</div>`,
-      `overall ${prodPct(t.oee)}`)}
-    ${prodCard(`OK parts by ${bucket}`,`<div class="b">${prodColumns(xs,okSeries,{tips:okTips})}</div>`,`${prodFmt(t.okPcs)} total`)}
+    ${prodCard(`OEE by ${bucket}`,`<div class="b">${prodLine(xs,per.map(x=>x.planned?x.oee:null),{yMax:1,name:'OEE',below:target,xTitle:xT,yTitle:'OEE %',ref:{value:target,label:`target ${prodPct(target,0)}`},tips:per.map((x,k)=>x.planned?pctTip(k,x)+(x.oee<target?'\n▼ below target':''):`${xs[k]}: no production`)})}</div>`,
+      `overall <span style="font-weight:700;color:${oeeCol||'inherit'}">${prodPct(t.oee)}</span>`)}
+    ${prodCard('OEE by machine',`<div class="b">${prodColumns(mOee.map(x=>prodMachineLabel(x.m)),[{name:'OEE',color:PROD_VIZ_CAT[0],values:mOee.map(x=>x.t.oee)}],
+      {yMax:1,fmt:v=>prodPct(v,0),xTitle:'Machine',yTitle:'OEE %',colorOf:(i,v)=>v<target?PROD_VIZ_BELOW:'',extraLegend:`<span><span class="pr-dot" style="background:${PROD_VIZ_CAT[0]}"></span>at / above target</span>${belowKey}`,
+        ref:{value:target,label:`target ${prodPct(target,0)}`},tips:mOee.map(x=>`${prodMachineLabel(x.m)}\nOEE ${prodPct(x.t.oee)}${x.t.oee<target?'  ▼ below target':''}\nAvailability ${prodPct(x.t.A)}\nPerformance ${prodPct(x.t.P)}\nQuality ${prodPct(x.t.Q)}`)})}</div>`)}
   </div>
+  ${prodCard(`OEE heatmap — machine × ${bucket}`,`<div class="b">${heatHtml}</div>`,`vs target ${prodPct(target,0)}`)}
+  <div class="pr-sec">Production</div>
+  ${prodCard(`Production chart — ${split?'combined (all machines)':esc(perM[0]?.label||'')}`,`<div class="b">${split
+      ? prodColumns(xs,okSeries,{W:1300,tips:okTips,xTitle:xT,yTitle:'OK parts (pcs)'})
+      : prodChart(per,PROD_VIZ_CAT[0],1300)}</div>`,`${prodFmt(t.okPcs)} OK parts`)}
+  ${split?`<div class="pr-grid">${perM.map(x=>prodCard(`Production chart — ${esc(x.label)}`,`<div class="b">${prodChart(x.per,PROD_VIZ_CAT[x.i%PROD_VIZ_CAT.length])}</div>`,`${prodFmt(x.t.okPcs)} OK parts`)).join('')}</div>`:''}
+  <div class="pr-sec">Rejection %</div>
+  ${prodCard(`Rejection % by ${bucket} — ${split?'combined (all machines)':esc(perM[0]?.label||'')}`,`<div class="b">${rejChart(per,PROD_VIZ_CAT[1],1300)}</div>`,`overall ${prodPct(rejPct(t)??0,2)}`)}
+  ${split?`<div class="pr-grid">${perM.map(x=>prodCard(`Rejection % by ${bucket} — ${esc(x.label)}`,`<div class="b">${rejChart(x.per,PROD_VIZ_CAT[x.i%PROD_VIZ_CAT.length])}</div>`,`overall ${prodPct(rejPct(x.t)??0,2)}`)).join('')}</div>`:''}
   <div class="pr-sec">Where the losses are</div>
   <div class="pr-grid">
     ${prodCard('Where the planned time went',`<div class="b">${prodDonut(prodTimeSplit(t),{fmt:v=>prodHrs(v),center:prodPct(t.oee,0),sub:'OEE'})}</div>`,`${prodHrs(t.planned)} planned`)}
@@ -1194,30 +1225,24 @@ function prodRepCharts(ctx,rows,prev=[]){
   </div>
   <div class="pr-grid">
     ${prodCard('Rejections by defect',`<div class="b">${defects.length?prodDonut(defects,{fmt:v=>prodFmt(v)+' pcs',center:prodFmt(t.rejPcs),sub:'rejected pcs'}):'<div class="pr-empty">No rejections in this selection.</div>'}</div>`)}
-    ${prodCard(`Rejection % by ${bucket}`,`<div class="b">${prodLine(xs,rejVals,{fmt:v=>prodPct(v,1),tips:rejTips,color:PROD_VIZ_CAT[1]})}</div>`,
-      `overall ${prodPct(rejPct(t)??0,2)}`)}
+    ${prodCard('Production mix by part',`<div class="b">${partMix.length?prodDonut(partMix,{fmt:v=>prodFmt(v)+' pcs',center:prodFmt(t.okPcs),sub:'OK parts'}):'<div class="pr-empty">No production.</div>'}</div>`)}
   </div>
   <div class="pr-grid">
-    ${prodCard('Rejection Pareto',`<div class="b">${prodPareto(Object.entries(agg.byDefect).map(([c,n])=>[ctx.defectByCode[c]?.description||c,n]),{fmt:v=>prodFmt(v)+' pcs'})}</div>`,'fix the tall dark bars first')}
-    ${prodCard('Downtime Pareto',`<div class="b">${prodPareto(Object.entries(agg.byDown),{fmt:v=>prodHrs(v)})}</div>`,'fix the tall dark bars first')}
+    ${prodCard('Rejection Pareto',`<div class="b">${prodPareto(Object.entries(agg.byDefect).map(([c,n])=>[ctx.defectByCode[c]?.description||c,n]),{fmt:v=>prodFmt(v)+' pcs',xTitle:'Defect (largest first)'})}</div>`,'fix the tall dark bars first')}
+    ${prodCard('Downtime Pareto',`<div class="b">${prodPareto(Object.entries(agg.byDown),{fmt:v=>prodHrs(v),xTitle:'Downtime reason (largest first)'})}</div>`,'fix the tall dark bars first')}
   </div>
-  <div class="pr-sec">Machines, shifts &amp; people</div>
-  ${prodCard(`OEE heatmap — machine × ${bucket}`,`<div class="b">${heatHtml}</div>`,`vs target ${prodPct(target,0)}`)}
+  <div class="pr-sec">Shifts &amp; people</div>
   <div class="pr-grid">
     ${prodCard('Shift A vs Shift B',`<div class="b pr-viz">${shiftHtml}</div>`,'(n) = shifts run')}
-    ${prodCard('OEE by machine',`<div class="b">${prodColumns(mOee.map(x=>prodMachineLabel(x.m)),[{name:'OEE',color:PROD_VIZ_CAT[0],values:mOee.map(x=>x.t.oee)}],
-      {yMax:1,fmt:v=>prodPct(v,0),ref:{value:target,label:`target ${prodPct(target,0)}`},tips:mOee.map(x=>`${prodMachineLabel(x.m)}\nOEE ${prodPct(x.t.oee)}\nAvailability ${prodPct(x.t.A)}\nPerformance ${prodPct(x.t.P)}\nQuality ${prodPct(x.t.Q)}`)})}</div>`)}
+    ${prodCard('Operator-wise',opHtml,`${opRows.length} operators`)}
   </div>
-  ${prodCard('Operator-wise',opHtml,`${opRows.length} operators`)}
-  <div class="pr-sec">Distributions &amp; mix</div>
+  <div class="pr-sec">Distributions</div>
   <div class="pr-grid">
-    ${prodCard('How OEE is spread across shifts',`<div class="b">${prodHist(shiftsP.map(r=>r.c.t.oee),oeeBins,{what:'OEE'})}</div>
-      <div class="pr-note">Each bar counts shifts whose OEE fell in that band. A tall cluster on the left means many weak shifts, not just one bad day.</div>`,`${shiftsP.length} shifts`)}
-    ${prodCard('How rejection % is spread across shifts',`<div class="b">${prodHist(shiftsRej,rejBins,{what:'Rejection'})}</div>
-      <div class="pr-note">Each bar counts shifts in that rejection band. Shifts on the right are the ones to investigate.</div>`,`${shiftsRej.length} shifts`)}
-  </div>
-  <div class="pr-grid">
-    ${prodCard('Production mix by part',`<div class="b">${partMix.length?prodDonut(partMix,{fmt:v=>prodFmt(v)+' pcs',center:prodFmt(t.okPcs),sub:'OK parts'}):'<div class="pr-empty">No production.</div>'}</div>`)}
+    ${prodCard('How OEE is spread across shifts (histogram)',`<div class="b">${prodHist(shiftsP.map(r=>r.c.t.oee),oeeBins,{what:'OEE',xTitle:'OEE of the shift (band)',colorOf:i=>oeeBins[i].hi<=target+1e-9?PROD_VIZ_BELOW:'',
+      extraLegend:`<span><span class="pr-dot" style="background:${PROD_VIZ_CAT[0]}"></span>at / above target</span>${belowKey}`})}</div>
+      <div class="pr-note">Each bar = how many shifts had an OEE in that band. A tall cluster on the left means many weak shifts, not just one bad day.</div>`,`${shiftsP.length} shifts`)}
+    ${prodCard('How rejection % is spread across shifts (histogram)',`<div class="b">${prodHist(shiftsRej,rejBins,{what:'Rejection',xTitle:'Rejection % of the shift (band)'})}</div>
+      <div class="pr-note">Each bar = how many shifts had a rejection % in that band. Shifts on the right are the ones to investigate.</div>`,`${shiftsRej.length} shifts`)}
   </div>
   <div class="pr-note" style="padding:0 2px 14px">Hover any bar, point or slice for the numbers. Charts follow the filters above.</div>`;
 }
