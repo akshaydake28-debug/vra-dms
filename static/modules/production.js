@@ -864,6 +864,34 @@ const PROD_REPORT_CSS=`<style>
 .pr-pmenu button{display:block;width:100%;text-align:left;border:none;background:none;padding:6px 10px;border-radius:6px;font:13px 'Inter',sans-serif;color:#1a1a2e;cursor:pointer}
 .pr-pmenu button:hover{background:#edf1fb;color:var(--navy)}
 .pr-card-ctx{display:none}
+body.pr-gemba-print .pr-gemba{width:718px}
+body.pr-gemba-print .pr-gemba .pr-cardprint{display:none}
+body.pr-gemba-print .pr-gemba>div:first-child{font-size:14px!important;margin:0 0 6px!important}
+body.pr-gemba-print .pr-gemba .pr-kpis{gap:6px;margin-bottom:8px}
+body.pr-gemba-print .pr-gemba .pr-kpi{padding:7px 10px}
+body.pr-gemba-print .pr-gemba .pr-kpi .l{font-size:9.5px}
+body.pr-gemba-print .pr-gemba .pr-kpi .v{font-size:19px!important}
+body.pr-gemba-print .pr-gemba .pr-kpi .s,body.pr-gemba-print .pr-gemba .pr-delta{font-size:10.5px;line-height:1.4!important}
+body.pr-gemba-print .pr-gemba .pr-card{margin-bottom:8px}
+body.pr-gemba-print .pr-gemba .pr-card>.h{padding:7px 10px 2px}
+body.pr-gemba-print .pr-gemba .pr-card>.h b{font-size:12.5px}
+body.pr-gemba-print .pr-gemba .pr-card>.b{padding:5px 10px 8px}
+body.pr-gemba-print .pr-gemba .pr-sec{margin:8px 2px 5px}
+body.pr-gemba-print .pr-gemba li{font-size:11.5px!important;line-height:1.35!important}
+body.pr-gemba-print .pr-gemba ol{gap:4px!important}
+body.pr-gemba-print .pr-gemba .pr-gemba-tables{grid-template-columns:1fr!important;gap:0}
+body.pr-gemba-print .pr-gemba .pr-gemba-tables>.pr-card{margin-bottom:8px}
+body.pr-gemba-print .pr-gemba .pr-tbl th{padding:3px 8px;font-size:9.5px}
+body.pr-gemba-print .pr-gemba .pr-tbl td{padding:3px 8px;font-size:11px}
+body.pr-gemba-print .pr-gemba .pr-grid{gap:8px}
+body.pr-gemba-print .pr-gemba .pr-card{break-inside:auto}
+body.pr-gemba-print .pr-gemba tr,body.pr-gemba-print .pr-gemba li,body.pr-gemba-print .pr-gemba .pr-kpi,body.pr-gemba-print .pr-gemba .pr-grid>.pr-card{break-inside:avoid}
+body.pr-gemba-print .pr-gemba .pr-gemba-tables>.pr-card{break-inside:auto}
+body.pr-gemba-print .pr-gemba .pr-donut{gap:12px}
+body.pr-gemba-print .pr-gemba .pr-donut svg{width:105px}
+body.pr-gemba-print .pr-gemba .pr-legend{font-size:11px}
+body.pr-gemba-print .pr-gemba .b[style*="grid-template-columns:1fr auto"]{font-size:11.5px!important;gap:3px 12px!important}
+.pr-gemba .pr-tbl td{word-break:break-word}
 @media print{ body.pr-one .pr-card-ctx{display:block;font-size:11px;color:#6b7280;margin:0 0 8px} }
 #pr-tip{position:fixed;z-index:999;pointer-events:none;background:#0b1b3a;color:#fff;font:12px/1.45 'Inter',sans-serif;padding:7px 10px;border-radius:7px;box-shadow:0 4px 14px rgba(0,0,0,.18);white-space:pre;display:none}
 @media (max-width:1000px){.pr-kpis{grid-template-columns:repeat(2,1fr)}.pr-grid{grid-template-columns:1fr}}
@@ -1149,7 +1177,7 @@ async function prodRenderReports(opts={}){
     <h2 style="font-size:16px;font-weight:700;color:var(--navy)">📊 Production Reports</h2>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <div class="pr-tabs">${PROD_REPORT_TABS.map(t=>`<button class="pr-tab ${t.k===tab?'on':''}" onclick="prodRepTab('${t.k}')">${t.l}</button>`).join('')}</div>
-      <button class="btn btn-o btn-sm pr-noprint" onclick="window.print()" title="Print or save as PDF (A4)">🖨 Print</button>
+      <button class="btn btn-o btn-sm pr-noprint" onclick="${tab==='gemba'?'prodPrintGemba()':'window.print()'}" title="${tab==='gemba'?'Print the walk sheet on one A4 page':'Print or save as PDF (A4)'}">🖨 Print</button>
     </div>
   </div>
   <div class="pr-print-only">${tab==='gemba'?`Gemba walk sheet · ${prodGembaDate()} · printed ${new Date().toLocaleString('en-IN',{dateStyle:'medium',timeStyle:'short'})}`:`${esc(PROD_REPORT_TABS.find(t=>t.k===tab)?.l.replace(/^\W+\s*/,'')||'')} · ${prodDayLabel(f.from)} – ${prodDayLabel(f.to)} ${f.to.slice(0,4)} · ${esc(f.machineId?prodMachineLabel(ctx.machineById[f.machineId]):'All machines')} · ${f.shift?'Shift '+esc(f.shift):'Both shifts'}${partFilter?` · ${esc(ctx.partById[partFilter]?.partNumber||'')}`:''} · printed ${new Date().toLocaleString('en-IN',{dateStyle:'medium',timeStyle:'short'})}`}</div>
@@ -1188,7 +1216,7 @@ async function prodRepGemba(ctx){
       <button class="pr-chip" ${d>=prodToday()?'disabled style="opacity:.4"':''} onclick="prodGembaStep(1)">Next day ▶</button>
       ${yday?'':`<button class="pr-chip on" onclick="_prodRep.gembaDate='';prodRenderReports()">Back to yesterday</button>`}
     </div>
-    <span style="font-size:12px;color:#6b7280">Tip: 🖨 Print gives an A4 sheet to carry on the walk.</span></div>`;
+    <span style="font-size:12px;color:#6b7280">Tip: 🖨 Print (top right) gives a one-page A4 sheet to carry on the walk.</span></div>`;
   const title=`<div style="font-size:15px;font-weight:700;color:var(--navy);margin:2px 2px 10px">${yday?'Yesterday — ':''}${new Date(d+'T00:00:00').toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}</div>`;
 
   // Expected machine × shift slots (active machines, both shifts)
@@ -1210,12 +1238,16 @@ async function prodRepGemba(ctx){
       const top=Object.entries(c.byDown).sort((a,b)=>b[1]-a[1])[0];
       tp.push({lvl:xt.oee<target-.1?0:1,html:`<b>${where}: OEE ${prodPct(xt.oee,0)}</b> — ${pts(target-xt.oee)} below target. Biggest loss: ${loss[0]} ${prodFmt(loss[1])} min${loss[0]==='downtime'&&top?` (mostly ${esc(top[0])}, ${prodFmt(top[1])} min)`:''}.`}); }
     for(const r of c.runs) if(r.part&&r.cav<r.dieCav&&r.shots) tp.push({lvl:1,html:`<b>${where}: cavity down</b> — ${esc(r.part.partNumber)} ran ${prodFmt(r.shots)} shots on ${r.cav} of ${r.dieCav} cavities (${prodFmt(r.cavLossMin)} min lost). Check die repair status.`});
-    for(const dl of (s.downtime||[])) if(prodN(dl.minutes)>=60&&!PROD_NOT_PLANNED.includes(dl.category)) tp.push({lvl:1,html:`<b>${where}: ${prodFmt(prodN(dl.minutes))} min ${esc(dl.category)}</b>${dl.remark?` — ${esc(dl.remark)}`:''}. Is the cause fixed?`});
+    // Long stops: one line per machine · shift (remarks are in the downtime table)
+    const long=(s.downtime||[]).filter(dl=>prodN(dl.minutes)>=60&&!PROD_NOT_PLANNED.includes(dl.category)).sort((a,b)=>prodN(b.minutes)-prodN(a.minutes));
+    if(long.length) tp.push({lvl:1,html:`<b>${where}: long stop${long.length>1?'s':''}</b> — ${long.map(dl=>`${esc(dl.category)} ${prodFmt(prodN(dl.minutes))} min`).join(', ')}. Is the cause fixed?`});
     for(const r of c.runs){ const rp=rejPct(r); if(r.rejPcs>=5&&rp>=Math.max(.03,2*rejPct(t))){ const top=Object.entries(r.rej).sort((a,b)=>b[1]-a[1])[0];
       tp.push({lvl:1,html:`<b>${where}: ${esc(r.part?.partNumber||'')} rejection ${prodPct(rp,1)}</b> (${prodFmt(r.rejPcs)} pcs)${top?` — mostly ${esc(ctx.defectByCode[top[0]]?.description||top[0])} (${prodFmt(top[1])})`:''}. Look at the die / process.`}); } }
   }
   const pile=t.okPcs-ft.qty;
   if(t.okPcs&&pile>t.okPcs*.25) tp.push({lvl:2,html:`<b>Fettling fell behind by ${prodFmt(pile)} parts</b> (${prodFmt(t.okPcs)} OK castings made, ${prodFmt(ft.qty)} fettled).`});
+  const mpDay=prodFetManpower(fr.map(r=>({...r,date:d})),rows);
+  if(mpDay&&mpDay.extra>0) tp.push({lvl:2,html:`<b>Fettling needs +${mpDay.extra} ${mpDay.extra===1?'person':'people'}</b> to keep pace (${prodFmt(mpDay.castPerDay)} castings ÷ ${prodFmt(mpDay.rate)} per person = ${prodFmt(mpDay.need,1)} needed, ${prodFmt(mpDay.crew)} worked).`});
   if(ft.qty&&ft.rejPct>.02) tp.push({lvl:2,html:`<b>Fettling rejection ${prodPct(ft.rejPct,1)}</b> (${prodFmt(ft.rej)} parts).`});
   tp.sort((a,b)=>a.lvl-b.lvl);
   const icon=['🔴','🟠','🔵'];
@@ -1238,7 +1270,7 @@ async function prodRepGemba(ctx){
   const events=rows.flatMap(({s})=>s.notRun?[]:(s.downtime||[]).filter(x=>prodN(x.minutes)>0).map(x=>({...x,where:`${mLab(s.machineId)} · ${s.shift}`}))).sort((a,b)=>prodN(b.minutes)-prodN(a.minutes));
   const rejRows=rows.flatMap(({s,c})=>c.runs.filter(r=>r.castPcs).map(r=>({r,where:`${mLab(s.machineId)} · ${s.shift}`}))).sort((a,b)=>b.r.rejPcs-a.r.rejPcs);
 
-  return navHtml+title+`
+  return navHtml+`<div class="pr-gemba">`+title+`
   <div class="pr-kpis">
     ${prodDeltaKpi('OEE',t.oee,pt?.planned?pt.oee:null,{fmt:v=>prodPct(v),dfmt:pts,color:t.planned&&t.oee<target?PROD_VIZ_BELOW:'',note:t.planned&&t.oee<target?`below target ${prodPct(target,0)}`:''})}
     ${prodDeltaKpi('OK parts',t.okPcs,pt?pt.okPcs:null)}
@@ -1248,7 +1280,7 @@ async function prodRepGemba(ctx){
   ${prodCard('Talking points for the walk',`<div class="b">${tpHtml}</div>`,`${tp.length} item${tp.length===1?'':'s'} · vs day before`)}
   <div class="pr-sec">Each machine &amp; shift</div>
   <div class="pr-kpis" style="grid-template-columns:repeat(${Math.min(4,Math.max(2,mcs.length))},1fr)">${slots.map(card).join('')}</div>
-  <div class="pr-grid">
+  <div class="pr-grid pr-gemba-tables">
     ${prodCard('Downtime events',events.length?`<table class="pr-tbl"><thead><tr><th>Machine · shift</th><th>Reason</th><th class="n">Min</th><th>Remark</th></tr></thead><tbody>
       ${events.map(x=>`<tr><td>${esc(x.where)}</td><td>${esc(x.category)}${PROD_NOT_PLANNED.includes(x.category)?' <span style="color:#9ca3af">(not counted)</span>':''}</td><td class="n mono" style="${prodN(x.minutes)>=60&&!PROD_NOT_PLANNED.includes(x.category)?'color:#dc2626;font-weight:700':''}">${prodFmt(prodN(x.minutes))}</td><td style="color:#6b7280">${esc(x.remark||'')}</td></tr>`).join('')}</tbody></table>`:'<div class="pr-empty">No downtime logged.</div>',`${prodFmt(t.downtime)} min counted`)}
     ${prodCard('Rejections by part',rejRows.length?`<table class="pr-tbl"><thead><tr><th>Part</th><th>Machine · shift</th><th class="n">Rejected</th><th class="n">Rej %</th><th>Top defect</th></tr></thead><tbody>
@@ -1262,8 +1294,63 @@ async function prodRepGemba(ctx){
         <span>OK / rejected</span><b class="mono">${prodFmt(ft.ok)} / <span style="color:${ft.rej?'#dc2626':''}">${prodFmt(ft.rej)}</span> (${prodPct(ft.rejPct,1)})</b>
         <span>OK castings made</span><b class="mono">${prodFmt(t.okPcs)}</b>
         <span>${pile>=0?'Added to the waiting pile':'Taken from the waiting pile'}</span><b class="mono" style="color:${pile>0?'#d97706':'#16a34a'}">${prodFmt(Math.abs(pile))}</b>
-        <span>People</span><b>${[...new Set(fr.map(r=>r.person).filter(Boolean))].length}</b></div>`:'<div class="pr-empty">No fettling entered for this day.</div>')}
-  </div>`;
+        <span>People</span><b>${[...new Set(fr.map(r=>r.person).filter(Boolean))].length}</b>
+        ${(()=>{ const mp=prodFetManpower(fr.map(r=>({...r,date:d})),rows); return mp?`<span>Fettlers needed to keep pace</span><b class="mono" style="color:${mp.extra?'#d97706':'#16a34a'}">${prodFmt(mp.need,1)} ${mp.extra?`(+${mp.extra})`:'✓'}</b>`:''; })()}</div>`:'<div class="pr-empty">No fettling entered for this day.</div>')}
+  </div></div>`;
+}
+// Print the gemba sheet on ONE A4 page: compact layout at the printable
+// width (190 mm), then scale down only if a busy day is still too tall.
+function prodPrintGemba(){
+  const W=718, H=1085;                       // A4 portrait minus 10 mm margins, in CSS px (96 dpi)
+  document.body.classList.add('pr-gemba-print');
+  const g=document.querySelector('.pr-gemba'), head=document.querySelector('.pr-print-only');
+  const h=(g?.scrollHeight||0)+(head?.offsetHeight||18)+8;
+  // never below 70% (still readable); a very heavy day continues on a 2nd page, nothing split
+  const z=Math.max(.7,Math.min(1,H/Math.max(1,h)));
+  const page=document.createElement('style'); page.id='pr-page-size';
+  page.textContent=`@media print{@page{size:A4 portrait;margin:10mm} body.pr-gemba-print .content{zoom:${z.toFixed(3)}}}`;
+  document.body.appendChild(page);
+  let done=false;
+  const cleanup=()=>{ if(done) return; done=true; document.body.classList.remove('pr-gemba-print'); page.remove(); window.removeEventListener('afterprint',cleanup); };
+  window.addEventListener('afterprint',cleanup);
+  window.print();
+  setTimeout(cleanup,1500);
+}
+
+// Fettling manpower needed to keep pace with casting:
+//   output per person-day = parts fettled ÷ person-days worked
+//   castings per day      = OK castings ÷ days with production
+//   people needed         = castings per day ÷ output per person-day
+//   additional people     = people needed − people fettling on an average day (rounded up)
+// fr: fettling rows with .date; castRows: shift rows [{s,c}]
+function prodFetManpower(fr,castRows){
+  const byDate={};
+  fr.forEach((r,i)=>{ (byDate[r.date]=byDate[r.date]||new Set()).add((r.person||'').trim()||'#'+i); });
+  const personDays=Object.values(byDate).reduce((t,x)=>t+x.size,0), fetDays=Object.keys(byDate).length;
+  const qty=fr.reduce((t,r)=>t+prodN(r.qty),0);
+  const castDays=new Set(castRows.filter(r=>r.c.t.castPcs>0).map(r=>r.s.date)).size;
+  const castOk=castRows.reduce((t,r)=>t+r.c.t.okPcs,0);
+  if(!personDays||!qty||!castDays) return null;
+  const rate=qty/personDays, crew=personDays/fetDays, castPerDay=castOk/castDays, need=castPerDay/rate;
+  return {rate, crew, castPerDay, fetPerDay:qty/fetDays, need, extra:Math.max(0,Math.ceil(need-crew-1e-9)), personDays, fetDays, castDays};
+}
+function prodFetManpowerHtml(mp,{day=false}={}){
+  if(!mp) return '<div class="pr-empty">Needs fettling entries with people and casting production in the same period.</div>';
+  const ok=mp.extra===0, col=ok?'#16a34a':'#d97706';
+  const kv=(l,v,sub='')=>`<span>${l}${sub?`<br><span style="font-size:11px;color:#9ca3af">${sub}</span>`:''}</span><b class="mono" style="text-align:right">${v}</b>`;
+  return `<div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap">
+    <div style="min-width:170px">
+      <div style="font-size:30px;font-weight:700;color:${col};line-height:1.1">${ok?'✓ 0':'+'+mp.extra}</div>
+      <div style="font-size:12px;color:#374151;font-weight:600">${ok?'no extra fettlers needed':`more ${mp.extra===1?'fettler':'fettlers'} needed${day?'':' per day'}`}</div>
+      <div style="font-size:11.5px;color:#6b7280;margin-top:2px">need ${prodFmt(mp.need,1)} · ${day?'had':'have'} ${prodFmt(mp.crew,1)}${day?'':' on an average day'}</div>
+    </div>
+    <div style="flex:1;min-width:240px;display:grid;grid-template-columns:1fr auto;gap:4px 14px;font-size:12.5px">
+      ${kv('OK castings per day',prodFmt(mp.castPerDay),day?'':`over ${mp.castDays} production day${mp.castDays===1?'':'s'}`)}
+      ${kv('Parts fettled per person per day',prodFmt(mp.rate),day?'':`${prodFmt(mp.personDays)} person-days`)}
+      ${kv('Fettlers needed to keep pace',prodFmt(mp.need,1),'castings per day ÷ output per person')}
+      ${kv(day?'People who fettled':'People fettling on an average day',prodFmt(mp.crew,1))}
+    </div></div>
+    <div class="pr-note" style="padding:8px 0 0">To also clear castings already waiting, add more people for a few days — or use this with the "Castings not yet fettled" figure.</div>`;
 }
 
 // ── Charts: fettling ─────────────────────────────────
@@ -1291,6 +1378,7 @@ function prodChartsFettling(ctx,fet,rows,{keys,xs,keyOf,xT,bucket,partId}){
     ${prodKpi('OK castings made',prodFmt(castOk),filtered?'machine / shift filter applied':'die casting, same period')}
     ${prodKpi(gap>=0?'Castings not yet fettled':'Fettled from earlier stock',prodFmt(Math.abs(gap)),gap>0?'pile grew this period':gap<0?'pile shrank this period':'kept pace',gap>0?'#d97706':'#16a34a')}
   </div>
+  ${prodCard('Fettling manpower — to keep pace with casting',`<div class="b">${prodFetManpowerHtml(prodFetManpower(fr,rows))}</div>`,filtered?'machine / shift filter applied to castings':'all machines')}
   ${prodCard(`Castings made vs fettled by ${bucket}`,`<div class="b">${prodColumns(xs,[
       {name:'OK castings made',color:PROD_VIZ_CAT[0],values:castPer},
       {name:'Parts fettled',color:PROD_VIZ_CAT[1],values:fetPer.map(x=>x.qty)}],
