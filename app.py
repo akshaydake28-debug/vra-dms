@@ -534,7 +534,7 @@ def restore():
         return jsonify({'error':'Invalid backup: "settings" must be an object'}), 400
     for key, value in data.items():
         if key in ('exportedAt','exportedBy','appVersion','company','documents','versions',
-                   'audit','users','customDocTypes','settings','records'):
+                   'audit','users','customDocTypes','settings','records','backupErrors'):
             continue
         if isinstance(value, list) and not all(isinstance(x, dict) for x in value):
             return jsonify({'error':f'Invalid backup: "{key}" must be a list of objects'}), 400
@@ -563,7 +563,7 @@ def restore():
 
     # All array-type module data
     skip_keys = {'exportedAt','exportedBy','appVersion','company','documents',
-                 'versions','audit','users','customDocTypes','settings','records'}
+                 'versions','audit','users','customDocTypes','settings','records','backupErrors'}
     module_count = 0
     for key, value in data.items():
         if key in skip_keys: continue
@@ -614,10 +614,7 @@ CF_VALID_SCORES = (2, 4, 6, 8, 10)
 
 def _find_feedback_by_token(token):
     for r in GenericRecord.query.filter_by(module='custFeedback').all():
-        try:
-            d = json.loads(r.data)
-        except (TypeError, ValueError):
-            continue
+        d = safe_json_loads(r.data, {})
         if d.get('token') == token:
             return r, d
     return None, None
@@ -1449,19 +1446,19 @@ def seed_pq_pfmea_rows_for_sample_part():
     template library, the same way the UI's 'Generate from Process Flow'
     button does — keeps the demo data in sync with the master template."""
     part_rec = next((r for r in GenericRecord.query.filter_by(module='pq_parts').all()
-                      if json.loads(r.data).get('partNumber') == 'VRA-DC-001'), None)
+                      if safe_json_loads(r.data, {}).get('partNumber') == 'VRA-DC-001'), None)
     if not part_rec:
         return
     pid = part_rec.id
     existing_rows = GenericRecord.query.filter_by(module='pq_pfmea_rows').all()
-    if any(json.loads(r.data).get('partId') == pid for r in existing_rows):
+    if any(safe_json_loads(r.data, {}).get('partId') == pid for r in existing_rows):
         return
 
     steps = sorted(
-        [json.loads(r.data) for r in GenericRecord.query.filter_by(module='pq_pfd_steps').all()
-         if json.loads(r.data).get('partId') == pid],
+        [d for d in (safe_json_loads(r.data, {}) for r in GenericRecord.query.filter_by(module='pq_pfd_steps').all())
+         if d.get('partId') == pid],
         key=lambda s: s.get('order', 0))
-    templates = [json.loads(r.data) for r in GenericRecord.query.filter_by(module='pq_pfmea_templates').all()]
+    templates = [safe_json_loads(r.data, {}) for r in GenericRecord.query.filter_by(module='pq_pfmea_templates').all()]
 
     order = 0
     for step in steps:
@@ -1471,11 +1468,11 @@ def seed_pq_pfmea_rows_for_sample_part():
             order += 1
             db.session.add(GenericRecord(module='pq_pfmea_rows', data=json.dumps({
                 'partId': pid, 'opNumber': step.get('opNumber'), 'processStep': step.get('stepName'),
-                'function': t['function'], 'failureMode': t['failureMode'], 'failureEffect': t['failureEffect'],
-                'severity': t['severity'], 'failureCause': t['failureCause'], 'occurrence': t['occurrence'],
-                'preventionControls': t['preventionControls'], 'detectionControls': t['detectionControls'],
-                'detection': t['detection'], 'rpn': t['rpn'], 'recommendedAction': t['recommendedAction'],
-                'responsibility': t['responsibility'], 'targetDate': '', 'status': 'Open', 'order': order,
+                'function': t.get('function'), 'failureMode': t.get('failureMode'), 'failureEffect': t.get('failureEffect'),
+                'severity': t.get('severity'), 'failureCause': t.get('failureCause'), 'occurrence': t.get('occurrence'),
+                'preventionControls': t.get('preventionControls'), 'detectionControls': t.get('detectionControls'),
+                'detection': t.get('detection'), 'rpn': t.get('rpn'), 'recommendedAction': t.get('recommendedAction'),
+                'responsibility': t.get('responsibility'), 'targetDate': '', 'status': 'Open', 'order': order,
             })))
     db.session.commit()
     print(f"PFMEA rows generated for sample part ({order} rows)")
@@ -1547,7 +1544,10 @@ def seed_pq_grades():
     # Upgrade-safe: reseed if empty, or if the stored rows predate the
     # structured per-element schema (older rows only had a flat 'composition'
     # string). Row count alone can't detect a schema change, so check shape.
-    if existing and json.loads(existing[0].data).get('elements'):
+    # Only wipe when NO row has the new shape (a genuine old-schema table);
+    # one unreadable/odd row must never cause the whole Grade Master to be
+    # deleted and reseeded on restart.
+    if existing and any(safe_json_loads(r.data, {}).get('elements') for r in existing):
         return
     if existing:
         GenericRecord.query.filter_by(module='pq_grades').delete()
