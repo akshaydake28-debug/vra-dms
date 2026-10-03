@@ -169,6 +169,16 @@ def safe_json_loads(raw, default):
         return default
     return parsed
 
+def json_object_body():
+    """Return the request body if it is a JSON object, else None. The record
+    write endpoints store whatever they are given, so a body that is `null`,
+    a list or plain text would be saved as-is and then be skipped (and so
+    silently left out) by the nightly backup, which only accepts objects."""
+    body = request.get_json(silent=True)
+    return body if isinstance(body, dict) else None
+
+BAD_BODY = ({'error': 'Request body must be a JSON object'}, 400)
+
 @app.before_request
 def require_login():
     path = request.path
@@ -345,7 +355,9 @@ def list_versions():
 
 @app.route('/api/versions', methods=['POST'])
 def save_version():
-    r = GenericRecord(module='versions', data=json.dumps(request.json))
+    body = json_object_body()
+    if body is None: return jsonify(BAD_BODY[0]), 400
+    r = GenericRecord(module='versions', data=json.dumps(body))
     db.session.add(r)
     db.session.commit()
     return jsonify({'id': r.id})
@@ -353,8 +365,10 @@ def save_version():
 @app.route('/api/versions/<int:rid>', methods=['POST'])
 def update_version(rid):
     r = GenericRecord.query.get_or_404(rid)
+    body = json_object_body()
+    if body is None: return jsonify(BAD_BODY[0]), 400
     existing = safe_json_loads(r.data, {})
-    existing.update(request.json)
+    existing.update(body)
     r.data = json.dumps(existing)
     r.updated_at = datetime.utcnow()
     db.session.commit()
@@ -731,7 +745,8 @@ def list_generic(module):
 
 @app.route('/api/<module>', methods=['POST'])
 def save_generic(module):
-    d = request.json
+    d = json_object_body()
+    if d is None: return jsonify(BAD_BODY[0]), 400
     # If record has an id, update instead of insert
     existing_id = d.get('id') or d.get('_rid')
     if existing_id:
@@ -757,13 +772,19 @@ def get_generic_one(module, rid):
 
 @app.route('/api/<module>/<int:rid>', methods=['POST'])
 def update_generic_one(module, rid):
+    d = json_object_body()
+    if d is None: return jsonify(BAD_BODY[0]), 400
     r = GenericRecord.query.get(rid)
     if r:
-        r.data = json.dumps(request.json)
+        # Record ids are shared across every module, so make sure this id
+        # really belongs to the module in the URL before overwriting it.
+        if r.module != module:
+            return jsonify({'error': 'Not found'}), 404
+        r.data = json.dumps(d)
         r.updated_at = datetime.utcnow()
         db.session.commit()
         return jsonify({'id': r.id})
-    r = GenericRecord(module=module, data=json.dumps(request.json))
+    r = GenericRecord(module=module, data=json.dumps(d))
     db.session.add(r)
     db.session.commit()
     return jsonify({'id': r.id})
@@ -771,7 +792,7 @@ def update_generic_one(module, rid):
 @app.route('/api/<module>/<int:rid>', methods=['DELETE'])
 def delete_generic_one(module, rid):
     r = GenericRecord.query.get(rid)
-    if r:
+    if r and r.module == module:
         db.session.delete(r)
         db.session.commit()
     return jsonify({'ok': True})
@@ -950,7 +971,8 @@ def qms2_save(module):
             module = prefixed
         else:
             return jsonify({'error':'Unknown module'}), 400
-    d = request.json
+    d = json_object_body()
+    if d is None: return jsonify(BAD_BODY[0]), 400
     existing_id = d.get('id')
     clean = {k:v for k,v in d.items() if k not in ('id','_createdAt')}
     if existing_id:
