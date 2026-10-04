@@ -47,6 +47,16 @@ const PROD_DEFAULT_DEFECTS = [
 const PROD_CFG_DEFAULT = {meltLossPct:6, consumptionBasis:'all', plannedMinutes:720,
   workDays:26, shiftsPerDay:2, hoursPerShift:12, targetOeePct:75};   // capacity planning
 const PROD_ADJ_REASONS = ['Opening Stock','Physical Count Correction','Scrap / Write-off','Return / Rework','Other'];
+// Operations after die casting. Each part has its own route (ordered list of
+// these). Stages group operations; VMC can be added as a stage later.
+const PROD_STAGES = ['Fettling','Shot blasting'];
+const PROD_OPS_DEFAULT = [
+  {name:'Belting', stage:'Fettling'}, {name:'Grinding', stage:'Fettling'},
+  {name:'Drilling', stage:'Fettling'}, {name:'Filing', stage:'Fettling'},
+  {name:'Shot blasting', stage:'Shot blasting'},
+];
+// Entries made before operations existed: the row means "fettling finished"
+const PROD_OP_DONE = 'Fettling (complete)';
 
 // ── small helpers ────────────────────────────────────
 function prodDate(d=new Date()){ return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10); }
@@ -76,6 +86,55 @@ function prodTile(icon,value,label,color,bg='#edf1fb'){
   return `<div class="sc"><div class="si" style="background:${bg}">${icon}</div><div><div class="sv" ${color?`style="color:${color}"`:''}>${value}</div><div class="sl2">${label}</div></div></div>`;
 }
 function prodClose(id){ const e=document.getElementById(id); if(e) e.remove(); }
+
+// ── Operations & routes ──────────────────────────────
+function prodOps(cfg){ return Array.isArray(cfg?.ops)&&cfg.ops.length? cfg.ops : PROD_OPS_DEFAULT; }
+function prodOpStage(op,cfg){ return !op||op===PROD_OP_DONE? 'Fettling' : (prodOps(cfg).find(o=>o.name===op)?.stage||'Fettling'); }
+function prodRoute(part){ return Array.isArray(part?.route)? part.route : []; }
+function prodRouteStage(part,stage,cfg){ return prodRoute(part).filter(op=>prodOpStage(op,cfg)===stage); }
+function prodRowOp(r){ return r.op||PROD_OP_DONE; }
+// Does this row's quantity finish the stage? Only the LAST operation of the
+// stage counts (100 ground then the same 100 drilled is 100 fettled, not 200).
+function prodRowCompletes(r,ctx,stage='Fettling'){
+  const op=prodRowOp(r);
+  if(op===PROD_OP_DONE) return stage==='Fettling';
+  if(prodOpStage(op,ctx?.cfg)!==stage) return false;
+  const ops=prodRouteStage(ctx?.partById?.[r.partId],stage,ctx?.cfg);
+  return !ops.length || op===ops[ops.length-1];
+}
+// Totals for one stage (default fettling):
+//   qty  = parts that finished the stage (passed its last operation, incl. rejected there)
+//   ok   = good parts out of the stage;  rej = rejected at ANY operation of the stage
+//   work = all quantities entered at the stage's operations (each op counted once)
+//   ops  = {op: {qty, rej}} per operation
+function prodFetTotals(rows,ctx=null,stage='Fettling'){
+  const t={qty:0,ok:0,rej:0,work:0,ops:{}};
+  for(const r of rows){
+    if(prodOpStage(prodRowOp(r),ctx?.cfg)!==stage) continue;
+    const q=prodN(r.qty), x=Math.min(prodN(r.rej),q), op=prodRowOp(r);
+    t.work+=q; t.rej+=x;
+    const o=t.ops[op]||(t.ops[op]={qty:0,rej:0}); o.qty+=q; o.rej+=x;
+    if(!ctx||prodRowCompletes(r,ctx,stage)){ t.qty+=q; t.ok+=q-x; }
+  }
+  t.rejPct=(t.ok+t.rej)? t.rej/(t.ok+t.rej) : 0;
+  return t;
+}
+// Work in progress for a part over all time: for each operation of its route,
+// how many are waiting before it (good out of the previous step − entered here).
+// Old "Fettling (complete)" rows count as passing every fettling operation.
+function prodPartFlow(part,castOk,rows,ctx){
+  const route=prodRoute(part), fetOps=prodRouteStage(part,'Fettling',ctx.cfg);
+  const steps=route.length? route : [PROD_OP_DONE];
+  const done={}, okOut={};
+  steps.forEach(op=>{ done[op]=0; okOut[op]=0; });
+  for(const r of rows){ if(String(r.partId)!==String(part.id)) continue;
+    const q=prodN(r.qty), x=Math.min(prodN(r.rej),q), op=prodRowOp(r);
+    const hits=op===PROD_OP_DONE&&route.length? fetOps : [op];
+    hits.forEach(h=>{ if(h in done){ done[h]+=q; okOut[h]+=q-x; } }); }
+  let prev=castOk;
+  const out=steps.map(op=>{ const w={op, waiting:prev-done[op], done:done[op], ok:okOut[op]}; prev=okOut[op]; return w; });
+  return {steps:out, finished:prev};
+}
 
 // ══════════════════════════════════════════════════════
 //  MASTERS + CONTEXT
@@ -1225,7 +1284,7 @@ async function prodRepGemba(ctx){
 
   // Fettling that day
   const fr=fetAll.filter(e=>e.date===d).flatMap(e=>(e.rows||[]).filter(r=>prodN(r.qty)>0));
-  const ft=prodFetTotals(fr);
+  const ft=prodFetTotals(fr,ctx);
 
   // ── Talking points (most important first) ──
   const tp=[];   // {lvl:0 critical,1 warn,2 info, html}
@@ -1246,7 +1305,7 @@ async function prodRepGemba(ctx){
   }
   const pile=t.okPcs-ft.qty;
   if(t.okPcs&&pile>t.okPcs*.25) tp.push({lvl:2,html:`<b>Fettling fell behind by ${prodFmt(pile)} parts</b> (${prodFmt(t.okPcs)} OK castings made, ${prodFmt(ft.qty)} fettled).`});
-  const mpDay=prodFetManpower(fr.map(r=>({...r,date:d})),rows);
+  const mpDay=prodFetManpower(fr.map(r=>({...r,date:d})),rows,ctx);
   if(mpDay&&mpDay.extra>0) tp.push({lvl:2,html:`<b>Fettling needs +${mpDay.extra} ${mpDay.extra===1?'person':'people'}</b> to keep pace (${prodFmt(mpDay.castPerDay)} castings ÷ ${prodFmt(mpDay.rate)} per person = ${prodFmt(mpDay.need,1)} needed, ${prodFmt(mpDay.crew)} worked).`});
   if(ft.qty&&ft.rejPct>.02) tp.push({lvl:2,html:`<b>Fettling rejection ${prodPct(ft.rejPct,1)}</b> (${prodFmt(ft.rej)} parts).`});
   tp.sort((a,b)=>a.lvl-b.lvl);
@@ -1295,7 +1354,7 @@ async function prodRepGemba(ctx){
         <span>OK castings made</span><b class="mono">${prodFmt(t.okPcs)}</b>
         <span>${pile>=0?'Added to the waiting pile':'Taken from the waiting pile'}</span><b class="mono" style="color:${pile>0?'#d97706':'#16a34a'}">${prodFmt(Math.abs(pile))}</b>
         <span>People</span><b>${[...new Set(fr.map(r=>r.person).filter(Boolean))].length}</b>
-        ${(()=>{ const mp=prodFetManpower(fr.map(r=>({...r,date:d})),rows); return mp?`<span>Fettlers needed to keep pace</span><b class="mono" style="color:${mp.extra?'#d97706':'#16a34a'}">${prodFmt(mp.need,1)} ${mp.extra?`(+${mp.extra})`:'✓'}</b>`:''; })()}</div>`:'<div class="pr-empty">No fettling entered for this day.</div>')}
+        ${(()=>{ const mp=prodFetManpower(fr.map(r=>({...r,date:d})),rows,ctx); return mp?`<span>Fettlers needed to keep pace</span><b class="mono" style="color:${mp.extra?'#d97706':'#16a34a'}">${prodFmt(mp.need,1)} ${mp.extra?`(+${mp.extra})`:'✓'}</b>`:''; })()}</div>`:'<div class="pr-empty">No fettling entered for this day.</div>')}
   </div></div>`;
 }
 // Print the gemba sheet on ONE A4 page: compact layout at the printable
@@ -1317,22 +1376,32 @@ function prodPrintGemba(){
   setTimeout(cleanup,1500);
 }
 
-// Fettling manpower needed to keep pace with casting:
-//   output per person-day = parts fettled ÷ person-days worked
-//   castings per day      = OK castings ÷ days with production
-//   people needed         = castings per day ÷ output per person-day
-//   additional people     = people needed − people fettling on an average day (rounded up)
+// Fettling manpower needed to keep pace with casting, per operation:
+//   a person-day is shared equally between the operations that person did that day
+//   output per person-day (op) = qty done at the op ÷ person-days spent on it
+//   demand per day (op)        = OK castings per day of parts whose route has the op
+//   people needed              = Σ over ops of demand ÷ output per person-day
+//   additional people          = people needed − people fettling on an average day (rounded up)
 // fr: fettling rows with .date; castRows: shift rows [{s,c}]
-function prodFetManpower(fr,castRows){
-  const byDate={};
-  fr.forEach((r,i)=>{ (byDate[r.date]=byDate[r.date]||new Set()).add((r.person||'').trim()||'#'+i); });
-  const personDays=Object.values(byDate).reduce((t,x)=>t+x.size,0), fetDays=Object.keys(byDate).length;
-  const qty=fr.reduce((t,r)=>t+prodN(r.qty),0);
+function prodFetManpower(fr,castRows,ctx=null){
+  fr=fr.filter(r=>prodOpStage(prodRowOp(r),ctx?.cfg)==='Fettling'&&prodN(r.qty)>0);
+  const day={};      // date -> person -> Set(ops)
+  fr.forEach((r,i)=>{ const p=(r.person||'').trim()||'#'+i; ((day[r.date]=day[r.date]||{})[p]=day[r.date]?.[p]||new Set()).add(prodRowOp(r)); });
+  const ops={};      // op -> {qty, pd}
+  for(const [d,people] of Object.entries(day)) for(const [p,set] of Object.entries(people)) set.forEach(op=>{ (ops[op]=ops[op]||{qty:0,pd:0}).pd+=1/set.size; });
+  fr.forEach(r=>{ ops[prodRowOp(r)].qty+=prodN(r.qty); });
+  const personDays=Object.values(day).reduce((t,x)=>t+Object.keys(x).length,0), fetDays=Object.keys(day).length;
   const castDays=new Set(castRows.filter(r=>r.c.t.castPcs>0).map(r=>r.s.date)).size;
-  const castOk=castRows.reduce((t,r)=>t+r.c.t.okPcs,0);
-  if(!personDays||!qty||!castDays) return null;
-  const rate=qty/personDays, crew=personDays/fetDays, castPerDay=castOk/castDays, need=castPerDay/rate;
-  return {rate, crew, castPerDay, fetPerDay:qty/fetDays, need, extra:Math.max(0,Math.ceil(need-crew-1e-9)), personDays, fetDays, castDays};
+  const castByPart={}; castRows.forEach(r=>Object.entries(r.c.byPart).forEach(([pid,v])=>castByPart[pid]=(castByPart[pid]||0)+v.okPcs));
+  const castOk=Object.values(castByPart).reduce((t,v)=>t+v,0);
+  if(!personDays||!castDays||!castOk) return null;
+  const demandOf=op=>Object.entries(castByPart).reduce((t,[pid,v])=>{ const route=prodRouteStage(ctx?.partById?.[pid],'Fettling',ctx?.cfg);
+    return t+((op===PROD_OP_DONE? !route.length : route.includes(op))? v : 0); },0)/castDays;
+  const perOp=Object.entries(ops).map(([op,o])=>{ const rate=o.pd?o.qty/o.pd:0, demand=demandOf(op);
+    return {op, rate, demand, need:rate? demand/rate : 0, crew:o.pd/fetDays}; }).filter(x=>x.rate>0).sort((a,b)=>b.need-a.need);
+  const need=perOp.reduce((t,x)=>t+x.need,0), crew=personDays/fetDays;
+  const qty=fr.reduce((t,r)=>t+prodN(r.qty),0);
+  return {perOp, need, crew, castPerDay:castOk/castDays, rate:qty/personDays, extra:Math.max(0,Math.ceil(need-crew-1e-9)), personDays, fetDays, castDays};
 }
 function prodFetManpowerHtml(mp,{day=false}={}){
   if(!mp) return '<div class="pr-empty">Needs fettling entries with people and casting production in the same period.</div>';
@@ -1346,10 +1415,12 @@ function prodFetManpowerHtml(mp,{day=false}={}){
     </div>
     <div style="flex:1;min-width:240px;display:grid;grid-template-columns:1fr auto;gap:4px 14px;font-size:12.5px">
       ${kv('OK castings per day',prodFmt(mp.castPerDay),day?'':`over ${mp.castDays} production day${mp.castDays===1?'':'s'}`)}
-      ${kv('Parts fettled per person per day',prodFmt(mp.rate),day?'':`${prodFmt(mp.personDays)} person-days`)}
-      ${kv('Fettlers needed to keep pace',prodFmt(mp.need,1),'castings per day ÷ output per person')}
-      ${kv(day?'People who fettled':'People fettling on an average day',prodFmt(mp.crew,1))}
+      ${kv('Fettlers needed to keep pace',prodFmt(mp.need,1),'sum over operations below')}
+      ${kv(day?'People who fettled':'People fettling on an average day',prodFmt(mp.crew,1),day?'':`${prodFmt(mp.personDays)} person-days`)}
     </div></div>
+    ${mp.perOp.length?`<table class="pr-tbl" style="margin-top:10px"><thead><tr><th>Operation</th><th class="n">Castings to do / day</th><th class="n">Done per person / day</th><th class="n">People needed</th><th class="n">People on it${day?'':' (avg)'}</th><th class="n">Gap</th></tr></thead><tbody>
+      ${mp.perOp.map(x=>{ const gap=x.need-x.crew; return `<tr><td><b>${esc(x.op)}</b></td><td class="n mono">${prodFmt(x.demand)}</td><td class="n mono">${prodFmt(x.rate)}</td><td class="n mono">${prodFmt(x.need,1)}</td><td class="n mono">${prodFmt(x.crew,1)}</td>
+        <td class="n mono" style="font-weight:700;color:${gap>.05?'#d97706':'#16a34a'}">${gap>.05?'+'+prodFmt(gap,1):'✓'}</td></tr>`; }).join('')}</tbody></table>`:''}
     <div class="pr-note" style="padding:8px 0 0">To also clear castings already waiting, add more people for a few days — or use this with the "Castings not yet fettled" figure.</div>`;
 }
 
@@ -1360,40 +1431,46 @@ function prodChartsFettling(ctx,fet,rows,{keys,xs,keyOf,xT,bucket,partId}){
   const fr=fet.flatMap(e=>(e.rows||[]).map(r=>({...r,date:e.date}))).filter(r=>prodN(r.qty)>0&&(!partId||String(r.partId)===String(partId)));
   const head='<div class="pr-sec">Fettling <span style="text-transform:none;letter-spacing:0;font-weight:500">— period &amp; part filters only (fettling isn\'t per machine / shift)</span></div>';
   if(!fr.length) return head+prodCard('Fettling','<div class="pr-empty">No fettling recorded for this period.</div>');
-  const t=prodFetTotals(fr);
+  const t=prodFetTotals(fr,ctx);
   // OK castings from die casting in the same period (all machines / shifts, same part filter)
   const castRows=rows;   // already period + part filtered; machine / shift filters narrow it
   const castOk=prodAgg(castRows.map(r=>r.c)).t.okPcs;
   const castPer=keys.map(k=>prodAgg(castRows.filter(r=>keyOf(r.s.date)===k).map(r=>r.c)).t.okPcs);
-  const fetPer=keys.map(k=>prodFetTotals(fr.filter(r=>keyOf(r.date)===k)));
-  const people={}; fr.forEach(r=>(people[r.person||'(no name)']=people[r.person||'(no name)']||[]).push(r));
-  const ppl=Object.entries(people).map(([name,rs])=>({name,t:prodFetTotals(rs),days:new Set(rs.map(r=>r.date)).size})).sort((a,b)=>b.t.qty-a.t.qty);
+  const fetPer=keys.map(k=>prodFetTotals(fr.filter(r=>keyOf(r.date)===k),ctx));
+  // per person: their own work at every fettling operation (not "parts fettled")
+  const people={}; fr.filter(r=>prodOpStage(prodRowOp(r),ctx.cfg)==='Fettling').forEach(r=>(people[r.person||'(no name)']=people[r.person||'(no name)']||[]).push(r));
+  const ppl=Object.entries(people).map(([name,rs])=>{ const x=prodFetTotals(rs,ctx); return {name,t:{qty:x.work,rej:x.rej,ok:x.work-x.rej,rejPct:x.work?x.rej/x.work:0},ops:x.ops,days:new Set(rs.map(r=>r.date)).size}; }).sort((a,b)=>b.t.qty-a.t.qty);
+  const opOrder=[PROD_OP_DONE,...prodOps(ctx.cfg).map(o=>o.name)];
+  const opRows=Object.entries(t.ops).sort((a,b)=>opOrder.indexOf(a[0])-opOrder.indexOf(b[0]));
   const reasons={}; fr.forEach(r=>{ const n=Math.min(prodN(r.rej),prodN(r.qty)); if(n>0){ const k=r.reason||'Not specified'; reasons[k]=(reasons[k]||0)+n; } });
-  const gap=castOk-t.qty;
+  const gap=castOk-(t.ok+t.rej);      // left the "not fettled" pile: good out of the last op + rejected anywhere
   const filtered=_prodRep.f.machineId||_prodRep.f.shift;
   return head+`
   <div class="pr-kpis">
-    ${prodKpi('Parts fettled',prodFmt(t.qty),`${ppl.length} ${ppl.length===1?'person':'people'} · ${prodFmt(t.ok)} OK`)}
+    ${prodKpi('Parts fettled',prodFmt(t.qty),`passed the last fettling operation · ${prodFmt(t.ok)} OK · ${ppl.length} ${ppl.length===1?'person':'people'}`)}
     ${prodKpi('Fettling rejection',prodPct(t.rejPct,2),`${prodFmt(t.rej)} parts rejected`,t.rejPct>.02?PROD_VIZ_BELOW:'')}
     ${prodKpi('OK castings made',prodFmt(castOk),filtered?'machine / shift filter applied':'die casting, same period')}
     ${prodKpi(gap>=0?'Castings not yet fettled':'Fettled from earlier stock',prodFmt(Math.abs(gap)),gap>0?'pile grew this period':gap<0?'pile shrank this period':'kept pace',gap>0?'#d97706':'#16a34a')}
   </div>
-  ${prodCard('Fettling manpower — to keep pace with casting',`<div class="b">${prodFetManpowerHtml(prodFetManpower(fr,rows))}</div>`,filtered?'machine / shift filter applied to castings':'all machines')}
+  ${prodCard('Fettling manpower — to keep pace with casting',`<div class="b">${prodFetManpowerHtml(prodFetManpower(fr,rows,ctx))}</div>`,filtered?'machine / shift filter applied to castings':'all machines')}
   ${prodCard(`Castings made vs fettled by ${bucket}`,`<div class="b">${prodColumns(xs,[
       {name:'OK castings made',color:PROD_VIZ_CAT[0],values:castPer},
       {name:'Parts fettled',color:PROD_VIZ_CAT[1],values:fetPer.map(x=>x.qty)}],
     {W:1300,grouped:true,xTitle:xT,yTitle:'Parts (pcs)',tips:keys.map((k,i)=>`${xs[i]}\nOK castings made: ${prodFmt(castPer[i])}\nFettled: ${prodFmt(fetPer[i].qty)} (${prodFmt(fetPer[i].ok)} OK)\n${castPer[i]-fetPer[i].qty>=0?'Added to the pile: ':'Taken from the pile: '}${prodFmt(Math.abs(castPer[i]-fetPer[i].qty))}`)})}</div>
     <div class="pr-note">When the orange bar is shorter than the blue one, castings are piling up waiting for fettling.</div>`,`${prodFmt(castOk)} made · ${prodFmt(t.qty)} fettled`)}
   <div class="pr-grid">
-    ${prodCard('Parts fettled by person',`<div class="b">${prodColumns(ppl.map(x=>x.name),[{name:'Fettled',color:PROD_VIZ_CAT[1],values:ppl.map(x=>x.t.qty)}],
-      {xTitle:'Person',yTitle:'Parts fettled (pcs)',tips:ppl.map(x=>`${x.name}\n${prodFmt(x.t.qty)} fettled · ${prodFmt(x.t.ok)} OK\n${x.days} day${x.days===1?'':'s'} · ${prodFmt(x.days?x.t.qty/x.days:0)} per day`)})}</div>`,
-      `avg ${prodFmt(ppl.length?t.qty/ppl.length:0)} per person`)}
+    ${prodCard('Work done by person (all operations)',`<div class="b">${prodColumns(ppl.map(x=>x.name),[{name:'Qty done',color:PROD_VIZ_CAT[1],values:ppl.map(x=>x.t.qty)}],
+      {xTitle:'Person',yTitle:'Qty done (pcs)',tips:ppl.map(x=>`${x.name}\n${Object.entries(x.ops).map(([op,o])=>`${op}: ${prodFmt(o.qty)}`).join('\n')}\n${x.days} day${x.days===1?'':'s'} · ${prodFmt(x.days?x.t.qty/x.days:0)} per day`)})}</div>`,
+      `each operation counted`)}
     ${prodCard('Fettling rejection % by person',`<div class="b">${prodColumns(ppl.map(x=>x.name),[{name:'Rejection %',color:PROD_VIZ_CAT[0],values:ppl.map(x=>x.t.rejPct)}],
       {fmt:v=>prodPct(v,1),xTitle:'Person',yTitle:'Rejection %',colorOf:(i,v)=>v>t.rejPct?PROD_VIZ_BELOW:'',
        ref:{value:t.rejPct,label:`average ${prodPct(t.rejPct,2)}`},
        extraLegend:`<span><span class="pr-dot" style="background:${PROD_VIZ_CAT[0]}"></span>at / better than average</span><span><span class="pr-dot" style="background:${PROD_VIZ_BELOW}"></span>worse than average</span>`,
        tips:ppl.map(x=>`${x.name}\nRejection ${prodPct(x.t.rejPct,2)}\n${prodFmt(x.t.rej)} of ${prodFmt(x.t.qty)} fettled`)})}</div>`)}
   </div>
+  ${opRows.length>1?prodCard('Work done by operation',`<div class="b">${prodColumns(opRows.map(([op])=>op),[{name:'Qty done',color:PROD_VIZ_CAT[0],values:opRows.map(([,o])=>o.qty)}],
+      {W:1300,xTitle:'Operation (route order)',yTitle:'Qty done (pcs)',tips:opRows.map(([op,o])=>`${op}\n${prodFmt(o.qty)} done · ${prodFmt(o.rej)} rejected (${prodPct(o.qty?o.rej/o.qty:0,1)})`)})}</div>
+      <div class="pr-note">Each operation counted on its own — a drop from one operation to the next shows parts waiting in between (see Stock → Work in progress).</div>`):''}
   <div class="pr-grid">
     ${prodCard(`Fettling rejection % by ${bucket}`,`<div class="b">${prodLine(xs,fetPer.map(x=>x.qty?x.rejPct:null),{fmt:v=>prodPct(v,1),color:PROD_VIZ_CAT[1],xTitle:xT,yTitle:'Rejection %',
       tips:fetPer.map((x,i)=>`${xs[i]}\n${x.qty?`Rejection ${prodPct(x.rejPct,2)}\n${prodFmt(x.rej)} of ${prodFmt(x.qty)} fettled`:'no fettling'}`)})}</div>`,`overall ${prodPct(t.rejPct,2)}`)}
@@ -1824,20 +1901,15 @@ function prodCapCalc(){
 }
 
 // ══════════════════════════════════════════════════════
-//  3b. FETTLING — person-wise daily record
-//  Fettling runs in a single shift: one entry per date; one row per person × part:
-//  qty fettled, qty rejected (+ optional reason) → OK = fettled − rejected.
-//  Fettling rejections also come off part stock.
+//  3b. FETTLING & FINISHING — person-wise daily record (entered by Quality)
+//  One entry per date; one row per person × part × operation: qty done,
+//  qty rejected (+ reason) → OK = done − rejected. Operations come from the
+//  part's route (Part Master); one person can do several operations, each a
+//  row with its own count. Rejections at any operation come off part stock.
 // ══════════════════════════════════════════════════════
 const PROD_FET_REASONS=['Fettling damage','Crack','Porosity / blow hole','Non fill','Cold shut','Dimension NG','Other'];
 const _prodFet={f:{period:'7d', from:prodDaysAgo(6), to:prodToday()}};
 
-function prodFetTotals(rows){
-  const t={qty:0,rej:0};
-  for(const r of rows){ t.qty+=prodN(r.qty); t.rej+=Math.min(prodN(r.rej),prodN(r.qty)); }
-  t.ok=t.qty-t.rej; t.rejPct=t.qty? t.rej/t.qty : 0;
-  return t;
-}
 async function prodFetLoad(){ return (await db.prodFettling.toArray().catch(()=>[])).sort((a,b)=>b.date.localeCompare(a.date)||b.id-a.id); }
 
 async function prodRenderFettling(){
@@ -1850,7 +1922,7 @@ async function prodRenderFettling(){
     <h2 style="font-size:16px;font-weight:700;color:var(--navy)">🔨 Fettling</h2>
     <div style="display:flex;gap:10px;align-items:center">
       <button class="btn btn-o" onclick="_prodRep.tab='fet';nav('prod-reports')">📊 Person-wise report</button>
-      <button class="btn btn-p" onclick="prodOpenFettling()">➕ New Fettling Entry</button>
+      <button class="btn btn-p" onclick="prodOpenFettling()">➕ New Fettling / Finishing Entry</button>
     </div>
   </div>
   <div class="pr-filters">
@@ -1869,16 +1941,18 @@ function prodFetSet(ch){
 }
 
 function prodFetEntries(ctx,entries){
-  const t=prodFetTotals(entries.flatMap(e=>e.rows||[]));
+  const t=prodFetTotals(entries.flatMap(e=>e.rows||[]),ctx);
   return `
   <div class="pr-kpis">
     ${prodKpi('Parts fettled',prodFmt(t.qty),`${entries.length} entr${entries.length===1?'y':'ies'}`)}
     ${prodKpi('OK',prodFmt(t.ok),'',  '#16a34a')}
-    ${prodKpi('Rejected',prodFmt(t.rej),`${prodPct(t.rejPct)} of fettled`,t.rej?'#dc2626':'')}
+    ${prodKpi('Rejected',prodFmt(t.rej),`${prodPct(t.rejPct)} — at any fettling operation`,t.rej?'#dc2626':'')}
     ${prodKpi('People',String(new Set(entries.flatMap(e=>(e.rows||[]).map(r=>r.person)).filter(Boolean)).size),'worked in this period')}
   </div>
-  ${prodCard('Entries',`<table class="pr-tbl"><thead><tr><th>Date</th><th>People</th><th class="n">Fettled</th><th class="n">OK</th><th class="n">Rejected</th><th class="n">Rej %</th><th>Entered by</th><th></th></tr></thead>
-    <tbody>${entries.map(e=>{ const x=prodFetTotals(e.rows||[]);
+  ${Object.keys(t.ops).length>1?prodCard('Work done by operation',`<div class="b" style="display:flex;gap:10px;flex-wrap:wrap">${Object.entries(t.ops).map(([op,o])=>`<div class="pr-kpi" style="min-width:140px;padding:9px 12px"><div class="l">${esc(op)}</div><div class="v" style="font-size:20px">${prodFmt(o.qty)}</div><div class="s">${o.rej?`<span style="color:#dc2626">${prodFmt(o.rej)} rejected</span>`:'no rejections'}</div></div>`).join('')}</div>
+    <div class="pr-note">Each operation is counted on its own; "Parts fettled" above is only what passed each part's last fettling operation.</div>`):''}
+  ${prodCard('Entries',`<table class="pr-tbl"><thead><tr><th>Date</th><th>People</th><th class="n" title="passed the last fettling operation">Fettled</th><th class="n">OK</th><th class="n">Rejected</th><th class="n">Rej %</th><th>Entered by</th><th></th></tr></thead>
+    <tbody>${entries.map(e=>{ const x=prodFetTotals(e.rows||[],ctx);
       return `<tr><td class="mono">${esc(e.date)}</td>
       <td style="font-size:12px;color:#374151">${esc([...new Set((e.rows||[]).map(r=>r.person).filter(Boolean))].join(', '))}</td>
       <td class="n mono">${prodFmt(x.qty)}</td><td class="n mono" style="color:#16a34a;font-weight:600">${prodFmt(x.ok)}</td>
@@ -1893,11 +1967,13 @@ function prodFetPersonReport(ctx,entries,f){
   const rows=entries.flatMap(e=>(e.rows||[]).map(r=>({...r,date:e.date})))
     .filter(r=>(!f.person||r.person===f.person)&&(!f.partId||String(r.partId)===String(f.partId))&&prodN(r.qty)>0);
   if(!rows.length) return `<div class="pr-empty">No fettling recorded for this selection.</div>`;
-  const t=prodFetTotals(rows);
+  const t=prodFetTotals(rows,ctx);
   const byPerson={};
   rows.forEach(r=>{ const p=byPerson[r.person||'(no name)']||(byPerson[r.person||'(no name)']={rows:[],parts:{}});
-    p.rows.push(r); (p.parts[r.partId]=p.parts[r.partId]||[]).push(r); });
-  const persons=Object.entries(byPerson).map(([name,v])=>({name,v,t:prodFetTotals(v.rows)})).sort((a,b)=>b.t.qty-a.t.qty);
+    p.rows.push(r); const k=r.partId+'|'+prodRowOp(r); (p.parts[k]=p.parts[k]||[]).push(r); });
+  // per person: work = quantities at every operation they did (their own output)
+  const work=rs=>{ const w={qty:0,rej:0}; rs.forEach(r=>{ const q=prodN(r.qty); w.qty+=q; w.rej+=Math.min(prodN(r.rej),q); }); w.ok=w.qty-w.rej; w.rejPct=w.qty?w.rej/w.qty:0; return w; };
+  const persons=Object.entries(byPerson).map(([name,v])=>({name,v,t:work(v.rows)})).sort((a,b)=>b.t.qty-a.t.qty);
   const days=new Set(rows.map(r=>r.date)).size;
   const byPart={};
   rows.forEach(r=>(byPart[r.partId]=byPart[r.partId]||[]).push(r));
@@ -1906,26 +1982,27 @@ function prodFetPersonReport(ctx,entries,f){
   const pn=id=>ctx.partById[id]?.partNumber||'?';
   return `
   <div class="pr-kpis">
-    ${prodKpi('Parts fettled',prodFmt(t.qty),`${persons.length} ${persons.length===1?'person':'people'} · ${days} day${days===1?'':'s'}`)}
+    ${prodKpi('Parts fettled',prodFmt(t.qty),`passed the last fettling operation · ${persons.length} ${persons.length===1?'person':'people'} · ${days} day${days===1?'':'s'}`)}
     ${prodKpi('OK',prodFmt(t.ok),'','#16a34a')}
-    ${prodKpi('Rejected',prodFmt(t.rej),`${prodPct(t.rejPct)} of fettled`,t.rej?'#dc2626':'')}
+    ${prodKpi('Rejected',prodFmt(t.rej),`${prodPct(t.rejPct)} — at any fettling operation`,t.rej?'#dc2626':'')}
     ${prodKpi('Top output',persons[0]?esc(persons[0].name):'—',persons[0]?`${prodFmt(persons[0].t.qty)} parts`:'')}
   </div>
-  ${prodCard('Person-wise',`<table class="pr-tbl"><thead><tr><th>Person</th><th>Part</th><th class="n">Fettled</th><th class="n">OK</th><th class="n">Rejected</th><th class="n">Rej %</th><th class="n">Avg / day</th></tr></thead>
+  ${prodCard('Person-wise (work done at each operation)',`<table class="pr-tbl"><thead><tr><th>Person</th><th>Part · operation</th><th class="n">Qty done</th><th class="n">OK</th><th class="n">Rejected</th><th class="n">Rej %</th><th class="n">Avg / day</th></tr></thead>
     <tbody>${persons.map(({name,v,t:pt})=>{
       const days=new Set(v.rows.map(r=>r.date)).size;
-      return `<tr class="grp" style="background:#f6f8fc"><td><b>${esc(name)}</b></td><td style="color:#6b7280;font-size:12px">${Object.keys(v.parts).length} part${Object.keys(v.parts).length===1?'':'s'} · ${days} day${days===1?'':'s'}</td>
+      const nParts=new Set(v.rows.map(r=>r.partId)).size, nOps=new Set(v.rows.map(prodRowOp)).size;
+      return `<tr class="grp" style="background:#f6f8fc"><td><b>${esc(name)}</b></td><td style="color:#6b7280;font-size:12px">${nParts} part${nParts===1?'':'s'} · ${nOps} operation${nOps===1?'':'s'} · ${days} day${days===1?'':'s'}</td>
         <td class="n mono" style="font-weight:700">${prodFmt(pt.qty)}</td><td class="n mono" style="font-weight:700;color:#16a34a">${prodFmt(pt.ok)}</td>
         <td class="n mono" style="font-weight:700;color:${pt.rej?'#dc2626':''}">${prodFmt(pt.rej)}</td><td class="n mono" style="font-weight:700">${prodPct(pt.rejPct)}</td>
         <td class="n mono">${prodFmt(days?pt.qty/days:0)}</td></tr>`+
-      Object.entries(v.parts).map(([pid,rs])=>{ const x=prodFetTotals(rs);
-        return `<tr><td></td><td>${esc(pn(pid))} <span style="color:#6b7280;font-size:12px">${esc(ctx.partById[pid]?.partName||'')}</span></td>
+      Object.entries(v.parts).map(([k,rs])=>{ const x=work(rs), pid=k.split('|')[0];
+        return `<tr><td></td><td>${esc(pn(pid))} · <span style="color:#374151">${esc(prodRowOp(rs[0]))}</span></td>
           <td class="n mono">${prodFmt(x.qty)}</td><td class="n mono" style="color:#16a34a">${prodFmt(x.ok)}</td>
           <td class="n mono" style="color:${x.rej?'#dc2626':''}">${prodFmt(x.rej)}</td><td class="n mono">${prodPct(x.rejPct)}</td><td></td></tr>`;}).join('');
     }).join('')}</tbody></table>`)}
   <div class="pr-grid">
     ${prodCard('By part',`<table class="pr-tbl"><thead><tr><th>Part</th><th class="n">Fettled</th><th class="n">OK</th><th class="n">Rejected</th><th class="n">Rej %</th></tr></thead>
-      <tbody>${Object.entries(byPart).map(([pid,rs])=>({pid,x:prodFetTotals(rs)})).sort((a,b)=>b.x.qty-a.x.qty).map(({pid,x})=>`<tr>
+      <tbody>${Object.entries(byPart).map(([pid,rs])=>({pid,x:prodFetTotals(rs,ctx)})).sort((a,b)=>b.x.qty-a.x.qty).map(({pid,x})=>`<tr>
         <td><b>${esc(pn(pid))}</b></td><td class="n mono">${prodFmt(x.qty)}</td><td class="n mono" style="color:#16a34a">${prodFmt(x.ok)}</td>
         <td class="n mono">${prodFmt(x.rej)}</td><td class="n mono">${prodPct(x.rejPct)}</td></tr>`).join('')}</tbody></table>`)}
     ${prodCard('Rejection reasons',`<div class="b">${Object.keys(reasons).length?prodBars(Object.entries(reasons).map(([k,v])=>({label:k,value:v})).sort((a,b)=>b.value-a.value)):'<div class="pr-empty">No fettling rejections.</div>'}</div>`)}
@@ -1937,13 +2014,13 @@ async function prodOpenFettling(id=null){
   const [ctx,all,emps]=await Promise.all([prodCtx(),prodFetLoad(),db.hrEmployees.toArray().catch(()=>[])]);
   let rec=id? all.find(e=>e.id===id) : null;
   if(id&&!rec){ toast('Entry not found','d'); return; }
-  if(rec) rec=JSON.parse(JSON.stringify(rec));
+  if(rec){ rec=JSON.parse(JSON.stringify(rec)); rec.rows.forEach(r=>{ r.op=r.op||PROD_OP_DONE; }); }   // old rows: "Fettling (complete)", changeable
   else {
     // Same crew usually works every day: start from the latest entry's people and parts, quantities blank
     const last=all[0];
     rec={date:prodToday(), remarks:'',
-      rows:(last?.rows||[]).map(r=>({person:r.person,partId:r.partId,qty:'',rej:'',reason:''}))};
-    if(!rec.rows.length) rec.rows=Array.from({length:5},()=>({person:'',partId:'',qty:'',rej:'',reason:''}));
+      rows:(last?.rows||[]).map(r=>({person:r.person,partId:r.partId,op:r.op||'',qty:'',rej:'',reason:''}))};
+    if(!rec.rows.length) rec.rows=Array.from({length:5},()=>({person:'',partId:'',op:'',qty:'',rej:'',reason:''}));
   }
   const names=new Set(all.flatMap(e=>(e.rows||[]).map(r=>r.person)).filter(Boolean));
   emps.forEach(e=>e.name&&names.add(e.name));
@@ -1953,28 +2030,33 @@ async function prodOpenFettling(id=null){
 function prodFetRenderForm(){
   const {rec,ctx,names,id}=window._pf;
   setC(`
-  <div class="ph"><h2>🔨 ${id?'Edit':'New'} Fettling Entry</h2><button class="btn btn-o" onclick="prodRenderFettling()">← Back</button></div>
+  <div class="ph"><h2>🔨 ${id?'Edit':'New'} Fettling &amp; Finishing Entry</h2><button class="btn btn-o" onclick="prodRenderFettling()">← Back</button></div>
   <datalist id="pf-names">${names.map(n=>`<option value="${esc(n)}">`).join('')}</datalist>
   <div style="max-width:1100px">
   <div class="card"><div class="ch"><h5>1 · Date</h5></div><div class="cb" style="max-width:380px">
     <div class="fg" style="margin:0"><label class="lbl">Date *</label><input class="fc" type="date" value="${esc(rec.date)}" onchange="window._pf.rec.date=this.value;prodFetRefresh()"></div>
   </div></div>
-  <div class="card"><div class="ch"><h5>2 · Work done by each person</h5>
-    <button class="btn btn-o btn-sm" onclick="window._pf.rec.rows.push({person:'',partId:'',qty:'',rej:'',reason:''});prodFetRenderForm()">➕ Add row</button></div>
+  <div class="card"><div class="ch"><h5>2 · Work done by each person, per operation</h5>
+    <button class="btn btn-o btn-sm" onclick="window._pf.rec.rows.push({person:'',partId:'',op:'',qty:'',rej:'',reason:''});prodFetRenderForm()">➕ Add row</button></div>
     <div class="tw"><table>
-      <thead><tr><th style="width:26%">Person *</th><th style="width:30%">Part *</th><th style="text-align:right;width:110px">Fettled qty</th><th style="text-align:right;width:110px">Rejected</th><th style="width:170px">Rejection reason</th><th style="text-align:right;width:80px">OK</th><th style="width:40px"></th></tr></thead>
-      <tbody>${rec.rows.map((r,i)=>`<tr>
+      <thead><tr><th style="width:19%">Person *</th><th style="width:23%">Part *</th><th style="width:16%">Operation *</th><th style="text-align:right;width:95px">Qty done</th><th style="text-align:right;width:95px">Rejected</th><th style="width:150px">Rejection reason</th><th style="text-align:right;width:70px">OK</th><th style="width:96px"></th></tr></thead>
+      <tbody>${rec.rows.map((r,i)=>{ const ops=prodFetOpChoices(r);
+        return `<tr>
         <td><input class="fc" list="pf-names" value="${esc(r.person)}" oninput="prodFetRow(${i},'person',this.value)"></td>
-        <td><select class="fc" onchange="prodFetRow(${i},'partId',this.value?+this.value:'')">${prodOpts(ctx.parts.filter(p=>p.active!==false||String(p.id)===String(r.partId)),r.partId,{val:p=>p.id,label:prodPartLabel,blank:'— select part —'})}</select></td>
+        <td><select class="fc" onchange="prodFetPart(${i},this.value?+this.value:'')">${prodOpts(ctx.parts.filter(p=>p.active!==false||String(p.id)===String(r.partId)),r.partId,{val:p=>p.id,label:prodPartLabel,blank:'— select part —'})}</select></td>
+        <td><select class="fc" onchange="prodFetRow(${i},'op',this.value)" ${r.partId?'':'disabled'}>${prodOpts(ops,r.op,{blank:r.partId?'— operation —':'pick part first'})}</select></td>
         <td><input class="fc mono" style="text-align:right" type="number" min="0" value="${esc(r.qty)}" oninput="prodFetRow(${i},'qty',this.value)"></td>
         <td><input class="fc mono" style="text-align:right" type="number" min="0" value="${esc(r.rej)}" oninput="prodFetRow(${i},'rej',this.value)"></td>
         <td><select class="fc" onchange="prodFetRow(${i},'reason',this.value)">${prodOpts(PROD_FET_REASONS,r.reason,{blank:'—'})}</select></td>
         <td class="mono" style="text-align:right;font-weight:700;color:#16a34a" id="pf-ok-${i}"></td>
-        <td><button class="btn btn-r btn-xs" onclick="window._pf.rec.rows.splice(${i},1);prodFetRenderForm()">✕</button></td></tr>`).join('')}
+        <td style="white-space:nowrap"><button class="btn btn-o btn-xs" title="Same person & part, next operation" onclick="prodFetNextOp(${i})">＋ op</button>
+          <button class="btn btn-r btn-xs" onclick="window._pf.rec.rows.splice(${i},1);prodFetRenderForm()">✕</button></td></tr>`; }).join('')}
       </tbody>
-      <tfoot><tr style="font-weight:700;background:#f6f8fc"><td colspan="2">TOTAL</td><td class="mono" style="text-align:right" id="pf-tq"></td><td class="mono" style="text-align:right;color:#dc2626" id="pf-tr"></td><td></td><td class="mono" style="text-align:right;color:#16a34a" id="pf-to"></td><td></td></tr></tfoot>
+      <tfoot><tr style="font-weight:700;background:#f6f8fc"><td colspan="3">TOTAL (all operations)</td><td class="mono" style="text-align:right" id="pf-tq"></td><td class="mono" style="text-align:right;color:#dc2626" id="pf-tr"></td><td></td><td class="mono" style="text-align:right;color:#16a34a" id="pf-to"></td><td></td></tr></tfoot>
     </table></div>
-    <div style="font-size:11px;color:#6b7280;padding:6px 12px">OK = fettled − rejected. Rows without a quantity are ignored when saving. Fettling rejections are taken off part stock.</div></div>
+    <div style="font-size:11px;color:#6b7280;padding:6px 12px">One person doing several operations: use <b>＋ op</b> to add the next operation for the same person and part, with its own count. Each operation is counted on its own — "fettled" is only what passed the part's <b>last</b> fettling operation.
+      Operations come from the part's route in <a href="#" onclick="event.preventDefault();nav('prod-parts')">Part Master</a>. Rejections at any operation come off part stock.</div>
+    <div id="pf-ops" style="padding:0 12px 10px"></div></div>
   <div class="card"><div class="cb"><div class="fg" style="margin:0"><label class="lbl">Remarks</label><input class="fc" value="${esc(rec.remarks||'')}" oninput="window._pf.rec.remarks=this.value"></div></div></div>
   <div id="pf-warn"></div>
   <div style="display:flex;gap:8px;justify-content:flex-end;margin:4px 0 30px">
@@ -1984,13 +2066,47 @@ function prodFetRenderForm(){
   prodFetRefresh();
 }
 function prodFetRow(i,k,v){ window._pf.rec.rows[i][k]=v; prodFetRefresh(); }
+// Operations offered for a row: the part's route, else "Fettling (complete)"; keep the row's current one
+function prodFetOpChoices(r){
+  const {ctx}=window._pf, part=ctx.partById[r.partId], route=prodRoute(part);
+  const ops=route.length? [...route] : [PROD_OP_DONE];
+  if(r.op&&!ops.includes(r.op)) ops.push(r.op);
+  if(!ops.includes(PROD_OP_DONE)&&r.op===PROD_OP_DONE) ops.push(PROD_OP_DONE);
+  return ops;
+}
+// Default operation: what this person last did on this part, else the route's first step
+function prodFetDefaultOp(person,partId){
+  const {ctx,all}=window._pf, route=prodRoute(ctx.partById[partId]);
+  if(!route.length) return partId? PROD_OP_DONE : '';
+  for(const e of all) for(const r of (e.rows||[])) if(r.person===person&&String(r.partId)===String(partId)&&route.includes(r.op)) return r.op;
+  return route[0];
+}
+function prodFetPart(i,pid){
+  const r=window._pf.rec.rows[i]; r.partId=pid;
+  if(!prodFetOpChoices(r).includes(r.op)||!r.op) r.op=prodFetDefaultOp(r.person,pid);
+  prodFetRenderForm();
+}
+function prodFetNextOp(i){
+  const {rec,ctx}=window._pf, r=rec.rows[i], route=prodRoute(ctx.partById[r.partId]);
+  const k=route.indexOf(r.op), used=new Set(rec.rows.filter(x=>x.person===r.person&&String(x.partId)===String(r.partId)).map(x=>x.op));
+  const next=route.slice(k+1).find(op=>!used.has(op))||route.find(op=>!used.has(op))||'';
+  rec.rows.splice(i+1,0,{person:r.person,partId:r.partId,op:next,qty:'',rej:'',reason:''});
+  prodFetRenderForm();
+}
 function prodFetRefresh(){
   const {rec,all,id}=window._pf;
   const set=(i,h)=>{ const e=document.getElementById(i); if(e) e.innerHTML=h; };
   rec.rows.forEach((r,i)=>set(`pf-ok-${i}`, r.qty===''?'':prodFmt(Math.max(0,prodN(r.qty)-prodN(r.rej)))));
-  const t=prodFetTotals(rec.rows);
-  set('pf-tq',prodFmt(t.qty)); set('pf-tr',prodFmt(t.rej)); set('pf-to',prodFmt(t.ok));
+  const {ctx}=window._pf;
+  const sum=rec.rows.reduce((a,r)=>{ const q=prodN(r.qty), x=Math.min(prodN(r.rej),q); a.q+=q; a.x+=x; return a; },{q:0,x:0});
+  set('pf-tq',prodFmt(sum.q)); set('pf-tr',prodFmt(sum.x)); set('pf-to',prodFmt(sum.q-sum.x));
+  // per part: what each operation did and what finished fettling
+  const byPart={};
+  rec.rows.filter(r=>r.partId&&prodN(r.qty)>0).forEach(r=>(byPart[r.partId]=byPart[r.partId]||[]).push(r));
+  set('pf-ops',Object.keys(byPart).length?`<div style="font-size:12px;color:#374151;display:grid;gap:3px">${Object.entries(byPart).map(([pid,rs])=>{ const t=prodFetTotals(rs,ctx);
+    return `<div><b>${esc(ctx.partById[pid]?.partNumber||'')}</b>: ${Object.entries(t.ops).map(([op,o])=>`${esc(op)} ${prodFmt(o.qty)}`).join(' · ')} → <b style="color:#16a34a">${prodFmt(t.ok)} fettled OK</b>${prodFetTotals(rs,ctx,'Shot blasting').work?` · shot blasted ${prodFmt(prodFetTotals(rs,ctx,'Shot blasting').qty)}`:''}</div>`; }).join('')}</div>`:'');
   const warn=[];
+  if(rec.rows.some(r=>prodN(r.qty)>0&&r.partId&&!r.op)) warn.push('Pick an operation for every row with a quantity.');
   if(rec.rows.some(r=>prodN(r.rej)>prodN(r.qty))) warn.push('A row has more rejected than fettled.');
   if(!id&&all.some(e=>e.date===rec.date)) warn.push('There is already a fettling entry for this date — edit that one instead.');
   set('pf-warn',warn.map(w=>`<div class="alert al-w">⚠️ ${w}</div>`).join(''));
@@ -2001,10 +2117,11 @@ async function prodSaveFettling(){
   const rows=rec.rows.filter(r=>prodN(r.qty)>0||prodN(r.rej)>0);
   if(!rows.length){ toast('Enter at least one quantity','d'); return; }
   if(rows.some(r=>!String(r.person||'').trim()||!r.partId)){ toast('Every row with a quantity needs a person and a part','d'); return; }
+  if(rows.some(r=>!r.op)){ toast('Every row with a quantity needs an operation','d'); return; }
   if(rows.some(r=>prodN(r.rej)>prodN(r.qty))){ toast('Rejected can\'t be more than fettled','d'); return; }
   if(!id&&all.some(e=>e.date===rec.date)){ toast('A fettling entry already exists for this date — edit that one instead','d'); return; }
   const clean={date:rec.date, remarks:(rec.remarks||'').trim(),
-    rows:rows.map(r=>({person:String(r.person).trim(), partId:+r.partId, qty:prodN(r.qty), rej:prodN(r.rej), reason:prodN(r.rej)>0?(r.reason||''):''})),
+    rows:rows.map(r=>({person:String(r.person).trim(), partId:+r.partId, op:r.op===PROD_OP_DONE?'':r.op, qty:prodN(r.qty), rej:prodN(r.rej), reason:prodN(r.rej)>0?(r.reason||''):''})),
     updatedAt:new Date().toISOString(), updatedBy:Auth.user?.name||''};
   let ok;
   if(id) ok=await db.prodFettling.update(id,clean);
@@ -2025,6 +2142,22 @@ async function prodDeleteFettling(id){
 //  RM:    opening / adjustments + lots received (kg) − metal consumed
 //  Parts: opening / adjustments + OK parts produced − dispatched
 // ══════════════════════════════════════════════════════
+// Work in progress per part and operation (all time up to the as-on date)
+function prodWipCard(ctx,agg,fetRows){
+  const parts=ctx.parts.filter(p=>prodRoute(p).length&&(agg.byPart[p.id]?.okPcs||fetRows.some(r=>String(r.partId)===String(p.id))));
+  if(!parts.length) return prodCard('Work in progress by operation','<div class="pr-empty">Set each part\'s route in Part Master to see parts waiting at every operation.</div>');
+  const allOps=prodOps(ctx.cfg).map(o=>o.name).filter(op=>parts.some(p=>prodRoute(p).includes(op)));
+  const flows=parts.map(p=>({p,f:prodPartFlow(p,agg.byPart[p.id]?.okPcs||0,fetRows,ctx)}));
+  const tot={}; allOps.forEach(op=>tot[op]=0); let totFin=0;
+  const rowsH=flows.map(({p,f})=>{ totFin+=f.finished; return `<tr><td><b>${esc(p.partNumber)}</b></td><td class="n mono">${prodFmt(agg.byPart[p.id]?.okPcs||0)}</td>${allOps.map(op=>{ const st=f.steps.find(x=>x.op===op);
+      if(!st) return '<td class="n" style="color:#d1d5db">—</td>';
+      tot[op]+=st.waiting; const big=st.waiting>0&&st.waiting===Math.max(...f.steps.map(x=>x.waiting));
+      return `<td class="n mono" style="${st.waiting<0?'color:#dc2626':big?'background:#fef3c7;font-weight:700':''}" title="${esc(op)}: ${prodFmt(st.done)} done, ${prodFmt(st.ok)} OK out">${prodFmt(st.waiting)}</td>`; }).join('')}
+    <td class="n mono" style="font-weight:700;color:#16a34a">${prodFmt(f.finished)}</td></tr>`; }).join('');
+  return prodCard('Work in progress by operation',`<table class="pr-tbl"><thead><tr><th>Part</th><th class="n">OK cast</th>${allOps.map(op=>`<th class="n">waiting at ${esc(op)}</th>`).join('')}<th class="n">Finished</th></tr></thead>
+    <tbody>${rowsH}</tbody><tfoot><tr style="font-weight:700;background:#f6f8fc"><td>Total</td><td></td>${allOps.map(op=>`<td class="n mono">${prodFmt(tot[op])}</td>`).join('')}<td class="n mono" style="color:#16a34a">${prodFmt(totFin)}</td></tr></tfoot></table>
+    <div class="pr-note" style="padding-top:8px">Waiting = good parts out of the previous step not yet entered at this operation. The highlighted cell is each part's bottleneck. A negative number means more was entered than came from the step before (check the entries, or opening stock not entered).</div>`,'all time');
+}
 async function prodRenderStock(f={}){
   const ctx=await prodCtx();
   const asOn=f.asOn||prodToday();
@@ -2043,14 +2176,18 @@ async function prodRenderStock(f={}){
   Object.entries(agg.byGrade).forEach(([k,v])=>g(k).used+=v.totalKg);
 
   const pt={};
-  const p=k=>pt[k]||(pt[k]={adj:0,made:0,disp:0,fet:0,fetRej:0});
+  const p=k=>pt[k]||(pt[k]={adj:0,made:0,disp:0,fet:0,fetRej:0,fetRejEarly:0});
   Object.entries(agg.byPart).forEach(([k,v])=>p(k).made+=v.okPcs);
   disp.filter(d=>(d.date||'')<=asOn).forEach(d=>p(d.partId).disp+=prodN(d.qty));
   adjIn.filter(a=>a.kind==='part').forEach(a=>p(a.partId).adj+=prodN(a.qty));
-  fet.filter(e=>(e.date||'')<=asOn).forEach(e=>(e.rows||[]).forEach(r=>{ const x=p(r.partId); x.fet+=prodN(r.qty); x.fetRej+=Math.min(prodN(r.rej),prodN(r.qty)); }));
+  // fettling: good parts out of the LAST fettling operation; rejections at any operation leave stock
+  const fetRows=fet.filter(e=>(e.date||'')<=asOn).flatMap(e=>e.rows||[]);
+  fetRows.forEach(r=>{ const x=p(r.partId), q=prodN(r.qty), rj=Math.min(prodN(r.rej),q);
+    x.fetRej+=rj; if(prodOpStage(prodRowOp(r),ctx.cfg)==='Fettling'&&!prodRowCompletes(r,ctx)) x.fetRejEarly+=rj;
+    if(prodRowCompletes(r,ctx)) x.fet+=q; });
 
   const bal=(v,unit,dp)=>`<td class="mono" style="text-align:right;font-weight:700;color:${v<0?'#dc2626':'#0d2f6e'}">${prodFmt(v,dp)}${unit}</td>`;
-  setC(`
+  setC(`${PROD_REPORT_CSS}
   <div class="ph"><h2>📦 Stock — Raw Material &amp; Parts</h2>
     <div style="display:flex;gap:8px;align-items:end">
       <div class="fg" style="margin:0"><label class="lbl">As on</label><input class="fc" type="date" id="pst-ason" value="${asOn}" onchange="prodRenderStock({asOn:this.value})"></div>
@@ -2065,14 +2202,15 @@ async function prodRenderStock(f={}){
       <td class="mono" style="text-align:right">${prodFmt(v.used,1)}</td>${bal(v.adj+v.recv-v.used,' kg',1)}</tr>`).join('')||prodEmpty(5,'No raw material data yet.')}</tbody>
   </table><div style="font-size:11px;color:#6b7280;padding:6px 12px">Consumed = metal used per shift entries (net weight + ${prodFmt(ctx.cfg.meltLossPct,1)}% melting loss). Start with an "Opening Stock" adjustment per grade from your last physical count.</div></div></div>
   <div class="card"><div class="ch"><h5>Part stock (castings, pcs)</h5></div><div class="tw"><table>
-    <thead><tr><th>Part</th><th>Grade</th><th style="text-align:right">Opening / adj.</th><th style="text-align:right">+ OK produced</th><th style="text-align:right">− Fettling rejected</th><th style="text-align:right">− Dispatched</th><th style="text-align:right">= Balance</th><th style="text-align:right" title="OK castings produced but not yet fettled">of which not fettled</th></tr></thead>
+    <thead><tr><th>Part</th><th>Grade</th><th style="text-align:right">Opening / adj.</th><th style="text-align:right">+ OK produced</th><th style="text-align:right" title="rejected at any fettling / finishing operation">− Fettling rejected</th><th style="text-align:right">− Dispatched</th><th style="text-align:right">= Balance</th><th style="text-align:right" title="OK castings produced but not yet fettled">of which not fettled</th></tr></thead>
     <tbody>${Object.entries(pt).map(([k,v])=>({part:ctx.partById[k],v})).sort((a,b)=>String(a.part?.partNumber).localeCompare(String(b.part?.partNumber))).map(({part,v})=>`<tr>
       <td>${esc(prodPartLabel(part))}</td><td>${esc(part?.grade||'')}</td>
       <td class="mono" style="text-align:right">${prodFmt(v.adj)}</td><td class="mono" style="text-align:right">${prodFmt(v.made)}</td>
       <td class="mono" style="text-align:right">${prodFmt(v.fetRej)}</td>
       <td class="mono" style="text-align:right">${prodFmt(v.disp)}</td>${bal(v.adj+v.made-v.fetRej-v.disp,'',0)}
-      <td class="mono" style="text-align:right;color:#6b7280">${prodFmt(Math.max(0,v.made-v.fet))}</td></tr>`).join('')||prodEmpty(8,'No part movements yet.')}</tbody>
+      <td class="mono" style="text-align:right;color:#6b7280">${prodFmt(Math.max(0,v.made-v.fet-v.fetRejEarly))}</td></tr>`).join('')||prodEmpty(8,'No part movements yet.')}</tbody>
   </table></div></div>
+  ${prodWipCard(ctx,agg,fetRows)}
   <div class="card"><div class="ch"><h5>Stock adjustments</h5></div><div class="tw"><table>
     <thead><tr><th>Date</th><th>Type</th><th>Item</th><th style="text-align:right">Qty</th><th>Reason</th><th>Remark</th><th>By</th><th></th></tr></thead>
     <tbody>${adj.sort((a,b)=>String(b.date).localeCompare(String(a.date))).map(a=>`<tr><td class="mono">${esc(a.date)}</td>
@@ -2186,7 +2324,7 @@ async function prodRenderParts(){
   <div class="alert al-w" style="background:#f6f8fc;border-color:var(--border);color:#374151">ℹ️ Net weight drives metal consumption; target cycle time (seconds per shot, per machine) drives Performance / OEE (target time per part = cycle time ÷ cavities, so running with a cavity down shows as a loss).</div>
   <div class="card"><div class="tw"><table>
     <thead><tr><th>Part No.</th><th>Part Name</th><th>Customer</th><th>Grade</th><th style="text-align:right">Net wt (kg)</th><th style="text-align:right">Metal/pc +${prodFmt(ctx.cfg.meltLossPct,1)}% (kg)</th><th style="text-align:right">Cavities</th>
-      ${mcs.map(m=>`<th style="text-align:right">CT ${esc(m.code)} (s)</th>`).join('')}<th>Status</th><th></th></tr></thead>
+      ${mcs.map(m=>`<th style="text-align:right">CT ${esc(m.code)} (s)</th>`).join('')}<th>Route after casting</th><th>Status</th><th></th></tr></thead>
     <tbody>${ctx.parts.map(p=>`<tr ${p.active===false?'style="opacity:.55"':''}>
       <td class="mono" style="font-weight:700">${esc(p.partNumber)}</td><td>${esc(p.partName||'')}</td><td>${esc(p.customer||'')}</td>
       <td>${esc(p.grade||'')}</td>
@@ -2194,9 +2332,10 @@ async function prodRenderParts(){
       <td class="mono" style="text-align:right">${prodN(p.netWeightKg)?prodFmt(prodMetalPerPc(p.netWeightKg,ctx.cfg),3):'—'}</td>
       <td class="mono" style="text-align:right">${prodN(p.cavities)||1}</td>
       ${mcs.map(m=>`<td class="mono" style="text-align:right">${prodCT(p,m.id)||'—'}</td>`).join('')}
+      <td style="font-size:12px">${prodRoute(p).length?prodRoute(p).map(esc).join(' → '):'<span style="color:#d97706">not set</span>'}</td>
       <td>${p.active===false?'Inactive':'Active'}</td>
       <td style="white-space:nowrap"><button class="btn btn-o btn-xs" onclick="prodOpenPart(${p.id})">✏️</button>
-        <button class="btn btn-r btn-xs" onclick="prodDelPart(${p.id})">🗑️</button></td></tr>`).join('')||prodEmpty(9+mcs.length,'No parts yet.')}</tbody>
+        <button class="btn btn-r btn-xs" onclick="prodDelPart(${p.id})">🗑️</button></td></tr>`).join('')||prodEmpty(10+mcs.length,'No parts yet.')}</tbody>
   </table></div></div>`);
 }
 async function prodOpenPart(id=null){
@@ -2215,16 +2354,39 @@ async function prodOpenPart(id=null){
       ${ctx.machines.map(m=>`<div class="fg"><label class="lbl">Target cycle time on ${esc(m.code)} (sec/shot)</label><input class="fc" type="number" step="0.1" min="0" data-ct="${m.id}" value="${esc((p?.cycleTimes||{})[m.id]??'')}" placeholder="blank = not run on this machine"></div>`).join('')}
       <div class="fg"><label class="lbl">Status</label><select class="fc" id="ppt-act"><option value="1" ${p?.active!==false?'selected':''}>Active</option><option value="0" ${p?.active===false?'selected':''}>Inactive</option></select></div>
     </div>
+    <div class="fg"><label class="lbl">Route after die casting (in order)</label>
+      <div id="ppt-route" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-height:34px"></div>
+      <div style="display:flex;gap:6px;margin-top:6px;align-items:center">
+        <select class="fc" id="ppt-addop" style="max-width:220px"></select>
+        <button class="btn btn-o btn-sm" onclick="prodRouteAdd()">➕ Add step</button>
+        ${ctx.parts.filter(x=>x.id!==id&&prodRoute(x).length).length?`<select class="fc" style="max-width:220px" onchange="if(this.value){window._pptRoute=[...prodRoute(window._pptParts[this.value])];prodRouteRender();this.value='';}">
+          <option value="">Copy route from…</option>${ctx.parts.filter(x=>x.id!==id&&prodRoute(x).length).map(x=>`<option value="${x.id}">${esc(x.partNumber)}</option>`).join('')}</select>`:''}
+      </div>
+      <div style="font-size:11px;color:#6b7280;margin-top:4px">Die casting is always first. Steps are counted separately; "fettled" = parts that finished the last fettling step.</div></div>
     <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-o" onclick="prodClose('ppt-ov')">Cancel</button><button class="btn btn-p" onclick="prodSavePart(${id||'null'})">💾 Save</button></div>
   </div>`;
   document.body.appendChild(ov);
+  window._pptRoute=[...prodRoute(p)]; window._pptOps=prodOps(ctx.cfg); window._pptParts=ctx.partById;
+  prodRouteRender();
 }
+function prodRouteRender(){
+  const r=window._pptRoute, el=document.getElementById('ppt-route'); if(!el) return;
+  const stageOf=op=>window._pptOps.find(o=>o.name===op)?.stage||'';
+  el.innerHTML=`<span class="badge" style="background:#e6ebf5;color:#0d2f6e">Die casting</span>`+r.map((op,i)=>`<span style="color:#9ca3af">→</span>
+    <span class="badge" style="background:${stageOf(op)==='Shot blasting'?'#FAEEDA':'#EAF3DE'};color:#374151;display:inline-flex;gap:4px;align-items:center">${esc(op)}
+      ${i?`<a href="#" title="Move earlier" onclick="event.preventDefault();prodRouteMove(${i},-1)" style="text-decoration:none">◀</a>`:''}
+      <a href="#" title="Remove" onclick="event.preventDefault();window._pptRoute.splice(${i},1);prodRouteRender()" style="text-decoration:none;color:#dc2626">✕</a></span>`).join('');
+  const sel=document.getElementById('ppt-addop');
+  if(sel) sel.innerHTML=window._pptOps.filter(o=>!r.includes(o.name)).map(o=>`<option value="${esc(o.name)}">${esc(o.name)} (${esc(o.stage)})</option>`).join('')||'<option value="">— all added —</option>';
+}
+function prodRouteAdd(){ const v=document.getElementById('ppt-addop')?.value; if(v){ window._pptRoute.push(v); prodRouteRender(); } }
+function prodRouteMove(i,d){ const r=window._pptRoute, j=i+d; if(j<0||j>=r.length) return; [r[i],r[j]]=[r[j],r[i]]; prodRouteRender(); }
 async function prodSavePart(id){
   const v=x=>document.getElementById(x).value;
   const cycleTimes={};
   document.querySelectorAll('#ppt-ov [data-ct]').forEach(i=>{ if(prodN(i.value)>0) cycleTimes[i.dataset.ct]=prodN(i.value); });
   const rec={partNumber:v('ppt-pn').trim(), partName:v('ppt-name').trim(), customer:v('ppt-cust').trim(), grade:v('ppt-grade'),
-    netWeightKg:prodN(v('ppt-wt')), cavities:prodN(v('ppt-cav'))||1, cycleTimes, active:v('ppt-act')==='1'};
+    netWeightKg:prodN(v('ppt-wt')), cavities:prodN(v('ppt-cav'))||1, cycleTimes, active:v('ppt-act')==='1', route:[...(window._pptRoute||[])]};
   if(!rec.partNumber||!rec.partName){ toast('Part number and name are required','d'); return; }
   const parts=await db.prodParts.toArray();
   if(parts.some(x=>x.id!==id&&String(x.partNumber).toLowerCase()===rec.partNumber.toLowerCase())){ toast('That part number already exists','d'); return; }
@@ -2283,6 +2445,13 @@ async function prodRenderSetup(){
           <button class="btn btn-r btn-xs" onclick="prodDelDefect(${d.id})">🗑️</button></td></tr>`).join('')}</tbody>
     </table></div></div>
   </div>
+  <div class="card" style="margin-top:14px"><div class="ch"><h5>Operations after die casting</h5><button class="btn btn-o btn-sm" onclick="prodOpAdd()">➕ Add operation</button></div>
+    <div class="cb" style="padding-top:6px">
+      <div style="font-size:12px;color:#6b7280;margin-bottom:8px">Each part's route (Part Master) is picked from this list in order. Quantities are counted per operation; a stage's output is what passes its <b>last</b> operation.</div>
+      <div style="display:flex;gap:18px;flex-wrap:wrap">${PROD_STAGES.map(st=>`<div style="min-width:240px"><div class="lbl" style="margin-bottom:6px">${esc(st)}</div>
+        ${prodOps(cfg).filter(o=>o.stage===st).map(o=>`<div style="display:flex;justify-content:space-between;gap:10px;align-items:center;padding:5px 9px;border:1px solid var(--border);border-radius:7px;margin-bottom:5px;font-size:13px">
+          <span>${esc(o.name)}</span><button class="btn btn-r btn-xs" onclick="prodOpDel('${esc(o.name).replace(/'/g,"\\'")}')">✕</button></div>`).join('')||'<div style="font-size:12px;color:#9ca3af">None</div>'}</div>`).join('')}</div>
+    </div></div>
   <div class="card" style="margin-top:14px"><div class="ch"><h5>Sample data</h5></div><div class="cb" style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
     <div style="flex:1;min-width:280px;font-size:12.5px;color:#374151">
       Fill the last 10 days with made-up shift and fettling entries so you can see how the reports look. They use their own
@@ -2297,10 +2466,10 @@ async function prodRenderSetup(){
 
 // ── Sample data: tagged demo:true so it can be removed exactly ──
 const PROD_DEMO_PARTS=[
-  {partNumber:'SAMPLE-101', partName:'Spacer Heater (sample)', customer:'Sample Customer A', grade:'A380',  netWeightKg:0.15, cavities:2, ct:[55,50], sched:30000, mi:0},
-  {partNumber:'SAMPLE-102', partName:'Bracket (sample)',       customer:'Sample Customer B', grade:'ADC12', netWeightKg:0.42, cavities:1, ct:[62,58], sched:5000,  mi:0},
-  {partNumber:'SAMPLE-201', partName:'Housing (sample)',       customer:'Sample Customer C', grade:'ADC12', netWeightKg:0.85, cavities:1, ct:[80,72], sched:6000,  mi:1},
-  {partNumber:'SAMPLE-202', partName:'Cover (sample)',         customer:'Sample Customer A', grade:'A380',  netWeightKg:0.50, cavities:2, ct:[70,64], sched:20000, mi:1},
+  {partNumber:'SAMPLE-101', partName:'Spacer Heater (sample)', customer:'Sample Customer A', grade:'A380',  netWeightKg:0.15, cavities:2, ct:[55,50], sched:30000, mi:0, route:['Grinding','Filing']},
+  {partNumber:'SAMPLE-102', partName:'Bracket (sample)',       customer:'Sample Customer B', grade:'ADC12', netWeightKg:0.42, cavities:1, ct:[62,58], sched:5000,  mi:0, route:['Belting','Grinding','Drilling','Filing']},
+  {partNumber:'SAMPLE-201', partName:'Housing (sample)',       customer:'Sample Customer C', grade:'ADC12', netWeightKg:0.85, cavities:1, ct:[80,72], sched:6000,  mi:1, route:['Belting','Grinding','Drilling','Filing','Shot blasting']},
+  {partNumber:'SAMPLE-202', partName:'Cover (sample)',         customer:'Sample Customer A', grade:'A380',  netWeightKg:0.50, cavities:2, ct:[70,64], sched:20000, mi:1, route:['Grinding','Drilling','Filing']},
 ];
 async function prodDemoStatus(){
   const [shifts,parts,fet]=await Promise.all([db.prodShifts.toArray().catch(()=>[]),db.prodParts.toArray().catch(()=>[]),db.prodFettling.toArray().catch(()=>[])]);
@@ -2321,8 +2490,9 @@ async function prodDemoGenerate(){
     const ex=parts.find(p=>p.demo&&p.partNumber===d.partNumber);
     const cycleTimes={}; machines.forEach((m,i)=>cycleTimes[m.id]=d.ct[i]??d.ct[0]);
     pid[d.partNumber]=ex? ex.id : await db.prodParts.add({partNumber:d.partNumber, partName:d.partName, customer:d.customer, grade:d.grade,
-      netWeightKg:d.netWeightKg, cavities:d.cavities, cycleTimes, active:true, demo:true,
+      netWeightKg:d.netWeightKg, cavities:d.cavities, cycleTimes, active:true, demo:true, route:d.route,
       monthlySchedule:d.sched, scheduleMachineId:(machines[d.mi]||machines[0]).id});
+    if(ex&&!prodRoute(ex).length) await db.prodParts.update(ex.id,{route:d.route});
   }
   const plan=[[pid['SAMPLE-101'],pid['SAMPLE-102']],[pid['SAMPLE-201'],pid['SAMPLE-202']]];   // parts per machine
   const defById=Object.fromEntries(PROD_DEMO_PARTS.map(d=>[pid[d.partNumber],d]));
@@ -2371,28 +2541,46 @@ async function prodDemoGenerate(){
       made++;
     }
   }
-  // Fettling: a fixed crew fettles roughly the previous day's OK castings (skips dates with a real entry)
+  // Fettling & finishing: a flow simulation. Each operation can only take what the previous step
+  // of the part's route has passed (castings of earlier days feed the first step), so the waiting
+  // piles stay realistic. Dinesh also does a second operation some days (separate counts).
   const fetDates=new Set((await db.prodFettling.toArray().catch(()=>[])).map(e=>e.date));
-  const crew=['Ramesh','Suresh','Mahesh','Ganesh','Dinesh','Prakash','Santosh','Vijay'];
+  const crewOps={Ramesh:'Grinding',Suresh:'Grinding',Kiran:'Grinding',Mahesh:'Drilling',Ganesh:'Drilling',Ravi:'Drilling',
+    Dinesh:'Filing',Santosh:'Filing',Sunil:'Filing',Prakash:'Belting',Anil:'Belting',Vijay:'Shot blasting'};
+  const crew=Object.keys(crewOps);
   const skill=Object.fromEntries(crew.map(c=>[c,.8+rnd()*.4]));       // some people are quicker than others
-  const care=Object.fromEntries(crew.map(c=>[c,.003+rnd()*.02]));     // …and some more careful
+  const care=Object.fromEntries(crew.map(c=>[c,.002+rnd()*.012]));    // …and some more careful
   const partIds=PROD_DEMO_PARTS.map(d=>pid[d.partNumber]);
+  const opRate={Belting:1500,Grinding:1100,Drilling:1000,Filing:1200,'Shot blasting':3000};   // pcs per person-day, light parts
+  const ctxD=await prodCtx();
+  const castRowsD=await prodLoadShifts(ctxD,{from:prodDaysAgo(10),to:prodToday()});
+  const queue={};          // queue[partId][stepIndex] = parts waiting for that step
+  partIds.forEach(id=>queue[id]=(defById[id]?.route||[]).map(()=>0));
   let fetMade=0;
   for(let d=9; d>=0; d--){
     const date=prodDaysAgo(d);
+    // yesterday's OK castings arrive at each part's first step
+    castRowsD.filter(r=>r.s.date===prodAddDays(date,-1)).forEach(r=>Object.entries(r.c.byPart).forEach(([id,v])=>{ if(queue[id]?.length) queue[id][0]+=Math.round(v.okPcs); }));
     if(fetDates.has(date)) continue;
-    const present=crew.filter(()=>rnd()>.1);                          // someone is usually absent
+    const present=crew.filter(()=>rnd()>.08);                         // someone is usually absent
     const rows=[];
     for(const person of present){
-      const nParts=rnd()<.3?2:1;
-      for(let k=0;k<nParts;k++){
-        const partId=partIds[Math.floor(rnd()*partIds.length)], def=defById[partId];
-        const base=def.netWeightKg>.6?160:def.netWeightKg>.3?260:420;   // heavier parts take longer
-        const qty=Math.round(base*skill[person]*(nParts===2?.55:1)*(.85+rnd()*.3));
+      const ops=[crewOps[person]]; if(person==='Dinesh'&&rnd()<.6) ops.push('Drilling');   // one person, two operations
+      for(const op of ops){
+        const parts=partIds.filter(id=>(defById[id]?.route||[]).includes(op));
+        // work on the part with the most waiting at this operation
+        const partId=parts.sort((x,y)=>queue[y][defById[y].route.indexOf(op)]-queue[x][defById[x].route.indexOf(op)])[0];
+        if(!partId) continue;
+        const def=defById[partId], k=def.route.indexOf(op);
+        const heavy=def.netWeightKg>.6?.45:def.netWeightKg>.3?.7:1;
+        const cap=Math.round(opRate[op]*heavy*skill[person]*(ops.length>1?.5:1)*(.85+rnd()*.3));
+        const qty=Math.min(cap,queue[partId][k]); if(qty<=0) continue;
         const rej=Math.round(qty*care[person]*(.5+rnd()));
-        rows.push({person, partId, qty, rej, reason:rej?PROD_FET_REASONS[Math.floor(rnd()*rnd()*PROD_FET_REASONS.length)]:''});
+        queue[partId][k]-=qty; if(k+1<def.route.length) queue[partId][k+1]+=qty-rej;
+        rows.push({person, partId, op, qty, rej, reason:rej?PROD_FET_REASONS[Math.floor(rnd()*rnd()*PROD_FET_REASONS.length)]:''});
       }
     }
+    if(!rows.length) continue;
     await db.prodFettling.add({date, rows, remarks:'Sample data', demo:true,
       createdAt:new Date().toISOString(), createdBy:Auth.user?.name||''});
     fetMade++;
@@ -2413,9 +2601,26 @@ async function prodDemoDelete(){
   toast('🗑️ Sample data deleted');
   prodDemoStatus();
 }
+async function prodOpAdd(){
+  const name=(prompt('Operation name (e.g. Deburring, Buffing):')||'').trim(); if(!name) return;
+  const stage=(prompt(`Stage — type one of: ${PROD_STAGES.join(', ')}`,'Fettling')||'').trim();
+  const st=PROD_STAGES.find(x=>x.toLowerCase()===stage.toLowerCase()); if(!st){ toast('Unknown stage','d'); return; }
+  const cfg=await prodGetCfg(), ops=[...prodOps(cfg)];
+  if(ops.some(o=>o.name.toLowerCase()===name.toLowerCase())||name===PROD_OP_DONE){ toast('That operation already exists','w'); return; }
+  ops.push({name,stage:st});
+  await DB.setSetting('prodConfig',{...cfg,ops}); toast('✅ Operation added'); prodRenderSetup();
+}
+async function prodOpDel(name){
+  const [cfg,parts,fet]=await Promise.all([prodGetCfg(),db.prodParts.toArray(),db.prodFettling.toArray().catch(()=>[])]);
+  const inRoute=parts.filter(p=>prodRoute(p).includes(name)).length, used=fet.some(e=>(e.rows||[]).some(r=>r.op===name));
+  if(inRoute){ toast(`${inRoute} part route${inRoute>1?'s use':' uses'} "${name}" — remove it from those routes first`,'w'); return; }
+  if(used&&!confirm(`"${name}" has entries. Remove it from the list anyway? Old entries keep their numbers.`)) return;
+  if(!used&&!confirm(`Remove "${name}"?`)) return;
+  await DB.setSetting('prodConfig',{...cfg,ops:prodOps(cfg).filter(o=>o.name!==name)}); prodRenderSetup();
+}
 async function prodSaveCfg(){
   const v=x=>document.getElementById(x).value;
-  await DB.setSetting('prodConfig',{meltLossPct:prodN(v('pcfg-loss')), consumptionBasis:v('pcfg-basis'), plannedMinutes:prodN(v('pcfg-plan'))||720,
+  await DB.setSetting('prodConfig',{...(await prodGetCfg()), meltLossPct:prodN(v('pcfg-loss')), consumptionBasis:v('pcfg-basis'), plannedMinutes:prodN(v('pcfg-plan'))||720,
     workDays:prodN(v('pcfg-days'))||26, shiftsPerDay:prodN(v('pcfg-shifts'))||2, hoursPerShift:prodN(v('pcfg-hrs'))||12,
     targetOeePct:Math.min(100,prodN(v('pcfg-oee'))||75)});
   toast('✅ Settings saved'); prodRenderSetup();

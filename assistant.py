@@ -549,7 +549,7 @@ AREA_INFO = {
     # production
     'prodShifts': 'Production — shift entries (shift totals per part line: shots, cavities, off shots, rejections; downtime per machine/shift; notRun = reason when the machine did not run; "No Plan" / "Plan Completed" time is not planned time). Use production_summary for figures.',
     'prodParts': 'Production — part master (weight, cavities, cycle times, customer, monthly schedule)',
-    'prodFettling': 'Production — fettling entries (per date/shift: person, part, qty fettled, rejected, reason)',
+    'prodFettling': 'Production — fettling & finishing entries (per date: person, part, operation (empty = fettling complete), qty done at that operation, rejected, reason). Fettled = qty at the part\'s LAST fettling operation in its route; quantities at different operations must not be added together.',
     'prodMachines': 'Production — machines', 'prodDefectCodes': 'Production — rejection/defect codes',
     'prodDispatch': 'Production — dispatch register (parts sent to customers)', 'prodStockAdj': 'Production — stock adjustments / opening stock',
     # quality
