@@ -2023,8 +2023,8 @@ async function prodOpenFettling(id=null){
     if(!rec.rows.length) rec.rows=Array.from({length:5},()=>({person:'',partId:'',op:'',qty:'',rej:'',reason:''}));
   }
   const names=new Set(all.flatMap(e=>(e.rows||[]).map(r=>r.person)).filter(Boolean));
-  emps.forEach(e=>e.name&&names.add(e.name));
-  window._pf={id,rec,ctx,all,names:[...names].sort()};
+  emps.filter(e=>e.status!=='Resigned').forEach(e=>e.name&&names.add(e.name));
+  window._pf={id,rec,ctx,all,emps,names:[...names].sort()};
   prodFetRenderForm();
 }
 function prodFetRenderForm(){
@@ -2079,7 +2079,10 @@ function prodFetDefaultOp(person,partId){
   const {ctx,all}=window._pf, route=prodRoute(ctx.partById[partId]);
   if(!route.length) return partId? PROD_OP_DONE : '';
   for(const e of all) for(const r of (e.rows||[])) if(r.person===person&&String(r.partId)===String(partId)&&route.includes(r.op)) return r.op;
-  return route[0];
+  // no history: use the person's designation (Belt Operator → Belting, Grinding Operator → Grinding…)
+  const desig=String((window._pf.emps||[]).find(e=>e.name===person)?.designation||'').toLowerCase();
+  const byDesig=route.find(op=>desig&&desig.includes(op.toLowerCase().slice(0,4)));
+  return byDesig||route[0];
 }
 function prodFetPart(i,pid){
   const r=window._pf.rec.rows[i]; r.partId=pid;

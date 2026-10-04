@@ -81,7 +81,31 @@ function hrLevelBadge(l){
   if(l===2) return`<span class="badge ba">2</span>`;
   return`<span class="badge bd">${l}</span>`;
 }
-function hrCatLabel(cat){ return cat==='Staff'?'White Collar':'Blue Collar'; }
+// ── Employee categories & designations (editable; stored in settings) ──
+// Categories group employees and their skill lists in the skill matrix.
+const HR_CATS_DEFAULT=[{key:'Staff',label:'White Collar',docNum:'VRA-HR-002'},{key:'Worker',label:'Blue Collar',docNum:'VRA-HR-005'}];
+const HR_DESIG_DEFAULT={
+  Staff:['Managing Partner','Production In-charge','QA In-charge','Shift Supervisor','QC Inspector'],
+  Worker:['PDC Operator','Fettler','Belt Operator','Grinding Operator','Drilling Operator','Filing Operator','Shot Blast Operator',
+    'CNC Operator','VMC Operator','Conventional Operator','Final Inspector','Helper'],
+};
+const HR_CAT_COLORS=[['#dbeafe','#1e40af','#eff6ff'],['#dcfce7','#15803d','#f0fdf4'],['#ede9fe','#5b21b6','#f5f3ff'],['#e0f2fe','#075985','#f0f9ff'],['#fce7f3','#9d174d','#fdf2f8'],['#f1f5f9','#334155','#f8fafc']];
+async function hrLoadMasters(){
+  const v=await DB.getSetting('hrMasters').catch(()=>null);
+  window._hrCats=Array.isArray(v?.cats)&&v.cats.length? v.cats : HR_CATS_DEFAULT.map(c=>({...c}));
+  const desig={...HR_DESIG_DEFAULT,...(v?.desig||{})};
+  // older saves: make sure new default roles (e.g. fettling) are offered too
+  if(!v?.desigSeeded2){ Object.entries(HR_DESIG_DEFAULT).forEach(([k,l])=>{ desig[k]=[...new Set([...(desig[k]||[]),...l])]; }); }
+  window._hrCats.forEach(c=>{ desig[c.key]=desig[c.key]||[]; });
+  window._hrDesig=desig;
+}
+async function hrSaveMasters(){ await DB.setSetting('hrMasters',{cats:window._hrCats,desig:window._hrDesig,desigSeeded2:true}); }
+function hrCats(){ return window._hrCats||HR_CATS_DEFAULT; }
+function hrCatLabel(cat){ return hrCats().find(c=>c.key===cat)?.label||cat||'—'; }
+function hrCatColor(cat){ const i=hrCats().findIndex(c=>c.key===cat); return HR_CAT_COLORS[(i<0?HR_CAT_COLORS.length-1:i)%HR_CAT_COLORS.length]; }
+function hrCatDoc(cat){ return hrCats().find(c=>c.key===cat)?.docNum||'VRA-HR-005'; }
+function hrIsContract(e){ return e?.empType==='Contract'; }
+function hrContractEnded(e){ return hrIsContract(e)&&e.contractEnd&&e.contractEnd<new Date().toISOString().slice(0,10); }
 function hrTrStatusBadge(s){
   const m={Scheduled:'bp',Completed:'ba',Postponed:'bd',Cancelled:'br'};
   return`<span class="badge ${m[s]||'bd'}">${s}</span>`;
@@ -140,45 +164,32 @@ function hrPrintHeader(docNum,rev,title,subtitle,today){
 //  SKILL MANAGEMENT (Add/Remove skills — modal)
 // ══════════════════════════════════════════════════════
 async function hrManageSkills(){
+  await hrLoadMasters();
   const skills=await db.hrSkillDefs.toArray().catch(()=>[]);
-  const staffSkills=skills.filter(s=>s.category==='Staff');
-  const workerSkills=skills.filter(s=>s.category==='Worker');
-
-  function skillRows(list,cat){
-    return list.map(s=>`<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 8px;border-bottom:1px solid var(--border)">
-      <span style="font-size:12.5px">${esc(s.skillName)}</span>
-      <button class="btn btn-r btn-xs" onclick="hrDeleteSkill(${s.id})">🗑️ Remove</button>
-    </div>`).join('');
-  }
-
+  const cats=hrCats();
+  document.getElementById('hr-skill-ov')?.remove();
   const ov=document.createElement('div');ov.className='overlay';ov.id='hr-skill-ov';
-  ov.innerHTML=`<div class="modal" style="width:560px;max-height:90vh;overflow-y:auto">
+  ov.innerHTML=`<div class="modal" style="width:${Math.min(1000,320*Math.min(3,cats.length)+40)}px;max-width:96vw;max-height:90vh;overflow-y:auto">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
       <h3>⚙️ Manage Skills / Competencies</h3>
       <button class="btn btn-o btn-sm" onclick="document.getElementById('hr-skill-ov').remove()">✕ Close</button>
     </div>
-    <div class="alert al-w" style="margin-bottom:12px">Adding or removing skills applies to ALL designations. Existing skill matrix data for removed skills will be preserved until manually cleared.</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
-      <div>
-        <div style="font-weight:700;font-size:12px;color:var(--navy);margin-bottom:6px;padding-bottom:4px;border-bottom:2px solid var(--navy)">White Collar Skills (${staffSkills.length})</div>
-        <div id="staff-skills-list" style="max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;margin-bottom:8px">
-          ${skillRows(staffSkills,'Staff')}
-        </div>
+    <div class="alert al-w" style="margin-bottom:12px">Each category has its own skill list. Existing skill matrix data for removed skills is kept until cleared.</div>
+    <div style="display:grid;grid-template-columns:repeat(${Math.min(3,cats.length)},1fr);gap:14px">
+      ${cats.map((c,i)=>{ const list=skills.filter(x=>x.category===c.key);
+        return `<div>
+        <div style="font-weight:700;font-size:12px;color:var(--navy);margin-bottom:6px;padding-bottom:4px;border-bottom:2px solid var(--navy)">${esc(c.label)} Skills (${list.length})</div>
+        <div id="skills-list-${i}" style="max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;margin-bottom:8px">${hrSkillRows(list)}</div>
         <div style="display:flex;gap:5px">
-          <input class="fc" id="new-staff-skill" placeholder="Add new skill..." style="font-size:12px">
-          <button class="btn btn-p btn-sm" onclick="hrAddSkill('Staff')">+ Add</button>
-        </div>
-      </div>
-      <div>
-        <div style="font-weight:700;font-size:12px;color:var(--navy);margin-bottom:6px;padding-bottom:4px;border-bottom:2px solid var(--navy)">Blue Collar Skills (${workerSkills.length})</div>
-        <div id="worker-skills-list" style="max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;margin-bottom:8px">
-          ${skillRows(workerSkills,'Worker')}
-        </div>
-        <div style="display:flex;gap:5px">
-          <input class="fc" id="new-worker-skill" placeholder="Add new skill..." style="font-size:12px">
-          <button class="btn btn-p btn-sm" onclick="hrAddSkill('Worker')">+ Add</button>
-        </div>
-      </div>
+          <input class="fc" id="new-skill-${i}" placeholder="Add new skill..." style="font-size:12px">
+          <button class="btn btn-p btn-sm" onclick="hrAddSkill(${i})">+ Add</button>
+        </div></div>`; }).join('')}
+    </div>
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <span class="lbl" style="margin:0">Add a category</span>
+      <input class="fc" id="new-hr-cat" placeholder="e.g. Fettling, Maintenance, Contract Staff" style="max-width:280px">
+      <button class="btn btn-o btn-sm" onclick="hrAddCategory()">+ Add category</button>
+      <span style="font-size:11px;color:#6b7280">Categories and designations can also be managed from the Employee Register.</span>
     </div>
     <div style="margin-top:12px;text-align:right">
       <button class="btn btn-p" onclick="document.getElementById('hr-skill-ov').remove();hrRenderSkillMatrix()">✅ Done — Refresh Matrix</button>
@@ -186,17 +197,21 @@ async function hrManageSkills(){
   </div>`;
   document.body.appendChild(ov);
 }
-
-async function hrAddSkill(category){
-  const inputId=category==='Staff'?'new-staff-skill':'new-worker-skill';
-  const name=document.getElementById(inputId)?.value.trim();
+function hrSkillRows(list){
+  return list.map(s=>`<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 8px;border-bottom:1px solid var(--border)">
+    <span style="font-size:12.5px">${esc(s.skillName)}</span>
+    <button class="btn btn-r btn-xs" onclick="hrDeleteSkill(${s.id})">🗑️ Remove</button>
+  </div>`).join('')||'<div style="padding:8px;font-size:12px;color:#9ca3af">No skills yet.</div>';
+}
+async function hrAddSkill(i){
+  const category=hrCats()[i]?.key; if(!category) return;
+  const name=document.getElementById('new-skill-'+i)?.value.trim();
   if(!name){toast('Enter a skill name','d');return;}
   await db.hrSkillDefs.add({category,skillName:name});
   toast(`✅ Skill "${name}" added`);
-  document.getElementById(inputId).value='';
+  document.getElementById('new-skill-'+i).value='';
   await hrManageSkillsRefreshList(category);
 }
-
 async function hrDeleteSkill(id){
   const s=await db.hrSkillDefs.get(id).catch(()=>null);
   if(!confirm(`Remove skill "${s?.skillName}"? Skill matrix data for this skill will remain but won't be shown.`)) return;
@@ -204,43 +219,103 @@ async function hrDeleteSkill(id){
   toast(`Skill removed`,'d');
   await hrManageSkillsRefreshList(s?.category||'Staff');
 }
-
 async function hrManageSkillsRefreshList(category){
   const skills=await db.hrSkillDefs.toArray().catch(()=>[]);
-  const list=skills.filter(s=>s.category===category);
-  const containerId=category==='Staff'?'staff-skills-list':'worker-skills-list';
-  const el=document.getElementById(containerId);
-  if(!el) return;
-  el.innerHTML=list.map(s=>`<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 8px;border-bottom:1px solid var(--border)">
-    <span style="font-size:12.5px">${esc(s.skillName)}</span>
-    <button class="btn btn-r btn-xs" onclick="hrDeleteSkill(${s.id})">🗑️ Remove</button>
-  </div>`).join('');
+  const i=hrCats().findIndex(c=>c.key===category);
+  const el=document.getElementById('skills-list-'+i);
+  if(el) el.innerHTML=hrSkillRows(skills.filter(s=>s.category===category));
+}
+async function hrAddCategory(label){
+  label=(label??document.getElementById('new-hr-cat')?.value??'').trim();
+  if(!label){ toast('Enter a category name','d'); return false; }
+  await hrLoadMasters();
+  if(hrCats().some(c=>c.key.toLowerCase()===label.toLowerCase()||c.label.toLowerCase()===label.toLowerCase())){ toast('That category already exists','w'); return false; }
+  window._hrCats.push({key:label,label}); window._hrDesig[label]=window._hrDesig[label]||[];
+  await hrSaveMasters(); toast(`✅ Category "${label}" added`);
+  if(document.getElementById('hr-skill-ov')) hrManageSkills();
+  return true;
+}
+
+// Categories & designations manager (from the Employee Register)
+async function hrManageMasters(){
+  await hrLoadMasters();
+  document.getElementById('hr-mst-ov')?.remove();
+  const emps=await db.hrEmployees.toArray().catch(()=>[]);
+  const ov=document.createElement('div');ov.className='overlay';ov.id='hr-mst-ov';
+  ov.innerHTML=`<div class="modal" style="width:860px;max-width:96vw;max-height:90vh;overflow-y:auto">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <h3>⚙️ Categories &amp; Designations</h3>
+      <button class="btn btn-o btn-sm" onclick="document.getElementById('hr-mst-ov').remove();hrRenderEmployees()">✕ Close</button></div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px">
+      ${hrCats().map((c,i)=>{ const col=hrCatColor(c.key), n=emps.filter(e=>e.category===c.key).length;
+        return `<div style="border:1px solid var(--border);border-radius:8px;overflow:hidden">
+        <div style="background:${col[0]};color:${col[1]};padding:7px 10px;display:flex;justify-content:space-between;align-items:center;font-weight:700;font-size:12.5px">
+          <span>${esc(c.label)} <span style="font-weight:500">(${n})</span></span>
+          <span style="display:flex;gap:4px">
+            <button class="btn btn-o btn-xs" title="Rename" onclick="hrRenameCat(${i})">✏️</button>
+            ${n?'':`<button class="btn btn-r btn-xs" title="Delete" onclick="hrDelCat(${i})">🗑️</button>`}</span></div>
+        <div style="padding:6px 8px">${(window._hrDesig[c.key]||[]).map((d,j)=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px;padding:3px 2px;border-bottom:1px solid #f1f5f9">
+          <span>${esc(d)}</span><button class="btn btn-r btn-xs" onclick="hrDelDesig(${i},${j})">✕</button></div>`).join('')||'<div style="font-size:12px;color:#9ca3af">No designations</div>'}
+          <div style="display:flex;gap:5px;margin-top:6px"><input class="fc" id="hr-nd-${i}" placeholder="Add designation…" style="font-size:12px;height:30px">
+            <button class="btn btn-p btn-xs" onclick="hrAddDesig(${i})">+</button></div></div></div>`; }).join('')}
+    </div>
+    <div style="margin-top:14px;display:flex;gap:8px;align-items:center">
+      <input class="fc" id="hr-nc" placeholder="New category, e.g. Fettling, Maintenance" style="max-width:300px">
+      <button class="btn btn-o btn-sm" onclick="hrAddCategory(document.getElementById('hr-nc').value).then(ok=>ok&&hrManageMasters())">+ Add category</button>
+      <span style="font-size:11px;color:#6b7280">Each category gets its own skill list in the Skill Matrix (⚙️ Manage Skills).</span>
+    </div></div>`;
+  document.body.appendChild(ov);
+}
+async function hrAddDesig(i){
+  const c=hrCats()[i], v=document.getElementById('hr-nd-'+i)?.value.trim(); if(!c||!v) return;
+  const l=window._hrDesig[c.key]=window._hrDesig[c.key]||[];
+  if(!l.some(x=>x.toLowerCase()===v.toLowerCase())) l.push(v);
+  await hrSaveMasters(); hrManageMasters();
+}
+async function hrDelDesig(i,j){ const c=hrCats()[i]; (window._hrDesig[c.key]||[]).splice(j,1); await hrSaveMasters(); hrManageMasters(); }
+async function hrRenameCat(i){
+  const c=hrCats()[i]; const v=(prompt('Category name shown in lists and prints:',c.label)||'').trim(); if(!v) return;
+  c.label=v; await hrSaveMasters(); hrManageMasters();
+}
+async function hrDelCat(i){
+  const c=hrCats()[i]; if(!confirm(`Delete category "${c.label}"? Its skill list is kept but hidden.`)) return;
+  window._hrCats.splice(i,1); await hrSaveMasters(); hrManageMasters();
 }
 
 // ══════════════════════════════════════════════════════
 //  EMPLOYEE REGISTER
 // ══════════════════════════════════════════════════════
 async function hrRenderEmployees(){
-  const emps=await db.hrEmployees.toArray().catch(()=>[]);
+  await hrLoadMasters();
+  const all=await db.hrEmployees.toArray().catch(()=>[]);
+  const f=window._hrEmpFilter||'all';
+  const emps=all.filter(e=>f==='all'||(f==='contract'?hrIsContract(e):!hrIsContract(e)));
+  const nC=all.filter(hrIsContract).length;
+  const chip=(k,l)=>`<button class="btn btn-sm ${f===k?'btn-p':'btn-o'}" onclick="window._hrEmpFilter='${k}';hrRenderEmployees()">${l}</button>`;
   setC(`
   <div class="ph">
     <h2>👤 Employee Register</h2>
     <div style="display:flex;gap:8px">
+      <button class="btn btn-o" onclick="hrManageMasters()">⚙️ Categories &amp; Designations</button>
       <button class="btn btn-p" onclick="hrOpenEmpForm()">+ Add Employee</button>
       <button class="btn btn-o" onclick="hrPrintEmployeeList()">🖨️ Print List</button>
     </div>
   </div>
   <div class="card">
-    <div class="ch"><h5>All Employees — ${emps.length} records</h5>
-      <div style="font-size:11px;color:var(--muted)">Doc Ref: VRA-HR-001 · Rev 00</div>
+    <div class="ch"><h5>Employees — ${emps.length} of ${all.length}</h5>
+      <div style="display:flex;gap:6px;align-items:center">
+        ${chip('all',`All (${all.length})`)}${chip('perm',`Permanent (${all.length-nC})`)}${chip('contract',`🟧 Contract (${nC})`)}
+        <span style="font-size:11px;color:var(--muted);margin-left:8px">Doc Ref: VRA-HR-001 · Rev 00</span></div>
     </div>
     <div class="tw"><table>
-      <thead><tr><th>Emp Code</th><th>Name</th><th>Category</th><th>Designation</th><th>Education</th><th>Experience</th><th>DOJ</th><th>Status</th><th></th></tr></thead>
-      <tbody>${emps.length===0?`<tr><td colspan="9" style="text-align:center;padding:30px;color:#9ca3af">No employees added yet. Click + Add Employee to start.</td></tr>`:
-      emps.map(e=>`<tr>
+      <thead><tr><th>Emp Code</th><th>Name</th><th>Type</th><th>Category</th><th>Designation</th><th>Education</th><th>Experience</th><th>DOJ</th><th>Status</th><th></th></tr></thead>
+      <tbody>${emps.length===0?`<tr><td colspan="10" style="text-align:center;padding:30px;color:#9ca3af">${all.length?'No employees in this view.':'No employees added yet. Click + Add Employee to start.'}</td></tr>`:
+      emps.map(e=>{ const c=hrIsContract(e), ended=hrContractEnded(e), col=hrCatColor(e.category);
+        return `<tr style="${c?'background:#fff7ed;box-shadow:inset 4px 0 0 #f59e0b':''}">
         <td class="mono" style="color:var(--navy);font-weight:700">${esc(e.empCode)}</td>
         <td><strong>${esc(e.name)}</strong></td>
-        <td><span class="badge bd">${hrCatLabel(e.category)}</span></td>
+        <td>${c?`<span class="badge" style="background:#ffedd5;color:#9a3412">Contract</span><div style="font-size:11px;color:${ended?'#dc2626':'#9a3412'};margin-top:2px">${esc(e.contractor||'')}${e.contractEnd?` · ${ended?'ended':'till'} ${esc(e.contractEnd)}`:''}</div>`:'<span style="font-size:12px;color:#6b7280">Permanent</span>'}</td>
+        <td><span class="badge" style="background:${col[0]};color:${col[1]}">${esc(hrCatLabel(e.category))}</span></td>
         <td>${esc(e.designation)}</td>
         <td>${esc(e.education||'—')}</td>
         <td>${esc(e.experience||'—')}</td>
@@ -250,23 +325,23 @@ async function hrRenderEmployees(){
           <button class="btn btn-o btn-xs" onclick="hrOpenEmpForm(${e.id})">✏️ Edit</button>
           <button class="btn btn-r btn-xs" onclick="hrDeleteEmp(${e.id})">🗑️</button>
         </td>
-      </tr>`).join('')}
+      </tr>`; }).join('')}
       </tbody>
     </table></div>
   </div>
-  <div class="muted" style="margin-top:6px">Legend — 0 = Training Identified · 1 = Can Perform · 2 = Expert / Can Train · N/R = Not Required</div>
+  <div class="muted" style="margin-top:6px"><span style="display:inline-block;width:12px;height:12px;background:#fff7ed;box-shadow:inset 3px 0 0 #f59e0b;vertical-align:-2px;margin-right:4px"></span>Contract workers are shaded orange (same employee code series). Legend — 0 = Training Identified · 1 = Can Perform · 2 = Expert / Can Train · N/R = Not Required</div>
   `);
 }
 
 async function hrOpenEmpForm(id=null){
+  await hrLoadMasters();
   const e=id?await db.hrEmployees.get(id).catch(()=>null):null;
   const allEmps=await db.hrEmployees.toArray().catch(()=>[]);
-  const nextCode=`VRA-EMP-${String(allEmps.length+1).padStart(3,'0')}`;
-  const staffDesig=['Managing Partner','Production In-charge','QA In-charge','Shift Supervisor','QC Inspector'];
-  const workerDesig=['CNC Operator','VMC Operator','Conventional Operator','Final Inspector','Helper','PDC Operator'];
-  const allDesig=[...staffDesig,...workerDesig];
+  // same code series for permanent and contract: next free number
+  const maxN=allEmps.reduce((m,x)=>{ const n=parseInt(String(x.empCode||'').match(/(\d+)\s*$/)?.[1]||0); return Math.max(m,n); },0);
+  const nextCode=`VRA-EMP-${String(Math.max(maxN,allEmps.length)+1).padStart(3,'0')}`;
   const curDesig=e?.designation||'';
-  const isCustomDesig=curDesig&&!allDesig.includes(curDesig);
+  const isContract=hrIsContract(e);
   const ov=document.createElement('div');ov.className='overlay';ov.id='hr-emp-ov';
   ov.innerHTML=`<div class="modal" style="width:520px;max-height:90vh;overflow-y:auto">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
@@ -278,18 +353,26 @@ async function hrOpenEmpForm(id=null){
         <input class="fc mono" id="hre-code" value="${esc(e?.empCode||nextCode)}"></div>
       <div class="fg"><label class="lbl">Full Name *</label>
         <input class="fc" id="hre-name" value="${esc(e?.name||'')}" placeholder="Full name"></div>
+      <div class="fg" style="grid-column:span 2"><label class="lbl">Employment type *</label>
+        <div style="display:flex;gap:8px">
+          <label style="flex:1;display:flex;gap:8px;align-items:center;border:1px solid var(--border);border-radius:8px;padding:8px 10px;cursor:pointer"><input type="radio" name="hre-type" value="Permanent" ${isContract?'':'checked'} onchange="hrToggleContract()"> <b>Permanent</b></label>
+          <label style="flex:1;display:flex;gap:8px;align-items:center;border:1px solid #fdba74;background:#fff7ed;border-radius:8px;padding:8px 10px;cursor:pointer"><input type="radio" name="hre-type" value="Contract" ${isContract?'checked':''} onchange="hrToggleContract()"> <b style="color:#9a3412">Contract worker</b></label>
+        </div></div>
+      <div id="hre-contract" style="grid-column:span 2;display:${isContract?'grid':'none'};grid-template-columns:1fr 1fr 1fr;gap:10px;background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:10px">
+        <div class="fg" style="margin:0;grid-column:span 3"><label class="lbl">Contractor / agency</label>
+          <input class="fc" id="hre-contractor" value="${esc(e?.contractor||'')}" placeholder="Agency or contractor name"></div>
+        <div class="fg" style="margin:0"><label class="lbl">Contract from</label><input class="fc" type="date" id="hre-cfrom" value="${esc(e?.contractStart||'')}"></div>
+        <div class="fg" style="margin:0"><label class="lbl">Contract till</label><input class="fc" type="date" id="hre-cto" value="${esc(e?.contractEnd||'')}"></div>
+        <div class="fg" style="margin:0"><label class="lbl">Rate / wage basis</label><input class="fc" id="hre-crate" value="${esc(e?.contractRate||'')}" placeholder="e.g. ₹ per day / per piece"></div>
+      </div>
       <div class="fg"><label class="lbl">Category *</label>
         <select class="fc" id="hre-cat" onchange="hrUpdateDesigOptions()">
-          <option value="Staff" ${e?.category==='Staff'?'selected':''}>White Collar</option>
-          <option value="Worker" ${e?.category==='Worker'?'selected':''}>Blue Collar</option>
+          ${hrCats().map(c=>`<option value="${esc(c.key)}" ${(e?.category||'Worker')===c.key?'selected':''}>${esc(c.label)}</option>`).join('')}
         </select></div>
       <div class="fg"><label class="lbl">Designation *</label>
-        <select class="fc" id="hre-desig" onchange="hrToggleCustomDesig()">
-          ${allDesig.map(d=>`<option value="${d}" ${!isCustomDesig&&curDesig===d?'selected':''}>${d}</option>`).join('')}
-          <option value="__other__" ${isCustomDesig?'selected':''}>Other / Custom…</option>
-        </select>
-        <input class="fc" id="hre-custom-desig" value="${esc(isCustomDesig?curDesig:'')}" placeholder="Enter designation"
-          style="margin-top:6px;display:${isCustomDesig?'block':'none'}">
+        <select class="fc" id="hre-desig" onchange="hrToggleCustomDesig()"></select>
+        <input class="fc" id="hre-custom-desig" value="" placeholder="Enter designation (added to the list)"
+          style="margin-top:6px;display:none">
       </div>
       <div class="fg"><label class="lbl">Education</label>
         <input class="fc" id="hre-edu" value="${esc(e?.education||'')}" placeholder="e.g. BE Mech, ITI, 10th"></div>
@@ -312,7 +395,11 @@ async function hrOpenEmpForm(id=null){
     </div>
   </div>`;
   document.body.appendChild(ov);
-  hrUpdateDesigOptions(e?.category);
+  hrUpdateDesigOptions(e?.category||'Worker',curDesig);
+}
+function hrToggleContract(){
+  const c=document.querySelector('input[name=hre-type]:checked')?.value==='Contract';
+  const el=document.getElementById('hre-contract'); if(el) el.style.display=c?'grid':'none';
 }
 
 function hrToggleCustomDesig(){
@@ -321,14 +408,14 @@ function hrToggleCustomDesig(){
   if(sel&&inp) inp.style.display=sel.value==='__other__'?'block':'none';
 }
 
-function hrUpdateDesigOptions(forceCategory){
-  const cat=forceCategory||document.getElementById('hre-cat')?.value||'Staff';
-  const staffDesig=['Managing Partner','Production In-charge','QA In-charge','Shift Supervisor','QC Inspector'];
-  const workerDesig=['CNC Operator','VMC Operator','Conventional Operator','Final Inspector','Helper','PDC Operator'];
-  const list=cat==='Staff'?staffDesig:workerDesig;
-  const opts=list.map(d=>`<option value="${d}">${d}</option>`).join('');
+function hrUpdateDesigOptions(forceCategory,current=''){
+  const cat=forceCategory||document.getElementById('hre-cat')?.value||'Worker';
+  const list=(window._hrDesig||HR_DESIG_DEFAULT)[cat]||[];
+  const custom=current&&!list.includes(current);
   const el=document.getElementById('hre-desig');
-  if(el){ el.innerHTML=opts+`<option value="__other__">Other / Custom…</option>`; }
+  if(el) el.innerHTML=`<option value="">— select —</option>`+list.map(d=>`<option value="${esc(d)}" ${d===current?'selected':''}>${esc(d)}</option>`).join('')
+    +`<option value="__other__" ${custom?'selected':''}>Other / Custom…</option>`;
+  const inp=document.getElementById('hre-custom-desig'); if(inp&&custom) inp.value=current;
   hrToggleCustomDesig();
 }
 
@@ -338,10 +425,18 @@ async function hrSaveEmp(id){
   const desigRaw=document.getElementById('hre-desig').value;
   const designation=desigRaw==='__other__'?document.getElementById('hre-custom-desig').value.trim():desigRaw;
   if(!designation){toast('Designation is required','d');return;}
+  const category=document.getElementById('hre-cat').value;
+  const empType=document.querySelector('input[name=hre-type]:checked')?.value||'Permanent';
+  // a new custom designation is added to that category's list for next time
+  if(desigRaw==='__other__'){ const l=window._hrDesig[category]=window._hrDesig[category]||[]; if(!l.includes(designation)){ l.push(designation); await hrSaveMasters(); } }
   const rec={
     empCode:document.getElementById('hre-code').value.trim(),
-    name, category:document.getElementById('hre-cat').value,
-    designation,
+    name, category,
+    designation, empType,
+    contractor:empType==='Contract'?document.getElementById('hre-contractor').value.trim():'',
+    contractStart:empType==='Contract'?document.getElementById('hre-cfrom').value:'',
+    contractEnd:empType==='Contract'?document.getElementById('hre-cto').value:'',
+    contractRate:empType==='Contract'?document.getElementById('hre-crate').value.trim():'',
     education:document.getElementById('hre-edu').value.trim(),
     experience:document.getElementById('hre-exp').value.trim(),
     doj:document.getElementById('hre-doj').value,
@@ -364,13 +459,15 @@ async function hrDeleteEmp(id){
 }
 
 async function hrPrintEmployeeList(){
+  await hrLoadMasters();
   const emps=await db.hrEmployees.toArray().catch(()=>[]);
   const today=new Date().toLocaleDateString('en-IN');
   const rows=emps.map((e,i)=>`<tr>
     <td style="text-align:center">${i+1}</td>
     <td class="mono">${e.empCode}</td>
     <td><strong>${e.name}</strong></td>
-    <td>${hrCatLabel(e.category)}</td>
+    <td>${hrIsContract(e)?`<b>Contract</b>${e.contractor?`<br><span style="font-size:7pt">${esc(e.contractor)}${e.contractEnd?' · till '+esc(e.contractEnd):''}</span>`:''}`:'Permanent'}</td>
+    <td>${esc(hrCatLabel(e.category))}</td>
     <td>${e.designation}</td>
     <td>${e.education||'—'}</td>
     <td>${e.experience||'—'}</td>
@@ -380,10 +477,10 @@ async function hrPrintEmployeeList(){
   _hrOpenPrintWindow(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Employee Register</title><style>${hrPrintCSS()}</style></head><body>
   ${hrPrintHeader('VRA-HR-001','00','EMPLOYEE REGISTER','V R Alucast — All Employees',today)}
   <table class="data">
-    <thead><tr><th>#</th><th>Emp Code</th><th>Name</th><th>Category</th><th>Designation</th><th>Education</th><th>Experience</th><th>DOJ</th><th>Status</th></tr></thead>
-    <tbody>${rows||'<tr><td colspan="9" style="text-align:center">No records</td></tr>'}</tbody>
+    <thead><tr><th>#</th><th>Emp Code</th><th>Name</th><th>Type</th><th>Category</th><th>Designation</th><th>Education</th><th>Experience</th><th>DOJ</th><th>Status</th></tr></thead>
+    <tbody>${rows||'<tr><td colspan="10" style="text-align:center">No records</td></tr>'}</tbody>
   </table>
-  <div style="margin-top:6px;font-size:7.5pt;color:#555">Total: ${emps.length} employees &nbsp;|&nbsp; Active: ${emps.filter(e=>(e.status||'Active')==='Active').length}</div>
+  <div style="margin-top:6px;font-size:7.5pt;color:#555">Total: ${emps.length} employees &nbsp;|&nbsp; Active: ${emps.filter(e=>(e.status||'Active')==='Active').length} &nbsp;|&nbsp; Contract: ${emps.filter(hrIsContract).length}</div>
   </td></tr></tbody></table>
   <script>window.onload=()=>window.print()<\/script></body></html>`);
 }
@@ -393,6 +490,7 @@ async function hrPrintEmployeeList(){
 // ══════════════════════════════════════════════════════
 async function hrRenderSkillMatrix(){
   try {
+  await hrLoadMasters();
   await hrSeedDefaults();
   await hrDeduplicateSkills();
   const updAt=localStorage.getItem('hr_matrix_updated_at')||'';
@@ -421,11 +519,10 @@ async function _hrRenderMatrixCards(){
   const emps=await db.hrEmployees.where('status').equals('Active').toArray().catch(()=>[]);
   const skills=await db.hrSkillDefs.toArray().catch(()=>[]);
   const matrix=await db.hrSkillMatrix.toArray().catch(()=>[]);
-  const staffEmps=emps.filter(e=>e.category==='Staff');
-  const workerEmps=emps.filter(e=>e.category==='Worker');
-
+  // ordered by category (categories without a definition go last)
+  const order=c=>{ const i=hrCats().findIndex(x=>x.key===c); return i<0?99:i; };
   const prevIdx=window._hrMatIdx||0;
-  window._hrMatEmps=[...staffEmps,...workerEmps];
+  window._hrMatEmps=[...emps].sort((a,b)=>order(a.category)-order(b.category));
   window._hrMatSkills=skills;
   window._hrMatMatrix=matrix;
 
@@ -445,13 +542,10 @@ function _hrRenderEmpList(){
     return empSkills.filter(s=>{ const m=matrix.find(x=>x.empId===e.id&&x.skillId===s.id); const lv=m?m.level:null; return lv===null||(lv!==-1&&lv<1); }).length;
   }
 
-  const staffEmps=emps.filter(e=>e.category==='Staff');
-  const workerEmps=emps.filter(e=>e.category==='Worker');
-
   function empItem(e,idx){
     const gaps=gapCount(e);
     return`<div id="mat-li-${idx}" onclick="_hrShowEmpMatrix(${idx})" style="padding:10px 12px;cursor:pointer;border-bottom:1px solid #e5e7eb;transition:background 0.15s" onmouseover="this.style.background='#eff6ff'" onmouseout="if(window._hrMatIdx!==${idx})this.style.background=''">
-      <div style="font-weight:600;font-size:12.5px;color:#111827">${esc(e.name)}</div>
+      <div style="font-weight:600;font-size:12.5px;color:#111827">${esc(e.name)}${hrIsContract(e)?' <span style="background:#ffedd5;color:#9a3412;font-size:9.5px;font-weight:700;padding:1px 6px;border-radius:8px">CONTRACT</span>':''}</div>
       <div style="font-size:11px;color:#6b7280;margin-top:1px">${esc(e.empCode)} · ${esc(e.designation)}</div>
       ${gaps?`<span style="display:inline-block;margin-top:3px;background:#fee2e2;color:#b91c1c;font-size:10px;font-weight:700;padding:1px 7px;border-radius:10px">⚠ ${gaps} gap${gaps>1?'s':''}</span>`
              :`<span style="display:inline-block;margin-top:3px;background:#f0fdf4;color:#15803d;font-size:10px;font-weight:600;padding:1px 7px;border-radius:10px">✓ OK</span>`}
@@ -459,13 +553,11 @@ function _hrRenderEmpList(){
   }
 
   let html='';
-  if(staffEmps.length){
-    html+=`<div style="padding:8px 12px;background:#dbeafe;font-size:10.5px;font-weight:700;color:#1e40af;letter-spacing:0.5px;text-transform:uppercase;position:sticky;top:0">White Collar (${staffEmps.length})</div>`;
-    html+=emps.filter(e=>e.category==='Staff').map((e,i)=>empItem(e,emps.indexOf(e))).join('');
-  }
-  if(workerEmps.length){
-    html+=`<div style="padding:8px 12px;background:#dcfce7;font-size:10.5px;font-weight:700;color:#15803d;letter-spacing:0.5px;text-transform:uppercase;position:sticky;top:0">Blue Collar (${workerEmps.length})</div>`;
-    html+=emps.filter(e=>e.category==='Worker').map((e,i)=>empItem(e,emps.indexOf(e))).join('');
+  const keys=[...new Set(emps.map(e=>e.category))];
+  for(const k of keys){
+    const group=emps.filter(e=>e.category===k), col=hrCatColor(k);
+    html+=`<div style="padding:8px 12px;background:${col[0]};font-size:10.5px;font-weight:700;color:${col[1]};letter-spacing:0.5px;text-transform:uppercase;position:sticky;top:0">${esc(hrCatLabel(k))} (${group.length})</div>`;
+    html+=group.map(e=>empItem(e,emps.indexOf(e))).join('');
   }
   if(!emps.length) html='<div style="padding:20px;text-align:center;color:#9ca3af;font-size:12px">No active employees.</div>';
   list.innerHTML=html;
@@ -529,10 +621,10 @@ function _hrShowEmpMatrix(idx){
   }).join('');
 
   detail.innerHTML=`
-    <div style="padding:16px 20px;border-bottom:1px solid #e5e7eb;background:${e.category==='Staff'?'#eff6ff':'#f0fdf4'};display:flex;justify-content:space-between;align-items:center;gap:12px">
+    <div style="padding:16px 20px;border-bottom:1px solid #e5e7eb;background:${hrCatColor(e.category)[2]};display:flex;justify-content:space-between;align-items:center;gap:12px">
       <div>
         <div style="font-weight:700;font-size:15px;color:#0d2f6e">${esc(e.name)}</div>
-        <div style="font-size:11.5px;color:#64748b;margin-top:2px">${esc(e.designation)} &nbsp;·&nbsp; <span style="font-family:monospace">${esc(e.empCode)}</span> &nbsp;·&nbsp; ${hrCatLabel(e.category)}</div>
+        <div style="font-size:11.5px;color:#64748b;margin-top:2px">${esc(e.designation)} &nbsp;·&nbsp; <span style="font-family:monospace">${esc(e.empCode)}</span> &nbsp;·&nbsp; ${esc(hrCatLabel(e.category))}${hrIsContract(e)?` &nbsp;·&nbsp; <b style="color:#9a3412">Contract${e.contractor?' — '+esc(e.contractor):''}</b>`:''}</div>
       </div>
       <div style="display:flex;gap:8px;align-items:center">
         ${gaps.length
@@ -590,11 +682,11 @@ async function hrPrintOneMatrix(empId){
     </tr>`;
   }).join('');
 
-  const docNum=e.category==='Staff'?'VRA-HR-002':'VRA-HR-005';
+  const docNum=hrCatDoc(e.category);
   const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Skill Matrix — ${esc(e.name)}</title>
   <style>${hrPrintCSS()}</style></head><body>
   ${hrPrintHeader(docNum,'Current','Employee Skill Matrix',`${esc(e.name)} — ${esc(e.designation)} (${esc(e.empCode)})`,today)}
-  <h2>${esc(e.name)} — ${e.category==='Staff'?'White Collar':'Blue Collar'}</h2>
+  <h2>${esc(e.name)} — ${esc(hrCatLabel(e.category))}${hrIsContract(e)?' (Contract)':''}</h2>
   <table class="data">
     <thead><tr>
       <th>#</th><th>Skill / Competency</th><th style="width:80px;text-align:center">Score</th><th>Status</th><th style="width:70px;text-align:center">Gap</th>
@@ -646,10 +738,8 @@ async function hrPrintAllMatrix(){
     </div>`;
   }
 
-  const staffEmps=emps.filter(e=>e.category==='Staff');
-  const workerEmps=emps.filter(e=>e.category==='Worker');
-  const staffSkills=skills.filter(s=>s.category==='Staff');
-  const workerSkills=skills.filter(s=>s.category==='Worker');
+  await hrLoadMasters();
+  const cats=hrCats().filter(c=>emps.some(e=>e.category===c.key));
 
   const printCSS=hrPrintCSS().replace('@page{size:A4;','@page{size:A4 landscape;');
   _hrOpenPrintWindow(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Skill Matrix Register</title>
@@ -659,12 +749,11 @@ async function hrPrintAllMatrix(){
   table.sm td{padding:4px 6px;border:1px solid #ccc;vertical-align:middle}
   table.sm tr:nth-child(even) td{background:#f7f7f7}
   </style></head><body>
-  ${hrPrintHeader('VRA-HR-002 / VRA-HR-005','Current','Skill Matrix Register','White Collar &amp; Blue Collar',today)}
+  ${hrPrintHeader([...new Set(cats.map(c=>hrCatDoc(c.key)))].join(' / ')||'VRA-HR-002','Current','Skill Matrix Register',cats.map(c=>esc(c.label)).join(' &amp; '),today)}
   <div style="margin-bottom:8px;font-size:7.5pt;color:#555;border:1px solid #d1d5db;padding:4px 10px;display:inline-block">
     <strong>Legend:</strong> &nbsp;— = Not Assessed &nbsp;|&nbsp; 0 = Training Needed &nbsp;|&nbsp; 1 = Can Perform &nbsp;|&nbsp; 2 = Expert &nbsp;|&nbsp; N/R = Not Required
   </div>
-  ${matTable('White Collar — Skill Matrix','VRA-HR-002',staffEmps,staffSkills)}
-  ${matTable('Blue Collar — Skill Matrix','VRA-HR-005',workerEmps,workerSkills)}
+  ${cats.map(c=>matTable(`${esc(c.label)} — Skill Matrix`,hrCatDoc(c.key),emps.filter(e=>e.category===c.key),skills.filter(s=>s.category===c.key))).join('')}
   </td></tr></tbody></table>
   <script>window.onload=()=>window.print()<\/script></body></html>`);
 }
