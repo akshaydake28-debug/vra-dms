@@ -142,6 +142,7 @@ PUBLIC_PATHS = {'/api/auth/login'}
 # own token and never expose data beyond that one record.
 PUBLIC_PREFIXES = ('/api/public/feedback/',)
 BACKUP_API_TOKEN = os.environ.get('BACKUP_API_TOKEN')
+BACKUP_FORMAT = 2   # see backup() / _restore_data()
 HASH_PREFIXES = ('pbkdf2:', 'scrypt:', 'argon2:')
 # APPROVER is this app's admin-equivalent role — it's what the frontend
 # already gates the Users management screen on (see nav-users in index.html).
@@ -466,13 +467,16 @@ def backup():
         'exportedAt': str(datetime.utcnow()),
         'exportedBy': 'System',
         'appVersion': '4.0',
+        # 2 = complete snapshot that keeps every record's id; restore() then
+        # puts the database back exactly as it was (see restore()).
+        'backupFormat': BACKUP_FORMAT,
         'documents': [],
         'versions': [],
         'audit': [],
         'users': [],
     }
     backup_errors = []
-    for d in Document.query.all():
+    for d in Document.query.order_by(Document.id).all():
         try:
             extra = json.loads(d.extra) if d.extra else {}
         except (TypeError, ValueError):
@@ -490,10 +494,10 @@ def backup():
             'user':l.user,'notes':l.notes,'timestamp':str(l.timestamp)})
     for u in User.query.all():
         data['users'].append({'id':u.id,'username':u.username,'role':u.role,'name':u.name})
-    data['rm_lots'] = [{k:v for k,v in l.to_dict().items() if k != 'id'} for l in RMLot.query.all()]
+    data['rm_lots'] = [l.to_dict() for l in RMLot.query.order_by(RMLot.id).all()]
     # All generic modules
     modules = {}
-    for r in GenericRecord.query.all():
+    for r in GenericRecord.query.order_by(GenericRecord.id).all():
         try:
             parsed = json.loads(r.data)
         except (TypeError, ValueError):
@@ -533,71 +537,151 @@ def restore():
     if data.get('settings') is not None and not isinstance(data['settings'], dict):
         return jsonify({'error':'Invalid backup: "settings" must be an object'}), 400
     for key, value in data.items():
-        if key in ('exportedAt','exportedBy','appVersion','company','documents','versions',
+        if key in ('exportedAt','exportedBy','appVersion','company','documents',
                    'audit','users','customDocTypes','settings','records','backupErrors'):
             continue
         if isinstance(value, list) and not all(isinstance(x, dict) for x in value):
             return jsonify({'error':f'Invalid backup: "{key}" must be a list of objects'}), 400
 
-    # Documents — clear all and restore fresh, but only if the file actually
-    # contains a documents list; a file without one must not wipe them.
+    try:
+        result = _restore_data(data)
+    except Exception as e:
+        # Everything happens in one transaction: on any error nothing is
+        # changed, and the database stays exactly as it was before.
+        db.session.rollback()
+        return jsonify({'error': f'Restore failed — nothing was changed. ({e})'}), 500
+    return jsonify(result)
+
+def _valid_id(v):
+    return v if isinstance(v, int) and not isinstance(v, bool) and v > 0 else None
+
+def _reset_id_sequences(*models):
+    """Rows restored with their original ids don't advance Postgres' id
+    counter; move it past the highest id so the next new record can't
+    collide. SQLite needs nothing (it always uses max(id)+1).
+    The counter only ever moves forward: it isn't undone by a rollback, so
+    lowering it during a restore that then fails would leave it below the
+    ids still in the table."""
+    if db.engine.dialect.name != 'postgresql':
+        return
+    for m in models:
+        t = m.__table__.name
+        seq = f"pg_get_serial_sequence('\"{t}\"', 'id')"
+        db.session.execute(db.text(
+            f"SELECT setval({seq}, GREATEST(COALESCE((SELECT MAX(id) FROM \"{t}\"), 0) + 1, nextval({seq})), false)"))
+
+def _restore_data(data):
+    """Records point at each other by id (an invoice at its supplier, a
+    shift entry or dispatch at its part, a PFMEA row at its part, a skill
+    at its documents), so every restored row keeps its original id.
+
+    A complete backup (backupFormat >= 2) is a snapshot: the database is put
+    back exactly as it was — modules that were empty at backup time end up
+    empty, and settings take the backed-up values. Older files keep the
+    previous, cautious behaviour: only what the file contains is replaced.
+    """
+    fmt = data.get('backupFormat')
+    full = isinstance(fmt, int) and not isinstance(fmt, bool) and fmt >= 2
+    keep_ids, renumber = [], []      # (row, wanted id) / rows that get a new id
+
+    def place(row, wanted, taken):
+        wanted = _valid_id(wanted)
+        if wanted and wanted not in taken:
+            row.id = wanted
+            taken.add(wanted)
+            keep_ids.append(row)
+        else:
+            renumber.append(row)
+
+    # Documents — replaced only if the file actually contains a documents
+    # list; a file without one must not wipe them.
+    docs_in = data.get('documents')
     doc_count = 0
     if docs_in is not None:
         Document.query.delete()
-    for d in (docs_in or []):
-        doc = Document(
-            doc_number=d.get('docNumber'), title=d.get('title'),
-            doc_type=d.get('docType'), revision=d.get('revision'),
-            status=d.get('status'), content=d.get('content',''),
-            created_by=d.get('createdBy',''), approved_by=d.get('approvedBy',''),
-            created_date=d.get('createdDate',''), approved_date=d.get('approvedDate',''),
-            extra=json.dumps(d.get('extra',{}))
-        )
-        db.session.add(doc)
-        doc_count += 1
+        taken = set()
+        for d in docs_in:
+            place(Document(
+                doc_number=d.get('docNumber'), title=d.get('title'),
+                doc_type=d.get('docType'), revision=d.get('revision'),
+                status=d.get('status'), content=d.get('content',''),
+                created_by=d.get('createdBy',''), approved_by=d.get('approvedBy',''),
+                created_date=d.get('createdDate',''), approved_date=d.get('approvedDate',''),
+                extra=json.dumps(d.get('extra',{}))
+            ), d.get('id'), taken)
+            doc_count += 1
 
-    # Settings
-    for key, value in data.get('settings',{}).items():
-        if not GenericRecord.query.filter_by(module='setting_'+key).first():
-            db.session.add(GenericRecord(module='setting_'+key, data=json.dumps(value)))
+    # Module records
+    skip_keys = {'exportedAt','exportedBy','appVersion','backupFormat','company','documents',
+                 'versions','audit','users','customDocTypes','settings','records','backupErrors','rm_lots'}
+    modules_in = {k: v for k, v in data.items()
+                  if k not in skip_keys and isinstance(v, list) and (v or full)}
+    if 'versions' in data and isinstance(data['versions'], list) and (data['versions'] or full):
+        modules_in['versions'] = data['versions']   # document versions are module records too
+    settings_in = data.get('settings') or {}
+    if data.get('customDocTypes') and 'customDocTypes' not in settings_in:
+        settings_in = {**settings_in, 'customDocTypes': data['customDocTypes']}
 
-    # All array-type module data
-    skip_keys = {'exportedAt','exportedBy','appVersion','company','documents',
-                 'versions','audit','users','customDocTypes','settings','records','backupErrors'}
+    kept_settings = {}
+    if full:
+        # Snapshot: clear every module. Settings aren't referenced by id, so
+        # they're taken out and re-added afterwards with fresh ids — that way
+        # they can never sit on an id a restored record needs.
+        for r in GenericRecord.query.filter(GenericRecord.module.startswith('setting_', autoescape=True)).all():
+            key = r.module[len('setting_'):]
+            if key not in settings_in:
+                kept_settings[key] = r.data
+        GenericRecord.query.delete()
+    else:
+        for key in modules_in:
+            GenericRecord.query.filter_by(module=key).delete()
+    db.session.flush()
+    taken = {rid for (rid,) in db.session.query(GenericRecord.id).all()}
+
     module_count = 0
-    for key, value in data.items():
-        if key in skip_keys: continue
-        if not isinstance(value, list): continue
-        if not value: continue
-        # Clear existing records for this module and restore fresh
-        GenericRecord.query.filter_by(module=key).delete()
-        db.session.flush()
-        for rec in value:
+    for key, rows in modules_in.items():
+        for rec in rows:
             nr = {k:v for k,v in rec.items() if k not in ('id','_rid')}
-            db.session.add(GenericRecord(module=key, data=json.dumps(nr)))
+            place(GenericRecord(module=key, data=json.dumps(nr)), rec.get('id'), taken)
             module_count += 1
 
-    # customDocTypes as setting
-    if data.get('customDocTypes'):
-        if not GenericRecord.query.filter_by(module='setting_customDocTypes').first():
-            db.session.add(GenericRecord(module='setting_customDocTypes',
-                data=json.dumps(data['customDocTypes'])))
-
-    # RM Lots
-    if data.get('rm_lots'):
+    # RM lots — replaced only if the file holds them (a complete backup always
+    # does, even when empty).
+    rm_in = data.get('rm_lots')
+    rm_count = 0
+    if isinstance(rm_in, list) and (rm_in or full):
         RMLot.query.delete()
-        for l in data.get('rm_lots',[]):
-            lot = RMLot(
+        taken_lots = set()
+        for l in rm_in:
+            place(RMLot(
                 lot_number=l.get('lotNumber'), date=l.get('date',''),
                 grade=l.get('grade',''), supplier=l.get('supplier',''),
                 invoice=l.get('invoice',''), approved_by=l.get('approvedBy',''),
                 spectro=l.get('spectro',''), bundles=l.get('bundles',1),
                 weight_kg=_to_float(l.get('weightKg'))
-            )
-            db.session.add(lot)
+            ), l.get('id'), taken_lots)
+            rm_count += 1
+
+    # Rows with their original id go in first; then the id counters are moved
+    # past them, and only then do rows needing a new id (and settings) get one.
+    db.session.add_all(keep_ids)
+    db.session.flush()
+    _reset_id_sequences(Document, GenericRecord, RMLot)
+    db.session.add_all(renumber)
+
+    for key, value in settings_in.items():
+        # Older files only fill in settings that don't exist yet (unchanged behaviour)
+        if full or not GenericRecord.query.filter_by(module='setting_'+key).first():
+            db.session.add(GenericRecord(module='setting_'+key, data=json.dumps(value)))
+    for key, raw in kept_settings.items():
+        db.session.add(GenericRecord(module='setting_'+key, data=raw))
 
     db.session.commit()
-    return jsonify({'ok':True,'documents':doc_count,'records':module_count})
+    result = {'ok': True, 'complete': full, 'documents': doc_count,
+              'records': module_count, 'rmLots': rm_count, 'renumbered': len(renumber)}
+    if data.get('backupErrors'):
+        result['backupErrors'] = len(data['backupErrors'])
+    return result
 
 
 # ══════════════════════════════════════════════════════
