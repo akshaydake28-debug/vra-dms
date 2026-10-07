@@ -227,8 +227,9 @@ select.fc{cursor:pointer}
     <a class="sl-item" data-view="create" onclick="nav('create')"><span class="ic">➕</span>New Document</a>
     <div class="sl-sec">Workflow</div>
     <a class="sl-item" id="nav-approvals" data-view="approvals" onclick="nav('approvals')"><span class="ic">✅</span>Approvals<span class="pc" id="pcount" style="display:none">0</span></a>
-    <a class="sl-item" data-view="tasks" onclick="nav('tasks')"><span class="ic">📌</span>Task Manager<span class="pc" id="taskcount" style="display:none">0</span></a>
     <a class="sl-item" data-view="audit" onclick="nav('audit')"><span class="ic">🔍</span>Audit Trail</a>
+    <div class="sl-sec">Tasks</div>
+    <a class="sl-item" data-view="tasks" onclick="nav('tasks')"><span class="ic">📌</span>Task Manager<span class="pc" id="taskcount" style="display:none">0</span></a>
     <div class="sl-sec">Production</div>
     <a class="sl-item" data-view="prod-shifts" onclick="nav('prod-shifts')"><span class="ic">🏭</span>Shift Production</a>
     <a class="sl-item" data-view="prod-fettling" onclick="nav('prod-fettling')"><span class="ic">🔨</span>Fettling</a>
@@ -997,7 +998,7 @@ async function renderDashboard(){
     calDueCount, complaints, qualAlerts, capaOverdue,
     pqParts, pqPfmeaRows, pqCpRows, pqCsRecords,
     calGauges, purVendors, rmLots, mktEnquiries, mktQuotes,
-    hrEmployees, hrTrainings, tasks,
+    hrEmployees, hrTrainings,
   ]=await Promise.all([
     typeof calGetDueSoonCount==='function'?calGetDueSoonCount(30):0,
     _dbCount(db.complaints.toArray()),
@@ -1014,7 +1015,6 @@ async function renderDashboard(){
     _dbCount(db.mktQuotations.toArray()),
     _dbCount(db.hrEmployees.toArray()),
     _dbCount(db.hrTrainings.toArray()),
-    _dbCount(db.tasks.toArray()),
   ]);
 
   const openComplaints=complaints.filter(c=>c.status!=='CLOSED').length;
@@ -1023,9 +1023,6 @@ async function renderDashboard(){
   const pendingQuotes=mktQuotes.filter(q=>q.status==='Submitted').length;
   const today=new Date().toISOString().slice(0,10);
   const upcomingTrainings=hrTrainings.filter(t=>t.date>=today).length;
-  const openTasks=tasks.filter(taskIsOpen);
-  const tasksOverdue=openTasks.filter(taskIsOverdue).length;
-  const myOpenTasks=openTasks.filter(t=>t.owner===Auth.user?.name).length;
   const rmThisMonth=rmLots.filter(l=>(l.date||'').slice(0,7)===today.slice(0,7)).length;
 
   const mCard=(view,icon,title,stats)=>`
@@ -1039,7 +1036,6 @@ async function renderDashboard(){
   setC(`
   ${calDueCount>0?`<div class="alert al-w" style="cursor:pointer" onclick="nav('cal-due')">🔧 ${calDueCount} gauge(s)/instrument(s) are due for calibration within 30 days (or overdue). <b>Click to view →</b></div>`:''}
   ${capaOverdue>0?`<div class="alert al-d" style="cursor:pointer" onclick="nav('capas')">🔄 ${capaOverdue} CAPA action(s) are overdue. <b>Click to view →</b></div>`:''}
-  ${tasksOverdue>0?`<div class="alert al-d" style="cursor:pointer" onclick="window._taskFilter={q:'',status:'overdue',owner:'',mine:false};nav('tasks')">📌 ${tasksOverdue} task(s) are past their deadline. <b>Click to view →</b></div>`:''}
   <div class="sg">
     <div class="sc"><div class="si" style="background:#edf1fb">📄</div><div><div class="sv">${s.total}</div><div class="sl2">Documents</div></div></div>
     <div class="sc"><div class="si" style="background:#dcfce7">✅</div><div><div class="sv" style="color:#16a34a">${s.active}</div><div class="sl2">Active</div></div></div>
@@ -1078,11 +1074,6 @@ async function renderDashboard(){
     ${mCard('hr-employees','👤','HR &amp; Training',[
       {value:hrEmployees.length,label:'Employees'},
       {value:upcomingTrainings,label:'Upcoming Trainings'},
-    ])}
-    ${mCard('tasks','📌','Tasks',[
-      {value:openTasks.length,label:'Open'},
-      {value:tasksOverdue,label:'Overdue',color:tasksOverdue?'#dc2626':undefined},
-      {value:myOpenTasks,label:'Mine'},
     ])}
   </div>
 
