@@ -170,17 +170,18 @@ async function taskRenderList(){
     </div>
     <div class="tw"><table>
       <thead><tr>
-        <th>Task No.</th><th>Task</th><th>Category</th><th>Owner</th><th>Priority</th>
+        <th>Task No.</th><th>Task</th><th>Category</th><th>Owner</th><th>Created By</th><th>Priority</th>
         <th>Deadline</th><th>Status</th><th>Completed On</th><th></th>
       </tr></thead>
       <tbody>${rows.length===0
-        ?`<tr><td colspan="9" style="text-align:center;padding:30px;color:#9ca3af">${all.length?'No tasks match these filters.':'No tasks yet. Click + New Task to add one.'}</td></tr>`
+        ?`<tr><td colspan="10" style="text-align:center;padding:30px;color:#9ca3af">${all.length?'No tasks match these filters.':'No tasks yet. Click + New Task to add one.'}</td></tr>`
         :rows.map(t=>`<tr ${taskIsOverdue(t)?'style="background:#fff7f7"':!taskIsOpen(t)?'style="background:#f9fafb;color:#6b7280"':''}>
           <td class="mono" style="color:var(--navy);font-weight:700;white-space:nowrap">${esc(t.taskNo)}</td>
           <td style="max-width:340px"><strong>${esc(t.title)}</strong>
             ${t.description?`<div class="muted" style="font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(t.description)}</div>`:''}</td>
           <td>${esc(t.category||'—')}</td>
           <td style="white-space:nowrap">${esc(t.owner||'—')}</td>
+          <td style="white-space:nowrap">${esc(t.createdBy||'—')}</td>
           <td>${taskPriorityBadge(t.priority)}</td>
           <td style="white-space:nowrap">${taskDeadlineCell(t)}</td>
           <td>${taskCanEdit(t)?`
@@ -336,9 +337,9 @@ async function taskPrint(){
     @page{size:A4 landscape;margin:10mm}</style></head><body>
     <h2>V R ALUCAST — Open Task List</h2>
     <div class="sub">Printed ${new Date().toLocaleDateString('en-IN')} · ${rows.length} open task(s)</div>
-    <table><thead><tr><th>#</th><th>Task No.</th><th>Task</th><th>Category</th><th>Owner</th><th>Priority</th><th>Deadline</th><th>Status</th></tr></thead><tbody>
+    <table><thead><tr><th>#</th><th>Task No.</th><th>Task</th><th>Category</th><th>Owner</th><th>Created By</th><th>Priority</th><th>Deadline</th><th>Status</th></tr></thead><tbody>
     ${rows.map((t,i)=>`<tr><td>${i+1}</td><td>${esc(t.taskNo)}</td><td><b>${esc(t.title)}</b>${t.description?`<br>${esc(t.description)}`:''}</td>
-      <td>${esc(t.category||'')}</td><td>${esc(t.owner||'')}</td><td>${esc(t.priority||'')}</td>
+      <td>${esc(t.category||'')}</td><td>${esc(t.owner||'')}</td><td>${esc(t.createdBy||'')}</td><td>${esc(t.priority||'')}</td>
       <td class="${taskIsOverdue(t)?'od':''}">${esc(t.deadline||'')}${taskIsOverdue(t)?' (overdue)':''}</td><td>${esc(t.status||'Open')}</td></tr>`).join('')}
     </tbody></table></body></html>`);
   w.document.close(); w.focus(); w.print();
@@ -375,7 +376,9 @@ async function taskShowDigest(auto=false){
   const row=(t,extra)=>`<div onclick="document.getElementById('task-digest-ov').remove();taskOpenForm(${t.id})"
       style="display:flex;gap:8px;align-items:baseline;padding:6px 8px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12.5px">
       <span class="mono" style="color:var(--navy);font-weight:700;white-space:nowrap">${esc(t.taskNo)}</span>
-      <span style="flex:1">${esc(t.title)}</span>
+      <span style="flex:1">${esc(t.title)}${t.createdBy&&t.createdBy!==Auth.user?.name
+        ?`<div class="muted" style="font-size:11px">Assigned by ${esc(t.createdBy)}</div>`
+        :t.createdBy?'<div class="muted" style="font-size:11px">Created by you</div>':''}</span>
       <span class="muted" style="white-space:nowrap">${extra}</span></div>`;
   const section=(icon,title,color,list,extra)=>list.length?`
     <div style="margin-bottom:12px">
@@ -395,7 +398,7 @@ async function taskShowDigest(auto=false){
     ${section('🟠','Due today','#d97706',d.today,t=>esc(t.priority||''))}
     ${section('🟡','Due this week','#a16207',d.week,t=>`${esc(t.deadline)} · ${taskDaysLeft(t.deadline)}d left`)}
     ${hasNews&&d.later?`<div class="muted" style="margin-bottom:12px">+ ${d.later} more open task(s) due later.</div>`:''}
-    ${section('📣','Tasks you assigned that are overdue','#4c1d95',d.chase,t=>`${esc(t.owner||'—')} · ${-taskDaysLeft(t.deadline)}d late`)}
+    ${section('📣','Tasks you assigned that are overdue','#4c1d95',d.chase,t=>`Owner: ${esc(t.owner||'—')} · ${-taskDaysLeft(t.deadline)}d late`)}
     <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px">
       <button class="btn btn-o" onclick="document.getElementById('task-digest-ov').remove()">Close</button>
       <button class="btn btn-p" onclick="document.getElementById('task-digest-ov').remove();window._taskFilter={q:'',status:'active',owner:'',mine:true};nav('tasks')">Open my tasks →</button>
