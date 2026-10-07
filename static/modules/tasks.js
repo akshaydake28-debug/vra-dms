@@ -39,6 +39,16 @@ function taskDeadlineCell(t){
   if(d<=7) return `${esc(t.deadline)} <span class="badge bp">${d}d left</span>`;
   return esc(t.deadline);
 }
+// Completion date, and for Done tasks whether it beat the deadline.
+function taskCompletedCell(t){
+  if(taskIsOpen(t)) return '<span class="muted">—</span>';
+  const on=fmtD(t.completedAt||t.updatedAt);
+  if(!on) return '<span class="muted">—</span>';
+  if(t.status==='Cancelled') return `${esc(on)} <span class="badge bd">Cancelled</span>`;
+  if(!t.deadline) return esc(on);
+  const late=Math.round((new Date(on+'T00:00:00')-new Date(t.deadline+'T00:00:00'))/(1000*60*60*24));
+  return late>0?`${esc(on)} <span class="badge br">Late ${late}d</span>`:`${esc(on)} <span class="badge ba">On time</span>`;
+}
 async function taskNextNo(){
   const all=await db.tasks.toArray().catch(()=>[]);
   const max=all.reduce((m,t)=>{const n=parseInt(String(t.taskNo||'').replace(/\D/g,''),10);return n>m?n:m},0);
@@ -70,7 +80,7 @@ async function updateTaskCount(){
 // ══════════════════════════════════════════════════════
 //  TASK REGISTER
 // ══════════════════════════════════════════════════════
-window._taskFilter=window._taskFilter||{q:'',status:'active',owner:'',mine:false};
+window._taskFilter=window._taskFilter||{q:'',status:'all',owner:'',mine:false};
 
 async function taskRenderList(){
   const all=await db.tasks.toArray().catch(()=>[]);
@@ -83,13 +93,15 @@ async function taskRenderList(){
     overdue:open.filter(taskIsOverdue).length,
     week:open.filter(t=>{const d=taskDaysLeft(t.deadline);return d!==null&&d>=0&&d<=7}).length,
     mine:open.filter(t=>t.owner===me).length,
+    done:all.filter(t=>t.status==='Done').length,
   };
   const owners=[...new Set(all.map(t=>t.owner).filter(Boolean))].sort();
 
   let rows=all.filter(t=>{
     if(f.status==='active'&&!taskIsOpen(t)) return false;
     if(f.status==='overdue'&&!taskIsOverdue(t)) return false;
-    if(!['active','overdue','all'].includes(f.status)&&(t.status||'Open')!==f.status) return false;
+    if(f.status==='closed'&&taskIsOpen(t)) return false;
+    if(!['active','overdue','closed','all'].includes(f.status)&&(t.status||'Open')!==f.status) return false;
     if(f.owner&&t.owner!==f.owner) return false;
     if(f.mine&&t.owner!==me) return false;
     if(f.q){
@@ -98,12 +110,14 @@ async function taskRenderList(){
     }
     return true;
   });
-  // Open tasks first, then by deadline (no deadline last), then priority.
+  // Open tasks first by deadline (no deadline last) then priority;
+  // completed/cancelled tasks after them, most recently closed first.
   const pr={High:0,Medium:1,Low:2};
   rows.sort((a,b)=>
     (taskIsOpen(b)-taskIsOpen(a)) ||
-    (a.deadline||'9999').localeCompare(b.deadline||'9999') ||
-    ((pr[a.priority]??1)-(pr[b.priority]??1)));
+    (taskIsOpen(a)
+      ? (a.deadline||'9999').localeCompare(b.deadline||'9999') || ((pr[a.priority]??1)-(pr[b.priority]??1))
+      : (b.completedAt||b.updatedAt||'').localeCompare(a.completedAt||a.updatedAt||'')));
 
   const tile=(icon,bg,value,label,color,status)=>`
     <div class="sc" style="cursor:pointer" onclick="taskSetFilter('status','${status}')">
@@ -119,11 +133,12 @@ async function taskRenderList(){
       <button class="btn btn-o" onclick="taskPrint()">🖨️ Print List</button>
     </div>
   </div>
-  <div class="sg" style="grid-template-columns:repeat(5,1fr)">
+  <div class="sg" style="grid-template-columns:repeat(6,1fr)">
     ${tile('📌','#edf1fb',stats.open,'Open Tasks','','active')}
     ${tile('⚙️','#ede9fe',stats.inProg,'In Progress','#4c1d95','In Progress')}
     ${tile('⏰','#fee2e2',stats.overdue,'Overdue',stats.overdue?'#dc2626':'','overdue')}
     ${tile('📅','#fef3c7',stats.week,'Due in 7 days',stats.week?'#d97706':'','active')}
+    ${tile('✔️','#dcfce7',stats.done,'Completed','#16a34a','Done')}
     <div class="sc" style="cursor:pointer" onclick="taskSetFilter('mine',${!f.mine})">
       <div class="si" style="background:#dcfce7">👤</div>
       <div><div class="sv" style="color:#16a34a">${stats.mine}</div><div class="sl2">${f.mine?'Showing my tasks':'My open tasks'}</div></div>
@@ -136,7 +151,7 @@ async function taskRenderList(){
         <input class="fc" style="width:200px;padding:5px 9px" placeholder="🔍 Search…" value="${esc(f.q)}"
           oninput="window._taskFilter.q=this.value;clearTimeout(window._taskQT);window._taskQT=setTimeout(()=>taskRenderList().then(()=>{const i=document.querySelector('#content input.fc');if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length)}}),250)">
         <select class="fc" style="width:150px;padding:5px 9px" onchange="taskSetFilter('status',this.value)">
-          ${[['active','All open'],['overdue','Overdue'],...TASK_STATUSES.map(s=>[s,s]),['all','All (incl. closed)']]
+          ${[['all','All tasks'],['active','Open only'],['overdue','Overdue'],['closed','Completed / Cancelled'],...TASK_STATUSES.map(s=>[s,s])]
             .map(([v,l])=>`<option value="${esc(v)}" ${f.status===v?'selected':''}>${esc(l)}</option>`).join('')}
         </select>
         <select class="fc" style="width:160px;padding:5px 9px" onchange="taskSetFilter('owner',this.value)">
@@ -150,11 +165,11 @@ async function taskRenderList(){
     <div class="tw"><table>
       <thead><tr>
         <th>Task No.</th><th>Task</th><th>Category</th><th>Owner</th><th>Priority</th>
-        <th>Deadline</th><th>Status</th><th></th>
+        <th>Deadline</th><th>Status</th><th>Completed On</th><th></th>
       </tr></thead>
       <tbody>${rows.length===0
-        ?`<tr><td colspan="8" style="text-align:center;padding:30px;color:#9ca3af">${all.length?'No tasks match these filters.':'No tasks yet. Click + New Task to add one.'}</td></tr>`
-        :rows.map(t=>`<tr ${taskIsOverdue(t)?'style="background:#fff7f7"':''}>
+        ?`<tr><td colspan="9" style="text-align:center;padding:30px;color:#9ca3af">${all.length?'No tasks match these filters.':'No tasks yet. Click + New Task to add one.'}</td></tr>`
+        :rows.map(t=>`<tr ${taskIsOverdue(t)?'style="background:#fff7f7"':!taskIsOpen(t)?'style="background:#f9fafb;color:#6b7280"':''}>
           <td class="mono" style="color:var(--navy);font-weight:700;white-space:nowrap">${esc(t.taskNo)}</td>
           <td style="max-width:340px"><strong>${esc(t.title)}</strong>
             ${t.description?`<div class="muted" style="font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(t.description)}</div>`:''}</td>
@@ -167,6 +182,7 @@ async function taskRenderList(){
               ${TASK_STATUSES.map(s=>`<option ${(t.status||'Open')===s?'selected':''}>${s}</option>`).join('')}
             </select>
           </td>
+          <td style="white-space:nowrap">${taskCompletedCell(t)}</td>
           <td style="white-space:nowrap">
             <button class="btn btn-o btn-xs" onclick="taskOpenForm(${t.id})">✏️</button>
             <button class="btn btn-r btn-xs" onclick="taskDelete(${t.id})">🗑️</button>
