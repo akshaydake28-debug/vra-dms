@@ -583,8 +583,8 @@ AREA_INFO = {
     '_documents': 'Documents — registry (SOPs, WIs, formats…: number, title, type, revision, status)',
     '_audit': 'Audit trail — recent actions by users', '_users': 'Users — names and roles',
 }
-# wa*: WhatsApp contacts, chat sessions and document links (phone numbers, chat history)
-HIDDEN_AREAS = {'qms2_images', 'waContacts', 'waSessions', 'waDocLinks'}
+# wa*: WhatsApp contacts, chat sessions, document links and settings (phone numbers, chat history)
+HIDDEN_AREAS = {'qms2_images', 'waContacts', 'waSessions', 'waDocLinks', 'waConfig'}
 SECRET_KEY = re.compile(r'pass(word)?|token|secret|api_?key|hash', re.I)
 TAG = re.compile(r'<[^>]+>')
 
@@ -611,7 +611,9 @@ def clean(v, depth=0):
 def areas(ctx):
     names = [m['module'] for m in ctx['load']('_modules')]
     out = [n for n in names if not n.startswith('setting_') and n not in HIDDEN_AREAS]
-    return out + ['_rm_lots', '_documents', '_audit', '_users']
+    out += ['_rm_lots', '_documents', '_audit', '_users']
+    ok = ctx.get('area_ok')         # set by the WhatsApp agent to hide areas the admin switched off
+    return [n for n in out if ok(n)] if ok else out
 
 
 def resolve_area(ctx, area):
@@ -895,10 +897,10 @@ def _parts(m):
 
 
 def answer(messages, load, key=None, model=None, call=None, lister=None, sleep=time.sleep,
-           extra_tools=None, extra_required=None, extra_prompt='', ctx_extra=None, can_write=False):
+           extra_tools=None, extra_required=None, extra_prompt='', ctx_extra=None, can_write=False, base_tools=None):
     """messages: [{'role': 'user'|'assistant', 'text': str, 'media': [{'mime', 'data' (base64)}]}], oldest first.
     extra_tools / extra_required add tools (e.g. the WhatsApp agent's draft tools; pass can_write=True when they write);
-    extra_prompt is appended to the system prompt; ctx_extra is merged into the ctx every tool gets.
+    base_tools replaces the built-in TOOLS (to offer only some of them); extra_prompt is appended to the system prompt; ctx_extra is merged into the ctx every tool gets.
     Returns (reply, tools_used)."""
     key = key or os.environ.get('GEMINI_API_KEY', '').strip()
     if not key:
@@ -910,7 +912,7 @@ def answer(messages, load, key=None, model=None, call=None, lister=None, sleep=t
     busy, fell_back = 0, False
     ctx = build_ctx(load)
     ctx.update(ctx_extra or {})
-    tools = dict(TOOLS, **(extra_tools or {}))
+    tools = dict(TOOLS if base_tools is None else base_tools, **(extra_tools or {}))
     required = dict(REQUIRED, **(extra_required or {}))
     contents = [{'role': 'model' if m.get('role') == 'assistant' else 'user', 'parts': _parts(m)}
                 for m in messages[-12:] if _parts(m)]

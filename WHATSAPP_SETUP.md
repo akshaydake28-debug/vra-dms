@@ -49,7 +49,18 @@ In VRA DMS, open **Users → 💬 WhatsApp Agent** (approvers only) and add each
 
 Messages from numbers not on this list are refused.
 
-> Any registered number can ask anything the assistant can read (HR, purchasing and so on). Register only staff who should have that access.
+## 5. Choose what can be seen on WhatsApp
+
+On the same card, **What can be seen on WhatsApp** lists the data areas. Untick an area to keep it off WhatsApp; the software itself is not affected. The setting applies to every number.
+
+| Default on | Default off |
+|---|---|
+| Production · Quality · Process quality · Calibration · Documents · Task Manager | HR · Marketing (enquiries, quotations, customer feedback) · Purchasing · Audit trail · **Customer names & details** |
+
+- **How it's enforced:** unticked areas are removed before the AI sees any data, so it can't reveal them even if asked cleverly. It replies "not available on WhatsApp" instead.
+- **Customer names & details:** with this off, customer fields are removed from parts, dispatch and complaint records. Questions like "production by customer" are refused. Dispatches entered on WhatsApp still save the customer in the software.
+- **New areas:** a data area added to the software later stays hidden on WhatsApp until it's added to one of these groups in `whatsapp.py`.
+- **Limit:** free text inside allowed records or documents (for example a complaint description that names a customer) can't be filtered out.
 
 ## Notes
 

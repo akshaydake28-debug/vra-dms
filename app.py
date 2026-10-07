@@ -741,8 +741,8 @@ import html
 import threading
 import whatsapp
 
-WA_CONTACTS, WA_SESSIONS, WA_LINKS = whatsapp.CONTACTS, whatsapp.SESSIONS, whatsapp.LINKS
-WA_MODULES = {WA_CONTACTS, WA_SESSIONS, WA_LINKS}
+WA_CONTACTS, WA_SESSIONS, WA_LINKS, WA_CONFIG = whatsapp.CONTACTS, whatsapp.SESSIONS, whatsapp.LINKS, whatsapp.CONFIG
+WA_MODULES = {WA_CONTACTS, WA_SESSIONS, WA_LINKS, WA_CONFIG}
 WA_TRANSIENT = {WA_SESSIONS, WA_LINKS}
 
 def wa_module_denied():
@@ -752,6 +752,12 @@ def _whatsapp_enabled():
     # Switched off by default; set WHATSAPP_ENABLED=1 in Railway (plus the WHATSAPP_* keys) to turn it on.
     return (os.environ.get('WHATSAPP_ENABLED', '').strip().lower() in ('1', 'true', 'yes', 'on')
             and whatsapp.config_status()['configured'])
+
+def _wa_access():
+    """Which data groups WhatsApp may read (whatsapp.ACCESS_GROUPS), as saved by an admin."""
+    r = GenericRecord.query.filter_by(module=WA_CONFIG).first()
+    saved = safe_json_loads(r.data, {}).get('access', {}) if r else {}
+    return dict(whatsapp.access_defaults(), **{k: bool(v) for k, v in saved.items() if k in whatsapp.ACCESS_GROUPS})
 
 def _wa_contacts():
     return [(r, safe_json_loads(r.data, {})) for r in GenericRecord.query.filter_by(module=WA_CONTACTS).all()]
@@ -789,6 +795,9 @@ class WaStore:
 
     def loader(self):
         return _assistant_loader()
+
+    def access(self):
+        return _wa_access()
 
     def doc_link(self, doc_id, phone, hours):
         now = datetime.utcnow()
@@ -893,6 +902,28 @@ def whatsapp_status():
     if err: return err
     st = whatsapp.config_status()
     return jsonify(dict(st, enabled=_whatsapp_enabled(), webhookUrl=_public_base_url().rstrip('/') + '/api/whatsapp/webhook'))
+
+@app.route('/api/whatsapp/access', methods=['GET'])
+def whatsapp_get_access():
+    err = require_admin()
+    if err: return err
+    return jsonify({'access': _wa_access(),
+                    'groups': [{'key': k, 'label': v[0]} for k, v in whatsapp.ACCESS_GROUPS.items()]})
+
+@app.route('/api/whatsapp/access', methods=['POST'])
+def whatsapp_save_access():
+    err = require_admin()
+    if err: return err
+    b = (request.get_json(silent=True) or {}).get('access') or {}
+    access = dict(_wa_access(), **{k: bool(v) for k, v in b.items() if k in whatsapp.ACCESS_GROUPS})
+    r = GenericRecord.query.filter_by(module=WA_CONFIG).first()
+    data = json.dumps({'access': access, 'updatedBy': _current_user_name() or '', 'updatedAt': datetime.utcnow().isoformat()})
+    if r:
+        r.data, r.updated_at = data, datetime.utcnow()
+    else:
+        db.session.add(GenericRecord(module=WA_CONFIG, data=data))
+    db.session.commit()
+    return jsonify({'access': access})
 
 @app.route('/api/whatsapp/contacts', methods=['GET'])
 def whatsapp_contacts():

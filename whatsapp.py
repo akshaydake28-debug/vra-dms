@@ -31,7 +31,7 @@ from datetime import date, datetime, timedelta
 import assistant as A
 
 GRAPH = 'https://graph.facebook.com/v21.0'
-CONTACTS, SESSIONS, LINKS = 'waContacts', 'waSessions', 'waDocLinks'
+CONTACTS, SESSIONS, LINKS, CONFIG = 'waContacts', 'waSessions', 'waDocLinks', 'waConfig'
 PENDING_HOURS = 6           # an unconfirmed draft is dropped after this
 LINK_HOURS = 24             # document links expire after this
 HISTORY = 10                # chat turns kept for context
@@ -423,11 +423,14 @@ def t_draft_dispatch(ctx, date=None, part_number=None, qty=None, customer=None, 
         return {'error': str(e)}
     if not n:
         return {'error': 'dispatch quantity missing'}
-    rec = {'date': d, 'partId': part['id'], 'qty': n, 'customer': str(customer or part.get('customer') or '').strip(),
+    # The record always gets the part's customer (from the unfiltered master), even when
+    # customer details are hidden on WhatsApp — the summary then shows it only if the user typed it.
+    raw = next((p for p in ctx['wa'].get('raw_load', lambda m: [])('prodParts') if A._key(p.get('id')) == A._key(part['id'])), part)
+    rec = {'date': d, 'partId': part['id'], 'qty': n, 'customer': str(customer or raw.get('customer') or '').strip(),
            'invoice': str(invoice or '').strip(), 'remark': str(remark or '').strip(), 'source': 'WhatsApp',
            'createdBy': ctx['wa']['contact'].get('name', '')}
     summary = (f"🚚 *Dispatch — {pretty_date(d)}*\n• *{part.get('partNumber')}*: {_fmt(n)} pcs"
-               + (f" to {rec['customer']}" if rec['customer'] else '')
+               + (f" to {rec['customer']}" if rec['customer'] and (customer or ctx['wa'].get('show_customers', True)) else '')
                + (f"\nInvoice / challan: {rec['invoice']}" if rec['invoice'] else '')
                + (f"\nRemark: {rec['remark']}" if rec['remark'] else ''))
     return _stage(ctx, {'kind': 'dispatch', 'module': 'prodDispatch', 'record': rec, 'summary': summary})
@@ -493,7 +496,92 @@ WRITE_REQUIRED = {'draft_shift_entry': ['date', 'shift', 'machine'], 'draft_fett
                   'draft_dispatch': ['date', 'part_number', 'qty']}
 
 
-def wa_prompt(contact, pending):
+# ══════════════════════════════════════════════════════
+#  WHAT WHATSAPP MAY READ — admin switches groups on/off (Users → WhatsApp)
+#  Enforced in the data loader, so every lookup (specific or generic) only
+#  ever sees allowed areas; data in an area not listed here is never shown.
+# ══════════════════════════════════════════════════════
+ACCESS_GROUPS = {   # key: (label, default on, data areas, area name prefixes, lookups that need it)
+    'production': ('Production — output, rejection, downtime, fettling, dispatch, stock, RM lots', True,
+                   {'_rm_lots'}, ('prod',),
+                   {'production_summary', 'rejection_analysis', 'downtime_analysis', 'material_consumption',
+                    'stock_status', 'capacity_status', 'master_data'}),
+    'quality': ('Quality — CAPAs, complaints, quality alerts', True,
+                {'complaints', 'qualAlerts', 'capas', 'capaActions', 'parts'}, (), {'quality_records'}),
+    'process': ('Process quality — PFD, PFMEA, control plans, check sheets', True, set(), ('pq_', 'qms'), set()),
+    'calibration': ('Calibration — gauges and due dates', True, set(), ('cal',), {'calibration_due'}),
+    'documents': ('Documents — SOPs, WIs, formats (only approved ones are sent)', True,
+                  {'_documents', 'customDocTypes'}, (), {'pending_approvals', 'read_document', 'share_document'}),
+    'tasks': ('Task Manager', True, {'tasks'}, (), set()),
+    'hr': ('HR — employees, skills, training', False, {'_users'}, ('hr',), set()),
+    'marketing': ('Marketing — enquiries, feasibility, quotations, customer feedback', False,
+                  {'custFeedback'}, ('mkt',), set()),
+    'purchasing': ('Purchasing — suppliers, invoices', False, set(), ('pur',), set()),
+    'audit': ('Audit trail', False, {'_audit'}, (), set()),
+    'customers': ('Customer names & details (in parts, dispatch, complaints…)', False, set(), (), set()),
+}
+CUSTOMER_KEY = re.compile(r'customer|client|buyer|consignee', re.I)
+
+
+def access_defaults():
+    return {k: v[1] for k, v in ACCESS_GROUPS.items()}
+
+
+def area_group(module):
+    for k, (_, _, names, prefixes, _) in ACCESS_GROUPS.items():
+        if module in names or (prefixes and module.startswith(prefixes)):
+            return k
+    return None             # unknown / new areas stay hidden until added to a group
+
+
+def _strip_customers(v):
+    if isinstance(v, dict):
+        return {k: _strip_customers(x) for k, x in v.items() if not CUSTOMER_KEY.search(str(k))}
+    if isinstance(v, list):
+        return [_strip_customers(x) for x in v]
+    return v
+
+
+def restricted_loader(load, access):
+    def allowed(module):
+        g = area_group(module)
+        return bool(g and access.get(g))
+
+    def f(module):
+        if module.startswith('setting_'):
+            return load(module)                      # app settings (e.g. production config), not business data
+        if module == '_modules':
+            return [m for m in load('_modules') if allowed(m['module'])]
+        if not allowed(module):
+            return []
+        rows = load(module)
+        return rows if access.get('customers') else [_strip_customers(r) for r in rows]
+    return f, allowed
+
+
+def allowed_tools(access):
+    blocked = {t for k, v in ACCESS_GROUPS.items() if not access.get(k) for t in v[4]}
+    tools = {n: v for n, v in A.TOOLS.items() if n not in blocked}
+    if not access.get('customers'):
+        def no_customers(fn, check):
+            def run(ctx, **kw):
+                return {'error': 'Customer details are not available on WhatsApp.'} if check(kw) else fn(ctx, **kw)
+            return run
+        for name, check in (('production_summary', lambda kw: kw.get('group_by') == 'customer'),
+                            ('master_data', lambda kw: kw.get('kind') == 'customers')):
+            if name in tools:
+                fn, desc, props = tools[name]
+                tools[name] = (no_customers(fn, check), desc, props)
+    return tools
+
+
+def access_prompt(access):
+    off = [v[0].split(' —')[0] for k, v in ACCESS_GROUPS.items() if not access.get(k)]
+    return ('\nNot available on WhatsApp (the admin switched it off): ' + ', '.join(off)
+            + '. If asked about these, say it is not available on WhatsApp and to check in the software — never guess.') if off else ''
+
+
+def wa_prompt(contact, pending, access=None):
     now = A.now_ist()
     can = bool(contact.get('canEnter'))
     p = f"""You are on WhatsApp with {contact.get('name') or 'a staff member'} from the shop floor. It is now {now.strftime('%H:%M')} IST.
@@ -509,6 +597,7 @@ Recording entries:
 - Drafts made in a turn replace any earlier unconfirmed drafts, so for a correction call the draft tools again for ALL entries with the corrected figures."""
     else:
         p += '\nThis number may only ask questions and request documents; it cannot record entries.'
+    p += access_prompt(access or access_defaults())
     if pending:
         p += '\n\nWaiting for the user to confirm (not saved yet):\n' + '\n\n'.join(x['summary'] for x in pending['items'])
     return p
@@ -574,11 +663,22 @@ def handle_message(msg, store, send=None, confirm=None, llm_call=None, media_loa
         if media or text:
             wa = {'contact': contact, 'drafts': [], 'docs': []}
             can = bool(contact.get('canEnter'))
+            access = dict(access_defaults(), **(store.access() or {}))
+            raw = store.loader()
+            load, area_ok = restricted_loader(raw, access)
+            wa.update(raw_load=raw, show_customers=bool(access.get('customers')))
+            # Entries need the production masters (machines, parts, defect codes) even if production reads are off.
+            if can and not access.get('production'):
+                load = (lambda base: lambda m: raw(m) if m in ('prodMachines', 'prodParts', 'prodDefectCodes',
+                                                               'prodShifts', 'prodFettling') else base(m))(load)
+            read = {n: v for n, v in READ_TOOLS.items() if access.get('documents') or n != 'share_document'}
             try:
-                reply, _ = A.answer(history[-HISTORY:] + [{'role': 'user', 'text': text, 'media': media}], store.loader(),
-                                    call=llm_call, extra_tools=dict(READ_TOOLS, **(WRITE_TOOLS if can else {})),
-                                    extra_required=WRITE_REQUIRED if can else {}, extra_prompt=wa_prompt(contact, pending),
-                                    ctx_extra={'wa': wa}, can_write=can)
+                reply, _ = A.answer(history[-HISTORY:] + [{'role': 'user', 'text': text, 'media': media}], load,
+                                    call=llm_call, base_tools=allowed_tools(access),
+                                    extra_tools=dict(read, **(WRITE_TOOLS if can else {})),
+                                    extra_required=WRITE_REQUIRED if can else {},
+                                    extra_prompt=wa_prompt(contact, pending, access),
+                                    ctx_extra={'wa': wa, 'area_ok': area_ok}, can_write=can)
             except A.AssistantError as e:
                 reply = f'⚠️ {e}'
             if wa['drafts']:

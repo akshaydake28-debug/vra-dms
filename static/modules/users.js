@@ -109,7 +109,7 @@ async function renderUsers() {
 async function renderWhatsApp() {
   const box = document.getElementById('wa-card'); if (!box) return;
   const get = p => fetch(window.location.origin + p).then(r => r.ok ? r.json() : null).catch(() => null);
-  const [st, contacts] = await Promise.all([get('/api/whatsapp/status'), get('/api/whatsapp/contacts')]);
+  const [st, contacts, acc] = await Promise.all([get('/api/whatsapp/status'), get('/api/whatsapp/contacts'), get('/api/whatsapp/access')]);
   const list = contacts || [];
   const state = !st ? '<span class="badge bd">unknown</span>'
     : st.enabled ? '<span class="badge ba">ON</span>'
@@ -137,8 +137,23 @@ async function renderWhatsApp() {
       <div class="fg" style="margin:0"><label class="lbl">WhatsApp number with country code</label><input class="fc" id="wa-p" placeholder="91 98765 43210"></div>
       <label style="font-size:12px;display:flex;gap:5px;align-items:center;height:34px"><input type="checkbox" id="wa-e" checked> Can record entries</label>
       <button class="btn btn-p" onclick="waAddContact()">➕ Add</button>
-    </div></div>`;
+    </div>
+    ${acc ? `<div class="cb" style="border-top:1px solid #e5e7eb">
+      <div style="font-weight:700;font-size:13px;margin-bottom:4px">What can be seen on WhatsApp</div>
+      <div style="font-size:12px;color:#6b7280;margin-bottom:8px">Applies to every number. Unticked areas are never read or shown on WhatsApp — they stay visible in the software as usual.</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:6px 16px">
+        ${acc.groups.map(g => `<label style="font-size:12px;display:flex;gap:6px;align-items:flex-start">
+          <input type="checkbox" ${acc.access[g.key] ? 'checked' : ''} onchange="waSaveAccess('${g.key}',this.checked)"> ${esc(g.label)}</label>`).join('')}
+      </div></div>` : ''}
+    </div>`;
   window._waContacts = list;
+}
+
+async function waSaveAccess(key, on) {
+  const r = await fetch(window.location.origin + '/api/whatsapp/access', {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({access: {[key]: on}})}).catch(() => null);
+  toast(r && r.ok ? 'Saved' : 'Save failed', r && r.ok ? 's' : 'd');
+  if (!r || !r.ok) renderWhatsApp();
 }
 
 async function waPost(body) {
