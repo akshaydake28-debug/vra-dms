@@ -160,8 +160,13 @@ def build_ctx(load):
             'defects': {d.get('code'): d.get('description') or d.get('code') for d in load('prodDefectCodes')}}
 
 
+def now_ist():
+    # The server runs on UTC; the plant (and every date in the data) is IST.
+    return datetime.utcnow() + timedelta(hours=5, minutes=30)
+
+
 def today():
-    return date.today()
+    return now_ist().date()
 
 
 def iso(d):
@@ -578,7 +583,8 @@ AREA_INFO = {
     '_documents': 'Documents — registry (SOPs, WIs, formats…: number, title, type, revision, status)',
     '_audit': 'Audit trail — recent actions by users', '_users': 'Users — names and roles',
 }
-HIDDEN_AREAS = {'qms2_images'}
+# wa*: WhatsApp contacts, chat sessions and document links (phone numbers, chat history)
+HIDDEN_AREAS = {'qms2_images', 'waContacts', 'waSessions', 'waDocLinks'}
 SECRET_KEY = re.compile(r'pass(word)?|token|secret|api_?key|hash', re.I)
 TAG = re.compile(r'<[^>]+>')
 
@@ -785,20 +791,21 @@ TOOLS = {
 REQUIRED = {'search_records': ['area'], 'count_records': ['area'], 'search_everywhere': ['query']}
 
 
-def tool_declarations():
+def tool_declarations(tools=None, required=None):
+    tools, required = tools or TOOLS, required or REQUIRED
     out = []
-    for name, (_, desc, props) in TOOLS.items():
+    for name, (_, desc, props) in tools.items():
         d = {'name': name, 'description': desc}
         if props:
             d['parameters'] = {'type': 'OBJECT', 'properties': props}
-            if name in REQUIRED:
-                d['parameters']['required'] = REQUIRED[name]
+            if name in required:
+                d['parameters']['required'] = required[name]
         out.append(d)
     return out
 
 
-def run_tool(name, args, ctx):
-    fn = TOOLS.get(name, (None,))[0]
+def run_tool(name, args, ctx, tools=None):
+    fn = (tools or TOOLS).get(name, (None,))[0]
     if not fn:
         return {'error': f'unknown tool {name}'}
     try:
@@ -812,7 +819,7 @@ def run_tool(name, args, ctx):
 # ══════════════════════════════════════════════════════
 #  GEMINI
 # ══════════════════════════════════════════════════════
-def system_prompt(ctx):
+def system_prompt(ctx, can_write=False):
     t = today()
     ms = ', '.join(f"{m.get('code')} ({m.get('name') or ''})" for m in ctx['machines'].values()) or 'none set up'
     return f"""You are the assistant inside VRA DMS, the management system of V R Alucast, an aluminium high-pressure die-casting company in India.
@@ -826,7 +833,7 @@ Rules:
 - Be brief: lead with the answer, then a short list or small markdown table if useful. No preamble.
 - For production, rejection, downtime, material, stock, capacity, CAPA/complaints, calibration and approvals use the specific tools (they calculate correctly).
 - For anything else in the software (HR, training, enquiries, quotations, feasibility, suppliers, invoices, gauges, PFMEA, control plans, documents, RM lots, audit trail…) use list_data_areas, then search_records / count_records; use search_everywhere for a name or number when unsure where it lives.
-- You can only read data; you cannot create, change or delete anything. If asked to, explain where in the software the user can do it.
+- {'You can record only the entries your draft tools cover, and only after the user confirms; you cannot change or delete anything else.' if can_write else 'You can only read data; you cannot create, change or delete anything.'} If asked to, explain where in the software the user can do it.
 - Answer only questions about this company's data and the software; politely decline anything else."""
 
 
@@ -874,12 +881,25 @@ BUSY_CODES = (500, 502, 503, 504)
 BUSY_RETRIES = 2          # same model, after 1.5 s and 3 s
 
 
+NO_ANSWER = 'Sorry, I could not produce an answer.'
+
+
 class AssistantError(Exception):
     pass
 
 
-def answer(messages, load, key=None, model=None, call=None, lister=None, sleep=time.sleep):
-    """messages: [{'role': 'user'|'assistant', 'text': str}], oldest first. Returns (reply, tools_used)."""
+def _parts(m):
+    parts = [{'inlineData': {'mimeType': x['mime'], 'data': x['data']}} for x in (m.get('media') or [])]
+    text = str(m.get('text', ''))[:4000]
+    return parts + [{'text': text}] if text.strip() else parts
+
+
+def answer(messages, load, key=None, model=None, call=None, lister=None, sleep=time.sleep,
+           extra_tools=None, extra_required=None, extra_prompt='', ctx_extra=None, can_write=False):
+    """messages: [{'role': 'user'|'assistant', 'text': str, 'media': [{'mime', 'data' (base64)}]}], oldest first.
+    extra_tools / extra_required add tools (e.g. the WhatsApp agent's draft tools; pass can_write=True when they write);
+    extra_prompt is appended to the system prompt; ctx_extra is merged into the ctx every tool gets.
+    Returns (reply, tools_used)."""
     key = key or os.environ.get('GEMINI_API_KEY', '').strip()
     if not key:
         raise AssistantError('The assistant is not set up: add GEMINI_API_KEY in Railway → Variables and redeploy.')
@@ -889,10 +909,14 @@ def answer(messages, load, key=None, model=None, call=None, lister=None, sleep=t
     rediscovered = False
     busy, fell_back = 0, False
     ctx = build_ctx(load)
-    contents = [{'role': 'model' if m.get('role') == 'assistant' else 'user', 'parts': [{'text': str(m.get('text', ''))[:4000]}]}
-                for m in messages[-12:] if str(m.get('text', '')).strip()]
-    body = {'systemInstruction': {'parts': [{'text': system_prompt(ctx)}]},
-            'tools': [{'functionDeclarations': tool_declarations()}],
+    ctx.update(ctx_extra or {})
+    tools = dict(TOOLS, **(extra_tools or {}))
+    required = dict(REQUIRED, **(extra_required or {}))
+    contents = [{'role': 'model' if m.get('role') == 'assistant' else 'user', 'parts': _parts(m)}
+                for m in messages[-12:] if _parts(m)]
+    prompt = system_prompt(ctx, can_write=can_write) + ('\n\n' + extra_prompt if extra_prompt else '')
+    body = {'systemInstruction': {'parts': [{'text': prompt}]},
+            'tools': [{'functionDeclarations': tool_declarations(tools, required)}],
             'generationConfig': {'temperature': 0.2}}
     used = []
     rounds = 0
@@ -955,12 +979,12 @@ def answer(messages, load, key=None, model=None, call=None, lister=None, sleep=t
         calls = [p['functionCall'] for p in parts if 'functionCall' in p]
         if not calls:
             text = ''.join(p.get('text', '') for p in parts if not p.get('thought')).strip()
-            return text or 'Sorry, I could not produce an answer.', used
+            return text or NO_ANSWER, used
         contents.append(content)          # keep the model turn as-is (incl. thought signatures)
         replies = []
         for fc in calls:
             name, args = fc.get('name'), fc.get('args') or {}
             used.append({'tool': name, 'args': args})
-            replies.append({'functionResponse': {'name': name, 'response': {'result': run_tool(name, args, ctx)}}})
+            replies.append({'functionResponse': {'name': name, 'response': {'result': run_tool(name, args, ctx, tools)}}})
         contents.append({'role': 'user', 'parts': replies})
     return 'Sorry — that needed too many lookups. Try asking a narrower question.', used

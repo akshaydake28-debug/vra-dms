@@ -91,6 +91,7 @@ async function renderUsers() {
       </div>
     </div>
   </div>
+  <div id="wa-card" style="margin-top:14px"></div>
   ` : `
   <div class="card">
     <div style="padding:20px;text-align:center;color:#6b7280;font-size:13px">
@@ -98,6 +99,73 @@ async function renderUsers() {
     </div>
   </div>`}
   `);
+  if (isApprover) renderWhatsApp();
+}
+
+// ── WhatsApp access (admin) ─────────────────────────
+// Numbers allowed to use the WhatsApp agent. "Can record entries" lets the
+// number save production / fettling / dispatch; without it, questions and
+// documents only. Any registered number can ask anything the assistant reads.
+async function renderWhatsApp() {
+  const box = document.getElementById('wa-card'); if (!box) return;
+  const get = p => fetch(window.location.origin + p).then(r => r.ok ? r.json() : null).catch(() => null);
+  const [st, contacts] = await Promise.all([get('/api/whatsapp/status'), get('/api/whatsapp/contacts')]);
+  const list = contacts || [];
+  const state = !st ? '<span class="badge bd">unknown</span>'
+    : st.enabled ? '<span class="badge ba">ON</span>'
+    : `<span class="badge bd">OFF</span> <span style="font-size:11px;color:#6b7280">${st.missing?.length
+        ? 'Missing in Railway → Variables: ' + esc(st.missing.join(', ')) : 'Set WHATSAPP_ENABLED=1 in Railway to switch on'}</span>`;
+  box.innerHTML = `<div class="card">
+    <div class="ch"><h5>💬 WhatsApp Agent — allowed numbers</h5><div>${state}</div></div>
+    <div class="cb" style="font-size:12px;color:#374151;padding-bottom:0">
+      Floor staff can send production, fettling and dispatch entries, ask questions and get approved documents on WhatsApp.
+      Every entry is shown back to them and saved only after they reply YES.
+      ${st ? `Webhook URL for Meta: <code style="background:#f3f4f6;padding:1px 6px;border-radius:4px">${esc(st.webhookUrl)}</code>` : ''}
+    </div>
+    <div class="tw"><table>
+      <thead><tr><th>Name</th><th>WhatsApp number</th><th>Can record entries</th><th>Active</th><th></th></tr></thead>
+      <tbody>${list.map(c => `<tr>
+        <td style="font-weight:600">${esc(c.name)}</td>
+        <td class="mono">+${esc(c.phone)}</td>
+        <td><input type="checkbox" ${c.canEnter ? 'checked' : ''} onchange="waSaveContact(${c.id},{canEnter:this.checked})"></td>
+        <td><input type="checkbox" ${c.active !== false ? 'checked' : ''} onchange="waSaveContact(${c.id},{active:this.checked})"></td>
+        <td><button class="btn btn-r btn-xs" onclick="waDeleteContact(${c.id})">✕ Remove</button></td>
+      </tr>`).join('') || '<tr><td colspan="5" style="text-align:center;color:#6b7280">No numbers yet — add one below.</td></tr>'}</tbody>
+    </table></div>
+    <div class="cb" style="display:grid;grid-template-columns:1fr 1fr auto auto;gap:10px;align-items:end">
+      <div class="fg" style="margin:0"><label class="lbl">Name (saved as "entered by")</label><input class="fc" id="wa-n" placeholder="e.g. Ramesh (Shift Supervisor)"></div>
+      <div class="fg" style="margin:0"><label class="lbl">WhatsApp number with country code</label><input class="fc" id="wa-p" placeholder="91 98765 43210"></div>
+      <label style="font-size:12px;display:flex;gap:5px;align-items:center;height:34px"><input type="checkbox" id="wa-e" checked> Can record entries</label>
+      <button class="btn btn-p" onclick="waAddContact()">➕ Add</button>
+    </div></div>`;
+  window._waContacts = list;
+}
+
+async function waPost(body) {
+  const r = await fetch(window.location.origin + '/api/whatsapp/contacts', {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}).catch(() => null);
+  const d = r ? await r.json().catch(() => ({})) : {};
+  if (!r || !r.ok) { toast(d.error || 'Save failed', 'd'); return false; }
+  return true;
+}
+
+async function waAddContact() {
+  const name = document.getElementById('wa-n')?.value.trim(), phone = document.getElementById('wa-p')?.value.trim();
+  if (!name || !phone) { toast('Name and number are required', 'd'); return; }
+  if (await waPost({name, phone, canEnter: document.getElementById('wa-e')?.checked})) { toast('Number added', 's'); renderWhatsApp(); }
+}
+
+async function waSaveContact(id, changes) {
+  const c = (window._waContacts || []).find(x => x.id === id); if (!c) return;
+  if (await waPost({...c, ...changes})) toast('Saved', 's');
+  renderWhatsApp();
+}
+
+async function waDeleteContact(id) {
+  const c = (window._waContacts || []).find(x => x.id === id);
+  if (!c || !confirm(`Remove WhatsApp access for ${c.name} (+${c.phone})?`)) return;
+  await fetch(window.location.origin + `/api/whatsapp/contacts/${id}`, {method: 'DELETE'}).catch(() => null);
+  toast('Removed', 's'); renderWhatsApp();
 }
 
 function togglePw(id, pw) {

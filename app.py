@@ -135,7 +135,9 @@ def customer_feedback_page(token):
 #  AUTH
 # ══════════════════════════════════════════════════════
 
-PUBLIC_PATHS = {'/api/auth/login'}
+# The WhatsApp webhook is called by Meta, not a logged-in user; it checks
+# Meta's signature (X-Hub-Signature-256) itself — see whatsapp_webhook().
+PUBLIC_PATHS = {'/api/auth/login', '/api/whatsapp/webhook'}
 # Customer feedback links are opened by people with no VRA-DMS account at
 # all — the unguessable token in the URL is what gates access, not a login
 # session. Everything under this prefix must independently validate its
@@ -494,6 +496,8 @@ def backup():
     # All generic modules
     modules = {}
     for r in GenericRecord.query.all():
+        if r.module in WA_TRANSIENT:
+            continue    # WhatsApp chat history and document links: short-lived, not worth backing up
         try:
             parsed = json.loads(r.data)
         except (TypeError, ValueError):
@@ -724,6 +728,240 @@ def ask_assistant():
         return jsonify({'error': str(e)}), 503
     return jsonify({'reply': reply, 'tools': used})
 
+# ══════════════════════════════════════════════════════
+#  WHATSAPP AGENT — floor staff record production / fettling / dispatch,
+#  ask questions and get documents over WhatsApp (whatsapp.py does the
+#  talking; this is its storage, webhook and admin screens).
+#  Contacts, chat sessions and document links are GenericRecords that the
+#  generic /api/<module> routes refuse to touch — only the admin endpoints
+#  below manage contacts, so nobody can register their own number.
+# ══════════════════════════════════════════════════════
+import hmac
+import html
+import threading
+import whatsapp
+
+WA_CONTACTS, WA_SESSIONS, WA_LINKS = whatsapp.CONTACTS, whatsapp.SESSIONS, whatsapp.LINKS
+WA_MODULES = {WA_CONTACTS, WA_SESSIONS, WA_LINKS}
+WA_TRANSIENT = {WA_SESSIONS, WA_LINKS}
+
+def wa_module_denied():
+    return jsonify({'error': 'Not available'}), 403
+
+def _whatsapp_enabled():
+    # Switched off by default; set WHATSAPP_ENABLED=1 in Railway (plus the WHATSAPP_* keys) to turn it on.
+    return (os.environ.get('WHATSAPP_ENABLED', '').strip().lower() in ('1', 'true', 'yes', 'on')
+            and whatsapp.config_status()['configured'])
+
+def _wa_contacts():
+    return [(r, safe_json_loads(r.data, {})) for r in GenericRecord.query.filter_by(module=WA_CONTACTS).all()]
+
+class WaStore:
+    """Storage for whatsapp.handle_message. lock_session() opens a transaction
+    holding that phone's session row (so one person's messages are handled one
+    at a time, and a double-tapped YES can't save twice); save_session()
+    commits it together with any records commit() added."""
+    def __init__(self):
+        self._row = None
+
+    def contact(self, phone):
+        return next((d for _, d in _wa_contacts()
+                     if whatsapp.normalize_phone(d.get('phone')) == phone and d.get('active', True)), None)
+
+    def lock_session(self, phone):
+        row = next((r for r in GenericRecord.query.filter_by(module=WA_SESSIONS).order_by(GenericRecord.id).all()
+                    if safe_json_loads(r.data, {}).get('phone') == phone), None)
+        if not row:
+            row = GenericRecord(module=WA_SESSIONS, data=json.dumps({'phone': phone}))
+            db.session.add(row)
+            db.session.commit()
+        self._row = GenericRecord.query.filter_by(id=row.id).with_for_update().first()
+        return safe_json_loads(self._row.data, {'phone': phone})
+
+    def release(self):
+        db.session.rollback()
+
+    def save_session(self, phone, data):
+        data['phone'] = phone
+        self._row.data = json.dumps(data)
+        self._row.updated_at = datetime.utcnow()
+        db.session.commit()
+
+    def loader(self):
+        return _assistant_loader()
+
+    def doc_link(self, doc_id, phone, hours):
+        now = datetime.utcnow()
+        for r in GenericRecord.query.filter_by(module=WA_LINKS).all():
+            if safe_json_loads(r.data, {}).get('expires', '') < now.isoformat():
+                db.session.delete(r)
+        token = secrets.token_urlsafe(24)
+        db.session.add(GenericRecord(module=WA_LINKS, data=json.dumps(
+            {'token': token, 'docId': doc_id, 'phone': phone, 'expires': (now + timedelta(hours=hours)).isoformat()})))
+        return token
+
+    def commit(self, items, contact):
+        """Adds the confirmed drafts (committed by save_session). Checks every
+        item first, so either all of them are saved or none is."""
+        load = _assistant_loader()
+        machines = {str(m['id']): m.get('code') for m in load('prodMachines')}
+        for it in items:
+            rec = it['record']
+            if it['kind'] == 'shift' and any(s.get('date') == rec['date'] and str(s.get('shift')) == rec['shift']
+                                             and str(s.get('machineId')) == str(rec['machineId']) for s in load('prodShifts')):
+                raise ValueError(f"{machines.get(str(rec['machineId']))} shift {rec['shift']} on {rec['date']} "
+                                 'was entered by someone else meanwhile')
+        done, now = [], datetime.utcnow()
+        for it in items:
+            rec = dict(it['record'])
+            if it['kind'] == 'fettling':
+                row = next((r for r in GenericRecord.query.filter_by(module='prodFettling').all()
+                            if safe_json_loads(r.data, {}).get('date') == rec['date']), None)
+                if row:
+                    old = safe_json_loads(row.data, {})
+                    old['rows'] = (old.get('rows') or []) + rec['rows']
+                    if rec['remarks']:
+                        old['remarks'] = '; '.join(x for x in (old.get('remarks'), rec['remarks']) if x)
+                    old.update(updatedAt=rec['updatedAt'], updatedBy=rec['updatedBy'])
+                    row.data, row.updated_at = json.dumps(old), now
+                else:
+                    rec.update(createdAt=rec['updatedAt'], createdBy=rec['updatedBy'])
+                    row = GenericRecord(module='prodFettling', data=json.dumps(rec))
+                    db.session.add(row)
+                label = f"fettling {rec['date']} ({len(rec['rows'])} row{'s' if len(rec['rows']) != 1 else ''})"
+            else:
+                row = GenericRecord(module=it['module'], data=json.dumps(rec))
+                db.session.add(row)
+                label = (f"production {machines.get(str(rec['machineId']), '?')} shift {rec['shift']} {rec['date']}"
+                         if it['kind'] == 'shift' else f"dispatch {rec['qty']} pcs {rec['date']}")
+            db.session.flush()
+            db.session.add(AuditLog(action='WHATSAPP_ENTRY', module=it['module'], record_id=row.id,
+                                    user=contact.get('name', ''), detail=it['summary'][:2000],
+                                    notes=f"via WhatsApp {contact.get('phone', '')}"))
+            done.append(label)
+        return done
+
+def _public_base_url():
+    # Set PUBLIC_URL in Railway (e.g. https://vra-dms.up.railway.app) if links come out wrong;
+    # otherwise the webhook's own address is used (Railway terminates HTTPS in front of the app).
+    base = os.environ.get('PUBLIC_URL', '').strip() or request.url_root
+    return base.replace('http://', 'https://', 1) if base.startswith('http://') and 'localhost' not in base else base
+
+def _wa_process(msg, base_url):
+    with app.app_context():
+        try:
+            whatsapp.handle_message(msg, WaStore(), base_url=base_url)
+        except Exception as e:
+            db.session.rollback()
+            print(f'WhatsApp: failed to handle message {msg.get("id")}: {type(e).__name__}: {e}', flush=True)
+            try:
+                whatsapp.send_text(whatsapp.normalize_phone(msg.get('from')),
+                                   'Sorry — something went wrong on our side. Please try again in a minute.')
+            except Exception:
+                pass
+
+@app.route('/api/whatsapp/webhook', methods=['GET'])
+def whatsapp_verify():
+    # Meta calls this once when the webhook URL is set up in the Meta developer console.
+    want = os.environ.get('WHATSAPP_VERIFY_TOKEN', '').strip()
+    got = request.args.get('hub.verify_token', '')
+    if want and request.args.get('hub.mode') == 'subscribe' and hmac.compare_digest(got, want):
+        return request.args.get('hub.challenge', ''), 200, {'Content-Type': 'text/plain'}
+    return 'Forbidden', 403
+
+@app.route('/api/whatsapp/webhook', methods=['POST'])
+def whatsapp_webhook():
+    raw = request.get_data()
+    if not whatsapp.verify_signature(raw, request.headers.get('X-Hub-Signature-256', '')):
+        return 'Bad signature', 403
+    if not _whatsapp_enabled():
+        return 'ok', 200            # acknowledge so Meta doesn't keep retrying
+    try:
+        payload = json.loads(raw.decode() or '{}')
+    except ValueError:
+        return 'ok', 200
+    base = _public_base_url()
+    # Answer Meta at once (it retries anything slower than a few seconds);
+    # the reply is worked out and sent from a background thread.
+    for m in whatsapp.parse_webhook(payload):
+        threading.Thread(target=_wa_process, args=(m, base), daemon=True).start()
+    return 'ok', 200
+
+@app.route('/api/whatsapp/status', methods=['GET'])
+def whatsapp_status():
+    err = require_admin()
+    if err: return err
+    st = whatsapp.config_status()
+    return jsonify(dict(st, enabled=_whatsapp_enabled(), webhookUrl=_public_base_url().rstrip('/') + '/api/whatsapp/webhook'))
+
+@app.route('/api/whatsapp/contacts', methods=['GET'])
+def whatsapp_contacts():
+    err = require_admin()
+    if err: return err
+    return jsonify(sorted([dict(d, id=r.id) for r, d in _wa_contacts()], key=lambda c: str(c.get('name', '')).lower()))
+
+@app.route('/api/whatsapp/contacts', methods=['POST'])
+def whatsapp_save_contact():
+    err = require_admin()
+    if err: return err
+    b = request.get_json(silent=True) or {}
+    phone, name = whatsapp.normalize_phone(b.get('phone')), str(b.get('name', '')).strip()[:100]
+    if not 10 <= len(phone) <= 15:
+        return jsonify({'error': 'Enter the mobile number with country code, e.g. 91 98765 43210'}), 400
+    if not name:
+        return jsonify({'error': 'Name is required'}), 400
+    rid = b.get('id')
+    if any(whatsapp.normalize_phone(d.get('phone')) == phone and r.id != rid for r, d in _wa_contacts()):
+        return jsonify({'error': 'This number is already registered'}), 400
+    data = {'phone': phone, 'name': name, 'canEnter': bool(b.get('canEnter')), 'active': b.get('active', True) is not False,
+            'addedBy': _current_user_name() or '', 'updatedAt': datetime.utcnow().isoformat()}
+    r = GenericRecord.query.get(rid) if rid else None
+    if r and r.module == WA_CONTACTS:
+        r.data, r.updated_at = json.dumps(data), datetime.utcnow()
+    else:
+        r = GenericRecord(module=WA_CONTACTS, data=json.dumps(data))
+        db.session.add(r)
+    db.session.commit()
+    return jsonify({'id': r.id})
+
+@app.route('/api/whatsapp/contacts/<int:rid>', methods=['DELETE'])
+def whatsapp_delete_contact(rid):
+    err = require_admin()
+    if err: return err
+    r = GenericRecord.query.get(rid)
+    if r and r.module == WA_CONTACTS:
+        db.session.delete(r)
+        db.session.commit()
+    return jsonify({'ok': True})
+
+@app.route('/wa/doc/<token>')
+def whatsapp_document(token):
+    # Opened from the WhatsApp link by someone with no login — the unguessable,
+    # expiring token is the access check, and it shows that one document only.
+    link = next((d for d in (safe_json_loads(r.data, {}) for r in GenericRecord.query.filter_by(module=WA_LINKS).all())
+                 if hmac.compare_digest(str(d.get('token', '')), token)), None)
+    doc = Document.query.get(link['docId']) if link and link.get('expires', '') > datetime.utcnow().isoformat() else None
+    if not doc or doc.status != 'ACTIVE':
+        body, code = ('<p style="font:16px sans-serif;padding:24px">This link has expired or the document is no longer '
+                      'active. Ask for it again on WhatsApp.</p>'), 404
+    else:
+        e = lambda v: html.escape(str(v or ''))
+        body, code = f"""<table class="hd"><tr><td><b>V R ALUCAST</b><br>{e(doc.title)}</td>
+<td>Doc No: <b>{e(doc.doc_number)}</b><br>Rev: {e(doc.revision)}<br>Approved: {e(doc.approved_by)} {e(doc.approved_date)}</td></tr></table>
+<div class="ct">{doc.content or ''}</div>
+<p class="ft">Controlled copy shared via WhatsApp on {datetime.utcnow().strftime('%d-%b-%Y')} — printed copies are uncontrolled.</p>""", 200
+    page = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{html.escape(doc.doc_number if doc and code == 200 else 'VRA DMS')}</title><style>
+body{{font:14px/1.5 Arial,sans-serif;color:#111;background:#fff;margin:0;padding:12px;max-width:900px;margin:auto}}
+.hd{{width:100%;border-collapse:collapse;margin-bottom:12px}}.hd td{{border:1px solid #333;padding:6px 8px;vertical-align:top}}
+.ct{{overflow-x:auto}}.ct table{{border-collapse:collapse;max-width:100%}}.ct td,.ct th{{border:1px solid #999;padding:4px 6px}}
+.ct img{{max-width:100%;height:auto}}.ft{{font-size:11px;color:#666;border-top:1px solid #ccc;margin-top:16px;padding-top:6px}}
+</style></head><body>{body}</body></html>"""
+    # Document HTML is authored in the app; no scripts may run on this public page.
+    return page, code, {'Content-Type': 'text/html; charset=utf-8', 'X-Robots-Tag': 'noindex',
+                        'Referrer-Policy': 'no-referrer', 'Cache-Control': 'no-store',
+                        'Content-Security-Policy': "default-src 'none'; img-src data: https:; style-src 'unsafe-inline'"}
+
 # ── Task Manager permissions ──
 # Only a task's owner or its creator may change it (status included) or
 # delete it; anyone logged in can view tasks and create new ones. Checked
@@ -755,11 +993,13 @@ def task_guard(existing, incoming=None):
 
 @app.route('/api/<module>', methods=['GET'])
 def list_generic(module):
+    if module in WA_MODULES: return wa_module_denied()
     records = GenericRecord.query.filter_by(module=module).order_by(GenericRecord.id.desc()).all()
     return jsonify([{'id':r.id,'data':safe_json_loads(r.data, {}),'createdAt':str(r.created_at)} for r in records])
 
 @app.route('/api/<module>', methods=['POST'])
 def save_generic(module):
+    if module in WA_MODULES: return wa_module_denied()
     d = request.json
     # If record has an id, update instead of insert
     existing_id = d.get('id') or d.get('_rid')
@@ -787,11 +1027,13 @@ def save_generic(module):
 def get_generic_one(module, rid):
     r = GenericRecord.query.get(rid)
     if not r: return jsonify(None), 404
+    if WA_MODULES & {module, r.module}: return wa_module_denied()
     return jsonify({'id':r.id,'data':safe_json_loads(r.data, {}),'createdAt':str(r.created_at)})
 
 @app.route('/api/<module>/<int:rid>', methods=['POST'])
 def update_generic_one(module, rid):
     r = GenericRecord.query.get(rid)
+    if WA_MODULES & {module, r.module if r else None}: return wa_module_denied()
     if r:
         if r.module == TASK_MODULE:
             incoming = request.json if isinstance(request.json, dict) else {}
@@ -812,6 +1054,7 @@ def update_generic_one(module, rid):
 @app.route('/api/<module>/<int:rid>', methods=['DELETE'])
 def delete_generic_one(module, rid):
     r = GenericRecord.query.get(rid)
+    if WA_MODULES & {module, r.module if r else None}: return wa_module_denied()
     if r:
         if r.module == TASK_MODULE:
             err = task_guard(r)
