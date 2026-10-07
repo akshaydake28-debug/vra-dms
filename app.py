@@ -724,6 +724,35 @@ def ask_assistant():
         return jsonify({'error': str(e)}), 503
     return jsonify({'reply': reply, 'tools': used})
 
+# ── Task Manager permissions ──
+# Only a task's owner or its creator may change it (status included) or
+# delete it; anyone logged in can view tasks and create new ones. Checked
+# here, not just in the UI, and keyed on the stored record's module so a
+# task can't be changed through some other module's URL.
+TASK_MODULE = 'tasks'
+
+def _current_user_name():
+    u = User.query.get(session.get('user_id')) if session.get('user_id') else None
+    return u.name if u else None
+
+def task_guard(existing, incoming=None):
+    """Return an error response if the current user may not change
+    `existing` (a GenericRecord, or None for a new task). When `incoming`
+    is given, pins createdBy/createdAt so they can't be forged or edited."""
+    me = _current_user_name()
+    if existing is None:
+        if incoming is not None:
+            incoming['createdBy'] = me or incoming.get('createdBy', '')
+        return None
+    old = safe_json_loads(existing.data, {})
+    if not me or me not in (old.get('owner'), old.get('createdBy')):
+        return jsonify({'error': 'Only the task owner or the person who created it can change this task'}), 403
+    if incoming is not None:
+        incoming['createdBy'] = old.get('createdBy', '')
+        if old.get('createdAt'):
+            incoming['createdAt'] = old['createdAt']
+    return None
+
 @app.route('/api/<module>', methods=['GET'])
 def list_generic(module):
     records = GenericRecord.query.filter_by(module=module).order_by(GenericRecord.id.desc()).all()
@@ -738,12 +767,17 @@ def save_generic(module):
         r = GenericRecord.query.get(existing_id)
         if r and r.module == module:
             clean = {k:v for k,v in d.items() if k not in ('id','_rid')}
+            if module == TASK_MODULE:
+                err = task_guard(r, clean)
+                if err: return err
             r.data = json.dumps(clean)
             r.updated_at = datetime.utcnow()
             db.session.commit()
             return jsonify({'id': r.id})
     # New record — insert
     clean = {k:v for k,v in d.items() if k not in ('id','_rid')}
+    if module == TASK_MODULE:
+        task_guard(None, clean)
     r = GenericRecord(module=module, data=json.dumps(clean))
     db.session.add(r)
     db.session.commit()
@@ -759,11 +793,18 @@ def get_generic_one(module, rid):
 def update_generic_one(module, rid):
     r = GenericRecord.query.get(rid)
     if r:
+        if r.module == TASK_MODULE:
+            incoming = request.json if isinstance(request.json, dict) else {}
+            err = task_guard(r, incoming)
+            if err: return err
         r.data = json.dumps(request.json)
         r.updated_at = datetime.utcnow()
         db.session.commit()
         return jsonify({'id': r.id})
-    r = GenericRecord(module=module, data=json.dumps(request.json))
+    incoming = request.json
+    if module == TASK_MODULE and isinstance(incoming, dict):
+        task_guard(None, incoming)
+    r = GenericRecord(module=module, data=json.dumps(incoming))
     db.session.add(r)
     db.session.commit()
     return jsonify({'id': r.id})
@@ -772,6 +813,9 @@ def update_generic_one(module, rid):
 def delete_generic_one(module, rid):
     r = GenericRecord.query.get(rid)
     if r:
+        if r.module == TASK_MODULE:
+            err = task_guard(r)
+            if err: return err
         db.session.delete(r)
         db.session.commit()
     return jsonify({'ok': True})
