@@ -21,6 +21,9 @@ function taskDaysLeft(deadline){
   const today=new Date(taskToday()+'T00:00:00');
   return Math.round((new Date(deadline+'T00:00:00')-today)/(1000*60*60*24));
 }
+// Only the owner or the creator may change a task (the server enforces
+// the same rule); everyone else gets a read-only view.
+function taskCanEdit(t){const me=Auth.user?.name;return !!me&&(t.owner===me||t.createdBy===me)}
 function taskIsOverdue(t){const d=taskDaysLeft(t.deadline);return taskIsOpen(t)&&d!==null&&d<0}
 function taskStatusBadge(s){
   const m={'Open':'bd','In Progress':'bs','On Hold':'bp','Done':'ba','Cancelled':'br'};
@@ -177,15 +180,16 @@ async function taskRenderList(){
           <td style="white-space:nowrap">${esc(t.owner||'—')}</td>
           <td>${taskPriorityBadge(t.priority)}</td>
           <td style="white-space:nowrap">${taskDeadlineCell(t)}</td>
-          <td>
+          <td>${taskCanEdit(t)?`
             <select class="fc" style="padding:3px 6px;font-size:11.5px;width:115px" onchange="taskQuickStatus(${t.id},this.value)">
               ${TASK_STATUSES.map(s=>`<option ${(t.status||'Open')===s?'selected':''}>${s}</option>`).join('')}
-            </select>
+            </select>`:taskStatusBadge(t.status)}
           </td>
           <td style="white-space:nowrap">${taskCompletedCell(t)}</td>
           <td style="white-space:nowrap">
-            <button class="btn btn-o btn-xs" onclick="taskOpenForm(${t.id})">✏️</button>
-            <button class="btn btn-r btn-xs" onclick="taskDelete(${t.id})">🗑️</button>
+            ${taskCanEdit(t)?`<button class="btn btn-o btn-xs" onclick="taskOpenForm(${t.id})">✏️</button>
+            <button class="btn btn-r btn-xs" onclick="taskDelete(${t.id})">🗑️</button>`
+            :`<button class="btn btn-o btn-xs" title="View only — owner or creator can edit" onclick="taskOpenForm(${t.id})">👁️</button>`}
           </td>
         </tr>`).join('')}
       </tbody>
@@ -202,7 +206,8 @@ function taskSetFilter(key,val){
 async function taskQuickStatus(id,status){
   const t=await db.tasks.get(id);
   if(!t||t.status===status) return;
-  await db.tasks.update(id,taskApplyStatus(t,{status},[`Status: ${t.status||'Open'} → ${status}`]));
+  const ok=await db.tasks.update(id,taskApplyStatus(t,{status},[`Status: ${t.status||'Open'} → ${status}`]));
+  if(!ok){toast('Only the task owner or creator can change its status','d');taskRenderList();return}
   toast(`${esc(t.taskNo)} → ${esc(status)}`);
   taskRenderList(); updateTaskCount();
 }
@@ -226,10 +231,11 @@ async function taskOpenForm(id=null){
   const t=id?await db.tasks.get(id):null;
   const [taskNo,owners]=await Promise.all([t?t.taskNo:taskNextNo(),taskOwnerOptions()]);
   const hist=(t?.history||[]).slice().reverse();
+  const canEdit=!t||taskCanEdit(t);
   const ov=document.createElement('div');ov.className='overlay';ov.id='task-ov';
   ov.innerHTML=`<div class="modal" style="width:600px;max-height:92vh;overflow-y:auto">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <h3>${t?'Edit Task':'New Task'} <span class="mono" style="color:var(--muted);font-weight:500">${esc(taskNo)}</span></h3>
+      <h3>${!t?'New Task':canEdit?'Edit Task':'View Task'} <span class="mono" style="color:var(--muted);font-weight:500">${esc(taskNo)}</span></h3>
       <button class="btn btn-o btn-sm" onclick="document.getElementById('task-ov').remove()">✕</button>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
@@ -260,11 +266,14 @@ async function taskOpenForm(id=null){
         <span class="muted">${esc((h.at||'').replace('T',' ').slice(0,16))} · ${esc(h.by||'')}</span><br>${esc(h.text)}</div>`).join('')}
     </div>`:''}`:''}
     <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
-      <button class="btn btn-o" onclick="document.getElementById('task-ov').remove()">Cancel</button>
-      <button class="btn btn-p" onclick="taskSave(${id||'null'},'${esc(taskNo)}')">💾 Save Task</button>
+      ${canEdit?`<button class="btn btn-o" onclick="document.getElementById('task-ov').remove()">Cancel</button>
+      <button class="btn btn-p" onclick="taskSave(${id||'null'},'${esc(taskNo)}')">💾 Save Task</button>`
+      :`<span class="muted" style="margin-right:auto;align-self:center">🔒 Only ${t.owner&&t.owner===t.createdBy?`${esc(t.owner)} (owner &amp; creator)`:`${esc(t.owner||'the owner')} (owner) or ${esc(t.createdBy||'the creator')} (creator)`} can change this task.</span>
+      <button class="btn btn-o" onclick="document.getElementById('task-ov').remove()">Close</button>`}
     </div>
   </div>`;
   document.body.appendChild(ov);
+  if(!canEdit){ov.querySelectorAll('input,select,textarea').forEach(el=>el.disabled=true);document.getElementById('tk-note').closest('.fg').style.display='none';return}
   document.getElementById('tk-title').focus();
 }
 
@@ -287,7 +296,8 @@ async function taskSave(id,taskNo){
     if(old.owner!==rec.owner) notes.push(`Owner: ${old.owner||'—'} → ${rec.owner}`);
     if(old.deadline!==rec.deadline) notes.push(`Deadline: ${old.deadline||'—'} → ${rec.deadline}`);
     if(note) notes.push(note);
-    await db.tasks.update(id,{...rec,...taskApplyStatus(old,rec,notes)});
+    const ok=await db.tasks.update(id,{...rec,...taskApplyStatus(old,rec,notes)});
+    if(!ok){toast('Not saved — only the task owner or creator can change this task','d');return}
   }else{
     const now=new Date().toISOString();
     const by=Auth.user?.name||'';
@@ -302,7 +312,10 @@ async function taskSave(id,taskNo){
 async function taskDelete(id){
   const t=await db.tasks.get(id);
   if(!confirm(`Delete ${t?.taskNo} — ${t?.title}?`)) return;
-  await db.tasks.delete(id);
+  // Call the API directly: db.tasks.delete() hides a refused (403) delete.
+  try{await _api('DELETE',`/api/tasks/${id}`)}
+  catch(e){toast('Only the task owner or creator can delete this task','d');return}
+  await db.tasks.delete(id); // already gone; this just clears the cached list
   toast('Deleted','d'); taskRenderList(); updateTaskCount();
 }
 
