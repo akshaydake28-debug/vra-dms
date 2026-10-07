@@ -14,7 +14,9 @@ const TASK_PRIORITIES=['High','Medium','Low'];
 const TASK_CATEGORIES=['General','Production','Quality','Process Quality','Calibration','Purchasing','Marketing','HR & Training','Maintenance','Documents'];
 
 // ── HELPERS ───────────────────────────────────────────
-function taskToday(){return new Date().toISOString().slice(0,10)}
+// Local calendar date (IST on the plant's PCs), not UTC: toISOString()
+// would still say "yesterday" until 05:30 IST.
+function taskToday(){const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}
 function taskIsOpen(t){return !TASK_CLOSED.includes(t.status||'Open')}
 function taskDaysLeft(deadline){
   if(!deadline) return null;
@@ -133,6 +135,7 @@ async function taskRenderList(){
     <h2>✅ Task Manager</h2>
     <div style="display:flex;gap:8px">
       <button class="btn btn-p" onclick="taskOpenForm()">+ New Task</button>
+      <button class="btn btn-o" onclick="taskShowDigest()">☀️ My Day</button>
       <button class="btn btn-o" onclick="taskPrint()">🖨️ Print List</button>
     </div>
   </div>
@@ -167,17 +170,18 @@ async function taskRenderList(){
     </div>
     <div class="tw"><table>
       <thead><tr>
-        <th>Task No.</th><th>Task</th><th>Category</th><th>Owner</th><th>Priority</th>
+        <th>Task No.</th><th>Task</th><th>Category</th><th>Owner</th><th>Created By</th><th>Priority</th>
         <th>Deadline</th><th>Status</th><th>Completed On</th><th></th>
       </tr></thead>
       <tbody>${rows.length===0
-        ?`<tr><td colspan="9" style="text-align:center;padding:30px;color:#9ca3af">${all.length?'No tasks match these filters.':'No tasks yet. Click + New Task to add one.'}</td></tr>`
+        ?`<tr><td colspan="10" style="text-align:center;padding:30px;color:#9ca3af">${all.length?'No tasks match these filters.':'No tasks yet. Click + New Task to add one.'}</td></tr>`
         :rows.map(t=>`<tr ${taskIsOverdue(t)?'style="background:#fff7f7"':!taskIsOpen(t)?'style="background:#f9fafb;color:#6b7280"':''}>
           <td class="mono" style="color:var(--navy);font-weight:700;white-space:nowrap">${esc(t.taskNo)}</td>
           <td style="max-width:340px"><strong>${esc(t.title)}</strong>
             ${t.description?`<div class="muted" style="font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(t.description)}</div>`:''}</td>
           <td>${esc(t.category||'—')}</td>
           <td style="white-space:nowrap">${esc(t.owner||'—')}</td>
+          <td style="white-space:nowrap">${esc(t.createdBy||'—')}</td>
           <td>${taskPriorityBadge(t.priority)}</td>
           <td style="white-space:nowrap">${taskDeadlineCell(t)}</td>
           <td>${taskCanEdit(t)?`
@@ -333,10 +337,81 @@ async function taskPrint(){
     @page{size:A4 landscape;margin:10mm}</style></head><body>
     <h2>V R ALUCAST — Open Task List</h2>
     <div class="sub">Printed ${new Date().toLocaleDateString('en-IN')} · ${rows.length} open task(s)</div>
-    <table><thead><tr><th>#</th><th>Task No.</th><th>Task</th><th>Category</th><th>Owner</th><th>Priority</th><th>Deadline</th><th>Status</th></tr></thead><tbody>
+    <table><thead><tr><th>#</th><th>Task No.</th><th>Task</th><th>Category</th><th>Owner</th><th>Created By</th><th>Priority</th><th>Deadline</th><th>Status</th></tr></thead><tbody>
     ${rows.map((t,i)=>`<tr><td>${i+1}</td><td>${esc(t.taskNo)}</td><td><b>${esc(t.title)}</b>${t.description?`<br>${esc(t.description)}`:''}</td>
-      <td>${esc(t.category||'')}</td><td>${esc(t.owner||'')}</td><td>${esc(t.priority||'')}</td>
+      <td>${esc(t.category||'')}</td><td>${esc(t.owner||'')}</td><td>${esc(t.createdBy||'')}</td><td>${esc(t.priority||'')}</td>
       <td class="${taskIsOverdue(t)?'od':''}">${esc(t.deadline||'')}${taskIsOverdue(t)?' (overdue)':''}</td><td>${esc(t.status||'Open')}</td></tr>`).join('')}
     </tbody></table></body></html>`);
   w.document.close(); w.focus(); w.print();
+}
+
+// ══════════════════════════════════════════════════════
+//  DAILY DIGEST
+//  Shown once per day, the first time a user opens the app, if they have
+//  anything needing attention. "☀️ My Day" in Task Manager reopens it.
+//  "Already seen today" is remembered per browser (localStorage).
+// ══════════════════════════════════════════════════════
+function taskDigestKey(){return `vra_task_digest_${Auth.user?.username||''}`}
+
+async function taskBuildDigest(){
+  const me=Auth.user?.name||'';
+  const open=(await db.tasks.toArray().catch(()=>[])).filter(taskIsOpen);
+  const mine=open.filter(t=>t.owner===me).sort((a,b)=>(a.deadline||'9999').localeCompare(b.deadline||'9999'));
+  const left=t=>taskDaysLeft(t.deadline);
+  const overdue=mine.filter(t=>left(t)!==null&&left(t)<0);
+  const today=mine.filter(t=>left(t)===0);
+  const week=mine.filter(t=>left(t)!==null&&left(t)>0&&left(t)<=7);
+  const later=mine.length-overdue.length-today.length-week.length;
+  // Tasks I gave to someone else that are now late, so I can chase them.
+  const chase=open.filter(t=>t.createdBy===me&&t.owner!==me&&taskIsOverdue(t))
+    .sort((a,b)=>(a.deadline||'').localeCompare(b.deadline||''));
+  return {me,overdue,today,week,later,chase,total:mine.length};
+}
+
+async function taskShowDigest(auto=false){
+  const d=await taskBuildDigest();
+  const hasNews=d.overdue.length||d.today.length||d.week.length||d.chase.length;
+  if(auto&&!hasNews) return;
+  document.getElementById('task-digest-ov')?.remove();
+  const row=(t,extra)=>`<div onclick="document.getElementById('task-digest-ov').remove();taskOpenForm(${t.id})"
+      style="display:flex;gap:8px;align-items:baseline;padding:6px 8px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12.5px">
+      <span class="mono" style="color:var(--navy);font-weight:700;white-space:nowrap">${esc(t.taskNo)}</span>
+      <span style="flex:1">${esc(t.title)}${t.createdBy&&t.createdBy!==Auth.user?.name
+        ?`<div class="muted" style="font-size:11px">Assigned by ${esc(t.createdBy)}</div>`
+        :t.createdBy?'<div class="muted" style="font-size:11px">Created by you</div>':''}</span>
+      <span class="muted" style="white-space:nowrap">${extra}</span></div>`;
+  const section=(icon,title,color,list,extra)=>list.length?`
+    <div style="margin-bottom:12px">
+      <div style="font-size:12px;font-weight:700;color:${color};margin-bottom:4px">${icon} ${title} (${list.length})</div>
+      <div style="border:1px solid var(--border);border-radius:7px;overflow:hidden">${list.map(t=>row(t,extra(t))).join('')}</div>
+    </div>`:'';
+  const dateTxt=new Date().toLocaleDateString('en-IN',{weekday:'short',day:'numeric',month:'short'});
+  const ov=document.createElement('div');ov.className='overlay';ov.id='task-digest-ov';
+  ov.innerHTML=`<div class="modal" style="width:580px;max-height:88vh;overflow-y:auto">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+      <h3 style="margin:0">☀️ Good ${new Date().getHours()<12?'morning':new Date().getHours()<17?'afternoon':'evening'}, ${esc((d.me||'').split(' ')[0])}</h3>
+      <button class="btn btn-o btn-sm" onclick="document.getElementById('task-digest-ov').remove()">✕</button>
+    </div>
+    <div class="muted" style="margin-bottom:14px">Your tasks for ${esc(dateTxt)} · ${d.total} open</div>
+    ${hasNews?'':`<div class="alert al-s">✅ Nothing overdue or due this week. ${d.total?`You have ${d.total} open task(s) with later deadlines.`:'You have no open tasks.'}</div>`}
+    ${section('🔴','Overdue','#dc2626',d.overdue,t=>`due ${esc(t.deadline)} · ${-taskDaysLeft(t.deadline)}d late`)}
+    ${section('🟠','Due today','#d97706',d.today,t=>esc(t.priority||''))}
+    ${section('🟡','Due this week','#a16207',d.week,t=>`${esc(t.deadline)} · ${taskDaysLeft(t.deadline)}d left`)}
+    ${hasNews&&d.later?`<div class="muted" style="margin-bottom:12px">+ ${d.later} more open task(s) due later.</div>`:''}
+    ${section('📣','Tasks you assigned that are overdue','#4c1d95',d.chase,t=>`Owner: ${esc(t.owner||'—')} · ${-taskDaysLeft(t.deadline)}d late`)}
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px">
+      <button class="btn btn-o" onclick="document.getElementById('task-digest-ov').remove()">Close</button>
+      <button class="btn btn-p" onclick="document.getElementById('task-digest-ov').remove();window._taskFilter={q:'',status:'active',owner:'',mine:true};nav('tasks')">Open my tasks →</button>
+    </div>
+  </div>`;
+  document.body.appendChild(ov);
+}
+
+// Called once after login / page load.
+async function taskMaybeShowDailyDigest(){
+  if(!Auth.user) return;
+  const today=taskToday();
+  try{if(localStorage.getItem(taskDigestKey())===today) return}catch(e){}
+  await taskShowDigest(true);
+  try{localStorage.setItem(taskDigestKey(),today)}catch(e){}
 }
