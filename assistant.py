@@ -573,6 +573,7 @@ AREA_INFO = {
     'purVendors': 'Purchasing — supplier register / approved suppliers', 'purVendorLots': 'Purchasing — invoice / delivery register',
     'calGauges': 'Calibration — gauge / instrument register', 'calRecords': 'Calibration — calibration records (next due dates)',
     'customDocTypes': 'Documents — custom document types',
+    'tasks': 'Task Manager — tasks with owner, deadline (YYYY-MM-DD), status, priority, history',
     '_rm_lots': 'Raw material — lot register (grade, supplier, invoice, weight kg, spectro)',
     '_documents': 'Documents — registry (SOPs, WIs, formats…: number, title, type, revision, status)',
     '_audit': 'Audit trail — recent actions by users', '_users': 'Users — names and roles',
