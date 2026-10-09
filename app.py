@@ -353,6 +353,10 @@ def save_version():
 @app.route('/api/versions/<int:rid>', methods=['POST'])
 def update_version(rid):
     r = GenericRecord.query.get_or_404(rid)
+    # Record ids are shared by every module — without this check, this URL
+    # could rewrite any other record (including a task, bypassing task_guard).
+    if r.module != 'versions':
+        return jsonify({'error': 'Not found'}), 404
     existing = safe_json_loads(r.data, {})
     existing.update(request.json)
     r.data = json.dumps(existing)
