@@ -22,7 +22,9 @@ jobs:
     steps:
       - name: Checkout backups branch
         run: |
-          git clone --branch backups --single-branch --depth 1 "https://github.com/${GITHUB_REPOSITORY}.git" repo
+          git clone --branch backups --single-branch --depth 1 "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Find latest backup files
         id: files
