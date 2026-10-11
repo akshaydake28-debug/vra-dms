@@ -1709,20 +1709,15 @@ async function mktPrintQuotation(id){
   const hasTooling=(q.toolingItems||[]).length>0;
   const gst=(num(inp.gstPct)*100).toFixed(0);
   const notes=[
-    'Raw material cost will vary and considered as per market rate at the time of production.',
-    `Raw material price is linked to the monthly average ${esc(q.materialGrade||'alloy')} market rate. If that rate moves by more than ±5%, the part price will be revised.`,
-    `${gst}% GST and any other taxes extra, as applicable at the time of supply.`,
-    'This quotation is valid for 30 days from the date above.',
-    'Payment terms: 30 days from invoice date.',
-    num(inp.transportation)>0?"Prices are FOR customer's plant (transportation included).":'Prices are Ex-Works Ichalkaranji.',
-    `Prices are based on a volume of ${monthlyVolume?mktPcs(monthlyVolume):'___'} pcs/month. Any change in volume may require a re-quote.`,
+    `Raw material cost is as per market rate, linked to the monthly average ${esc(q.materialGrade||'alloy')} rate. If that rate moves by more than ±5%, the part price will be revised.`,
+    `Prices are ${num(inp.transportation)>0?"FOR customer's plant (transportation included)":'Ex-Works Ichalkaranji'}, based on a volume of ${monthlyVolume?mktPcs(monthlyVolume):'___'} pcs/month. Any change in volume may require a re-quote.`,
+    `${gst}% GST and other taxes extra, as applicable at the time of supply. Payment: 30 days from invoice date. Quotation valid for 30 days from the date above.`,
     ...(hasTooling?[
-      'Tooling payment: 70% advance with PO and 30% on part approval.',
+      'Tooling: 70% advance with PO and 30% on part approval. T1 samples within 8 weeks from PO and tooling advance, followed by PPAP / FAIR after approval.',
       'The die belongs to the customer once paid for in full. Die life is 1,00,000 shots, and die maintenance up to that life is our responsibility.',
-      'T1 samples within 8 weeks from PO and tooling advance, followed by PPAP / FAIR after approval.',
     ]:[]),
-    'Subject to Ichalkaranji jurisdiction.',
     ...(q.notes?[esc(q.notes)]:[]),
+    'Subject to Ichalkaranji jurisdiction.',
   ];
   const cav=num(inp.cavities)||1;
   const pct=v=>+(num(v)*100).toFixed(2);
