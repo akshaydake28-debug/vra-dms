@@ -142,6 +142,14 @@ def serve_module(filename):
 def serve_core(filename):
     return send_from_directory('static/core', filename)
 
+@app.after_request
+def no_stale_frontend(resp):
+    # Browsers must re-check the app's HTML/JS on every load (a cheap 304 when unchanged),
+    # otherwise after a deploy they can keep running the old screens.
+    if request.path == '/' or request.path.startswith('/static/'):
+        resp.headers['Cache-Control'] = 'no-cache'
+    return resp
+
 @app.route('/feedback/<token>')
 def customer_feedback_page(token):
     # Standalone page, not the logged-in app shell — a customer opening
