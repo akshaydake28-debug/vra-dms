@@ -652,6 +652,8 @@ async function mktViewFeasibilityById(id){
           <input class="fc" id="fr-part" value="${esc(f.partName||'')}"></div>
         <div class="fg"><label class="lbl">Part Number</label>
           <input class="fc mono" id="fr-partno" value="${esc(f.partNumber||'')}"></div>
+        <div class="fg"><label class="lbl">Monthly Volume (pcs/month) *</label>
+          <input class="fc" id="fr-volume" type="number" min="1" step="1" value="${f.monthlyVolume||''}" placeholder="Required"></div>
         <div class="fg"><label class="lbl">Reviewed By</label>
           <input class="fc" id="fr-rev" value="${esc(f.reviewedBy||'Akshay Dake')}"></div>
         <div class="fg"><label class="lbl">Overall Result</label>
@@ -688,6 +690,10 @@ async function mktViewFeasibilityById(id){
 }
 
 async function mktSaveFeasibility(id){
+  // Monthly volume feeds the quotation's volume-basis note, so an FR
+  // cannot be saved without it.
+  const monthlyVolume=parseInt(document.getElementById('fr-volume').value,10)||0;
+  if(monthlyVolume<=0){ toast('Monthly Volume (pcs/month) is required','d'); document.getElementById('fr-volume').focus(); return; }
   const answers={};
   // Only read checked checkboxes — data-val has the Y/N/NA value
   document.querySelectorAll('.feas-yn:checked').forEach(chk=>{
@@ -710,6 +716,7 @@ async function mktSaveFeasibility(id){
     result:document.getElementById('fr-result').value,
     reference:document.getElementById('fr-ref').value.trim(),
     specialRemark:document.getElementById('fr-remark').value.trim(),
+    monthlyVolume,
     answers, updatedAt:new Date().toISOString()
   });
   toast('✅ Feasibility review saved');
@@ -1011,6 +1018,7 @@ async function mktPrintFeasibility(id){
     <div class="mc" style="grid-column:span 2"><div class="ml">Customer</div><div class="mv">M/s ${f.customerName}</div></div>
     <div class="mc"><div class="ml">Part Name</div><div class="mv">${f.partName}</div></div>
     <div class="mc"><div class="ml">Part Number</div><div class="mv">${f.partNumber||'—'}</div></div>
+    <div class="mc" style="grid-column:span 4"><div class="ml">Monthly Volume</div><div class="mv">${f.monthlyVolume?mktPcs(f.monthlyVolume)+' pcs/month':'—'}</div></div>
   </div>
 
   ${sections.map(s=>secBlock(s)).join('')}
@@ -1056,6 +1064,15 @@ function setTxt(id,v){ const el=document.getElementById(id); if(el) el.textConte
 function mktQuoteStatusBadge(s){
   const m={Draft:'bd',Submitted:'bp',Approved:'ba',Rejected:'br',Superseded:'bs'};
   return`<span class="badge ${m[s]||'bd'}">${s||'Draft'}</span>`;
+}
+function mktPcs(n){ return num(n).toLocaleString('en-IN'); }
+// Monthly volume lives on the quote once saved; until then fall back to the
+// linked enquiry's feasibility review, where it is mandatory.
+async function mktQuoteMonthlyVolume(q){
+  if(num(q.monthlyVolume)>0) return num(q.monthlyVolume);
+  const enq=q.enqId?await db.mktEnquiries.get(q.enqId).catch(()=>null):null;
+  const fr=enq?.feasibilityId?await db.mktFeasibility.get(enq.feasibilityId).catch(()=>null):null;
+  return num(fr?.monthlyVolume);
 }
 function mktQuoteEditable(status){ return status==='Draft'||status==='Rejected'; }
 
@@ -1354,6 +1371,7 @@ async function mktViewQuotation(id){
   const siblings=await db.mktQuotations.where('quoteFamily').equals(q.quoteFamily).toArray().catch(()=>[]);
   const inp=q.inputs||mktQuoteDefaultInputs();
   const rates=mktQuoteDerivedRates(inp);
+  const monthlyVolume=await mktQuoteMonthlyVolume(q);
   _mktToolingItems=JSON.parse(JSON.stringify(q.toolingItems||[]));
   _mktQuoteEditable=mktQuoteEditable(q.status);
   const editable=_mktQuoteEditable;
@@ -1392,6 +1410,7 @@ async function mktViewQuotation(id){
         <div class="fg"><label class="lbl">Part Name *</label><input class="fc" id="q-partName" value="${esc(q.partName||'')}" ${dis}></div>
         <div class="fg"><label class="lbl">Part Number</label><input class="fc mono" id="q-partNumber" value="${esc(q.partNumber||'')}" ${dis}></div>
         <div class="fg"><label class="lbl">Material Grade</label><input class="fc" id="q-materialGrade" value="${esc(q.materialGrade||'')}" placeholder="e.g. ADC12" ${dis}></div>
+        <div class="fg"><label class="lbl">Monthly Volume (pcs/month) *</label><input class="fc" id="q-monthlyVolume" type="number" min="1" step="1" value="${monthlyVolume||''}" placeholder="From feasibility review" ${dis}></div>
       </div>
     </div>
   </div>
@@ -1548,6 +1567,7 @@ async function mktSaveQuotation(id, silent){
     date:gv('q-date'), customerName, partName,
     partNumber:gv('q-partNumber').trim(),
     materialGrade:gv('q-materialGrade').trim(),
+    monthlyVolume:parseInt(gv('q-monthlyVolume'),10)||0,
     inputs, toolingItems:_mktToolingItems, amortizeEnabled, amortizeQty,
     notes:gv('q-notes').trim(),
     updatedAt:new Date().toISOString()
@@ -1560,6 +1580,7 @@ async function mktSubmitQuotation(id){
   const q=await db.mktQuotations.get(id);
   if(!q) return;
   if(!['Draft','Rejected'].includes(q.status)){ toast('Only Draft or Rejected quotations can be submitted','d'); return; }
+  if(!(parseInt(gv('q-monthlyVolume'),10)>0)){ toast('Monthly Volume (pcs/month) is required before submitting','d'); return; }
   if(!confirm(`Submit ${q.quoteFamily} (Rev ${q.revision}) for approval?`)) return;
   const saved=await mktSaveQuotation(id, true);
   if(saved===false) return;
@@ -1616,6 +1637,7 @@ async function mktReviseQuotation(id){
     status:'Draft',
     date:new Date().toISOString().split('T')[0],
     customerName:q.customerName, partName:q.partName, partNumber:q.partNumber, materialGrade:q.materialGrade,
+    monthlyVolume:q.monthlyVolume||0,
     inputs:{...q.inputs}, toolingItems:JSON.parse(JSON.stringify(q.toolingItems||[])),
     amortizeEnabled:q.amortizeEnabled, amortizeQty:q.amortizeQty,
     createdBy:user?.name||'', createdByUsername:user?.username||'', createdAt:new Date().toISOString(),
@@ -1683,6 +1705,25 @@ async function mktPrintQuotation(id){
   const inp=q.inputs||{};
   const c=mktCalcQuote(q);
   const today=new Date().toLocaleDateString('en-IN');
+  const monthlyVolume=await mktQuoteMonthlyVolume(q);
+  const hasTooling=(q.toolingItems||[]).length>0;
+  const gst=(num(inp.gstPct)*100).toFixed(0);
+  const notes=[
+    'Raw material cost will vary and considered as per market rate at the time of production.',
+    `Raw material price is linked to the monthly average ${esc(q.materialGrade||'alloy')} market rate. If that rate moves by more than ±5%, the part price will be revised.`,
+    `${gst}% GST and any other taxes extra, as applicable at the time of supply.`,
+    'This quotation is valid for 30 days from the date above.',
+    'Payment terms: 30 days from invoice date.',
+    num(inp.transportation)>0?"Prices are FOR customer's plant (transportation included).":'Prices are Ex-Works Ichalkaranji.',
+    `Prices are based on a volume of ${monthlyVolume?mktPcs(monthlyVolume):'___'} pcs/month. Any change in volume may require a re-quote.`,
+    ...(hasTooling?[
+      'Tooling payment: 70% advance with PO and 30% on part approval.',
+      'The die belongs to the customer once paid for in full. Die life is 1,00,000 shots, and die maintenance up to that life is our responsibility.',
+      'T1 samples within 8 weeks from PO and tooling advance, followed by PPAP / FAIR after approval.',
+    ]:[]),
+    'Subject to Ichalkaranji jurisdiction.',
+    ...(q.notes?[esc(q.notes)]:[]),
+  ];
   const cav=num(inp.cavities)||1;
   const pct=v=>+(num(v)*100).toFixed(2);
   const secNum=v=>+num(v).toFixed(1);
@@ -1753,9 +1794,7 @@ async function mktPrintQuotation(id){
 
   <div class="sec-bar">NOTES</div>
   <table class="dt" style="margin-bottom:8px"><tbody>
-    <tr><td>1. Raw material cost will vary and considered as per market rate at the time of production.</td></tr>
-    <tr><td>2. ${(num(inp.gstPct)*100).toFixed(0)}% GST applicable extra on final cost/part.</td></tr>
-    ${q.notes?`<tr><td>3. ${esc(q.notes)}</td></tr>`:''}
+    ${notes.map((n,i)=>`<tr><td>${i+1}. ${n}</td></tr>`).join('')}
   </tbody></table>
 
   <div class="pg-ftr"><span>${q.quoteFamily} &middot; Rev ${q.revision} &nbsp;|&nbsp; V R Alucast — Confidential</span><span>Generated ${today}</span></div>
