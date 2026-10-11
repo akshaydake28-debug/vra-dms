@@ -1775,6 +1775,9 @@ const PQ = (() => {
   // ══════════════════════════════════════════════════════════════════════
   async function renderGradeMaster() {
     const grades = (await getAll('pq_grades')).sort((a, b) => (a.order ?? a.id) - (b.order ?? b.id));
+    // Report from the one-time merge of the old PFMEA grade list into this Grade Master
+    const merge = await fetch('/api/settings/grades_merged').then(r => r.json()).then(r => r.value).catch(() => null);
+    const showMerge = merge && !merge.dismissed && ((merge.added || []).length || (merge.differences || []).length);
 
     setC(`
       <style>
@@ -1804,6 +1807,14 @@ const PQ = (() => {
           <button class="btn btn-p btn-sm" onclick="PQ._gradeModal()">➕ Add Grade</button>
         </div>
       </div>
+
+      ${showMerge ? `<div class="alert al-w no-print" style="display:block">
+        <b>The PFMEA grade list has been merged into this Grade Master.</b> This is now the only grade list.
+        ${(merge.added || []).length ? `<div style="margin-top:6px">Copied in: <b>${merge.added.map(esc).join(', ')}</b></div>` : ''}
+        ${(merge.differences || []).length ? `<div style="margin-top:6px">These values differed — the Grade Master value was kept. Check each and correct with ✏️ if needed:</div>
+          <ul style="margin:4px 0 0 18px">${merge.differences.map(d => `<li>${esc(d)}</li>`).join('')}</ul>` : ''}
+        <div style="margin-top:8px"><button class="btn btn-o btn-sm" onclick="PQ._dismissGradeMerge()">✓ Checked — hide this</button></div>
+      </div>` : ''}
 
       <div class="print-only" style="display:none">
         <h2 style="margin-bottom:2px">V R ALUCAST — Grade Master</h2>
@@ -1923,6 +1934,13 @@ const PQ = (() => {
     await save('pq_grades', data);
     document.getElementById('pq-grade-modal')?.remove();
     toast(id ? 'Grade updated' : 'Grade added');
+    renderGradeMaster();
+  }
+
+  async function _dismissGradeMerge() {
+    const merge = await fetch('/api/settings/grades_merged').then(r => r.json()).then(r => r.value).catch(() => null);
+    if (!merge) return;
+    await fetch('/api/settings/grades_merged', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: { ...merge, dismissed: true } }) });
     renderGradeMaster();
   }
 
@@ -2484,6 +2502,6 @@ const PQ = (() => {
     _cpStartEdit, _cpCancelEdit, _cpSaveAll, _cpApprove, _cpNewRevision,
     _addCpRow, _deleteCpRow, _cpCell, _cpSpecChange, _setCpPrintFilter,
     renderCsRegistry, openCs, _fillCsModal, _saveCsRecord, _viewCsRecord, _deleteCsRecord,
-    renderGradeMaster, _gradeModal, _gSaveGrade, _deleteGrade,
+    renderGradeMaster, _gradeModal, _gSaveGrade, _deleteGrade, _dismissGradeMerge,
   };
 })();
