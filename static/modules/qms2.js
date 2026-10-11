@@ -10,7 +10,6 @@ const QMS2 = (() => {
 // ── Constants ────────────────────────────────────────────────────────
 const STEPS = ['Receiving Inspection','Melting','Die Casting','Trimming/Fettling',
                'Shot Blasting','Machining','Final Inspection','Packing & Dispatch'];
-const GRADES = ['ADC12','A380','A383','LM2','LM6','LM24','ANSI360','AC4B'];
 const REVS   = ['A','B','C','D','E','F','G','H','J','K'];
 
 const DEFAULT_OPS = [
@@ -82,6 +81,13 @@ window.addEventListener('beforeunload', e => {
 // ── API ───────────────────────────────────────────────────────────────
 const api = (m,p,b) => fetch(p,{method:m,headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined}).then(r=>r.json());
 const GET  = p   => api('GET',p);
+// Grades come from the one Grade Master (Process Quality → Grade Master). composition = filled-in elements.
+async function _grades(){
+  const list = await GET('/api/qms2/pq_grades').catch(()=>[]);
+  return (list||[]).sort((a,b)=>(a.order??a.id)-(b.order??b.id)).map(g=>({...g,
+    composition:Object.fromEntries(Object.entries(g.elements||{}).filter(([,v])=>v&&String(v).trim()))}));
+}
+const _findGrade = (grades,name) => grades.find(g=>gradeKey(g.grade)===gradeKey(name));
 const POST = (p,b)=> api('POST',p,b);
 const DEL  = p   => api('DELETE',p);
 
@@ -302,7 +308,7 @@ async function renderDashboard() {
 
 // ── New Part Form ─────────────────────────────────────────────────────
 async function renderNewPart(editId) {
-  const [grades, allParts] = await Promise.all([GET('/api/qms2/grades'), GET('/api/qms2/pfmea_parts')]);
+  const [grades, allParts] = await Promise.all([_grades(), GET('/api/qms2/pfmea_parts')]);
   const ex = editId ? allParts.find(p=>p.id===editId) : null;
 
   setC(`${SS_STYLE}
@@ -325,9 +331,10 @@ async function renderNewPart(editId) {
         <div><label class="lbl">Material Grade *</label>
           <select class="inp" id="np-grade" onchange="QMS2.showGrade()">
             <option value="">— Select —</option>
-            ${GRADES.map(g=>`<option value="${g}" ${ex?.grade===g?'selected':''}>${g}</option>`).join('')}
-            ${grades.filter(g=>!GRADES.includes(g.grade)).map(g=>`<option value="${g.grade}" ${ex?.grade===g.grade?'selected':''}>${g.grade}</option>`).join('')}
-          </select></div>
+            ${grades.map(g=>`<option value="${esc(g.grade)}" ${ex&&gradeKey(ex.grade)===gradeKey(g.grade)?'selected':''}>${esc(g.grade)}</option>`).join('')}
+            ${ex?.grade&&!_findGrade(grades,ex.grade)?`<option value="${esc(ex.grade)}" selected>${esc(ex.grade)} (not in Grade Master)</option>`:''}
+          </select>
+          <div style="font-size:11px;color:#6b7280;margin-top:3px">Grade missing? Add it in the <a href="#" onclick="event.preventDefault();nav('pq-grades')">Grade Master</a>.</div></div>
         <div><label class="lbl">Drawing Number</label>
           <input class="inp" id="np-dwg" value="${esc(ex?.drawingNo||'')}" placeholder="Optional"></div>
         <div><label class="lbl">Machine</label>
@@ -362,20 +369,16 @@ async function showGrade() {
   const el = document.getElementById('grade-info');
   if(!el) return;
   if(!grade){ el.innerHTML='<p style="color:#9ca3af;font-size:12px;text-align:center;padding:20px">Select a grade</p>'; return; }
-  const grades = await GET('/api/qms2/grades');
-  const g = grades.find(x=>x.grade===grade);
-  if(!g){ el.innerHTML=`<p style="padding:12px;color:#9ca3af;font-size:12px">No data for ${grade}</p>`; return; }
+  const g = _findGrade(await _grades(), grade);
+  if(!g){ el.innerHTML=`<p style="padding:12px;color:#9ca3af;font-size:12px">${esc(grade)} is not in the Grade Master</p>`; return; }
   const comp = g.composition||{};
-  el.innerHTML=`<div style="font-weight:700;color:#0d2f6e;margin-bottom:8px">${g.grade} — ${g.standard||''}</div>
+  el.innerHTML=`<div style="font-weight:700;color:#0d2f6e;margin-bottom:8px">${esc(g.grade)}${g.colourCode?` — ${esc(g.colourCode)}`:''}</div>
     <table style="width:100%;font-size:11px;border-collapse:collapse">
       ${Object.entries(comp).map(([el,v])=>`<tr style="border-bottom:1px solid #f3f4f6">
         <td style="padding:3px 5px;font-weight:600;width:35px">${el}</td>
         <td style="padding:3px 5px">${v}</td></tr>`).join('')}
     </table>
-    <div style="margin-top:8px;font-size:11px;color:#374151">
-      <div>🌡 Temp: <b>${g.metalTempRange||'—'}</b></div>
-      <div>💪 Tensile: <b>${g.tensileStrength||'—'}</b></div>
-    </div>`;
+    ${g.notes?`<div style="margin-top:8px;font-size:11px;color:#374151">${esc(g.notes)}</div>`:''}`;
 }
 
 async function savePart(editId) {
@@ -955,7 +958,7 @@ async function pfmeaDupRow(id) {
 async function generateCP(partId, forceNewRev=false) {
   const [parts, cps, pfRows, grades] = await Promise.all([
     GET('/api/qms2/pfmea_parts'), GET('/api/qms2/cp_parts'),
-    GET(`/api/qms2/pfmea_rows?partId=${partId}`), GET('/api/qms2/grades')]);
+    GET(`/api/qms2/pfmea_rows?partId=${partId}`), _grades()]);
   const part = parts.find(p=>p.id===partId);
   if(!part){ toast('Part not found','d'); return; }
 
@@ -971,7 +974,7 @@ async function generateCP(partId, forceNewRev=false) {
 
   const prevRev = existing?.revision || '';
   const newRev = prevRev ? (REVS[REVS.indexOf(prevRev)+1] || 'Z') : 'A';
-  const gradeData = grades.find(g=>g.grade===part.grade);
+  const gradeData = _findGrade(grades, part.grade);
   const comp = gradeData?.composition||{};
   const compStr = Object.entries(comp).map(([el,v])=>`${el}: ${v}`).join(', ');
 
@@ -1933,224 +1936,14 @@ async function _archivePart(partId){
 }
 
 // ── Grade Master ──────────────────────────────────────────────────────
-async function renderGradeMaster(){
-  const grades=await GET('/api/qms2/grades');
-  setC(`${SS_STYLE}
-  <div class="ph">
-    <div>
-      <button class="btn btn-o btn-sm" onclick="QMS2.renderDashboard()" style="margin-bottom:6px">← Back</button>
-      <h2>Grade Master</h2>
-      <p style="font-size:12px;color:#6b7280">Material chemical compositions — used for auto-population in Control Plans</p>
-    </div>
-    <button class="btn btn-p btn-sm" onclick="QMS2.showGradeForm()">+ Add Grade</button>
-  </div>
-  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px">
-    ${grades.map(g=>{
-      const comp=g.composition||{};
-      const cc=g.colourCode||'';
-      return `<div class="card">
-        <div class="ch" style="background:#f8fafc">
-          <div style="display:flex;align-items:center;gap:8px">
-            ${cc?`<span style="display:inline-block;width:18px;height:18px;border-radius:50%;background:${esc(cc)};border:1px solid #ccc;flex-shrink:0"></span>`:''}
-            <span style="font-weight:700;font-size:15px;color:#0d2f6e">${esc(g.grade)}</span>
-            ${cc?`<span style="font-size:11px;color:#6b7280">${esc(cc)}</span>`:''}
-          </div>
-          <div style="display:flex;gap:5px">
-            <button class="btn btn-xs" style="background:#e0f2fe;color:#0369a1" onclick="QMS2.printGrade(${g.id})">🖨 Print</button>
-            <button class="btn btn-xs btn-o" onclick="QMS2.showGradeForm(${g.id})">✏️ Edit</button>
-            <button class="btn btn-xs" style="background:#fee2e2;color:#dc2626"
-              onclick="QMS2.deleteGrade(${g.id})">✕</button>
-          </div>
-        </div>
-        <div style="padding:12px">
-          <table style="width:100%;font-size:11.5px;border-collapse:collapse">
-            <tr style="background:#f1f5f9">
-              <th style="padding:4px 6px;text-align:left">Element</th>
-              <th style="padding:4px 6px;text-align:right">Range / Limit</th>
-            </tr>
-            ${Object.entries(comp).map(([el,v])=>`<tr style="border-bottom:1px solid #f3f4f6">
-              <td style="padding:3px 6px;font-weight:600">${esc(el)}</td>
-              <td style="padding:3px 6px;text-align:right">${esc(v)}</td>
-            </tr>`).join('')}
-          </table>
-        </div>
-      </div>`;}).join('')||'<p style="padding:20px;color:#9ca3af">No grades yet. Click + Add Grade.</p>'}
-  </div>`);
-}
-
-async function showGradeForm(editId){
-  const grades = editId ? await GET('/api/qms2/grades') : [];
-  const g = editId ? grades.find(x=>x.id===editId) : null;
-  const comp = g?.composition || {};
-  // Build element rows — existing ones from saved data + blank row for adding
-  const existingEls = Object.entries(comp);
-
-  const modal = document.createElement('div');
-  modal.id = 'grade-modal';
-  modal.style.cssText = 'position:fixed;inset:0;background:#0008;z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;overflow-y:auto';
-  modal.innerHTML = `
-  <div style="background:#fff;border-radius:12px;width:100%;max-width:640px;max-height:92vh;overflow-y:auto;box-shadow:0 20px 60px #0004">
-    <div style="padding:14px 18px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:#fff;z-index:1">
-      <h4 style="font-size:15px;font-weight:700;color:#0d2f6e">${editId?'Edit Grade':'Add New Grade'}</h4>
-      <button onclick="document.getElementById('grade-modal').remove()"
-        style="background:none;border:none;font-size:20px;cursor:pointer;color:#6b7280">✕</button>
-    </div>
-    <div style="padding:18px;display:grid;grid-template-columns:1fr 1fr;gap:12px">
-      <div><label class="lbl">Grade Name *</label>
-        <input class="inp" id="gf-grade" value="${esc(g?.grade||'')}" placeholder="e.g. ADC12"></div>
-      <div><label class="lbl">Colour Code</label>
-        <div style="display:flex;gap:6px;align-items:center">
-          <input class="inp" id="gf-colour-text" value="${esc(g?.colourCode||'')}" placeholder="e.g. Yellow or #FFD700" style="flex:1"
-            oninput="document.getElementById('gf-colour-swatch').style.background=this.value||'#fff'">
-          <input type="color" id="gf-colour-picker" value="${g?.colourCode&&g.colourCode.startsWith('#')?esc(g.colourCode):'#ffffff'}"
-            style="width:36px;height:34px;border:1px solid #d1d5db;border-radius:6px;cursor:pointer;padding:2px"
-            oninput="document.getElementById('gf-colour-text').value=this.value;document.getElementById('gf-colour-swatch').style.background=this.value">
-          <span id="gf-colour-swatch" style="display:inline-block;width:34px;height:34px;border-radius:6px;border:1px solid #d1d5db;background:${esc(g?.colourCode||'#fff')}"></span>
-        </div>
-      </div>
-    </div>
-    <div style="padding:0 18px 14px">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-        <label class="lbl" style="margin:0">Chemical Composition</label>
-        <button class="btn btn-xs btn-o" onclick="QMS2._addElementRow()">+ Add Element</button>
-      </div>
-      <table style="width:100%;border-collapse:collapse;font-size:13px" id="gf-el-table">
-        <tr style="background:#f1f5f9">
-          <th style="padding:5px 8px;text-align:left;font-size:11px">Element</th>
-          <th style="padding:5px 8px;text-align:left;font-size:11px">Range / Limit</th>
-          <th style="padding:5px 8px;width:32px"></th>
-        </tr>
-        ${existingEls.map(([el,v],i)=>`<tr class="gf-el-row">
-          <td style="padding:4px 6px"><input class="inp gf-el-name" value="${esc(el)}" placeholder="Si" style="padding:4px 7px;font-size:12px;font-weight:700"></td>
-          <td style="padding:4px 6px"><input class="inp gf-el-val" value="${esc(v)}" placeholder="9.6–12.0 or ≤0.30" style="padding:4px 7px;font-size:12px"></td>
-          <td style="padding:4px 6px"><button onclick="this.closest('tr').remove()" style="background:none;border:none;color:#dc2626;cursor:pointer;font-size:14px">✕</button></td>
-        </tr>`).join('')}
-      </table>
-    </div>
-    <div style="padding:14px 18px;display:flex;gap:8px;border-top:1px solid #f3f4f6">
-      <button class="btn btn-p" onclick="QMS2.saveGrade(${editId||0})">
-        ${editId?'Save Changes':'Add Grade'}</button>
-      <button class="btn btn-o" onclick="document.getElementById('grade-modal').remove()">Cancel</button>
-    </div>
-  </div>`;
-  document.body.appendChild(modal);
-}
-
-function _addElementRow(){
-  const tbody = document.getElementById('gf-el-table');
-  if(!tbody) return;
-  const tr = document.createElement('tr');
-  tr.className = 'gf-el-row';
-  tr.innerHTML = `
-    <td style="padding:4px 6px"><input class="inp gf-el-name" placeholder="e.g. Ti" style="padding:4px 7px;font-size:12px;font-weight:700"></td>
-    <td style="padding:4px 6px"><input class="inp gf-el-val" placeholder="≤0.20" style="padding:4px 7px;font-size:12px"></td>
-    <td style="padding:4px 6px"><button onclick="this.closest('tr').remove()" style="background:none;border:none;color:#dc2626;cursor:pointer;font-size:14px">✕</button></td>`;
-  tbody.appendChild(tr);
-  tr.querySelector('.gf-el-name').focus();
-}
-
-async function saveGrade(editId){
-  const grade = document.getElementById('gf-grade')?.value?.trim();
-  if(!grade){ toast('Grade name required','d'); return; }
-
-  const colourCode = document.getElementById('gf-colour-text')?.value?.trim()||'';
-  const composition = {};
-  document.querySelectorAll('#gf-el-table .gf-el-row').forEach(row=>{
-    const k = row.querySelector('.gf-el-name')?.value?.trim();
-    const v = row.querySelector('.gf-el-val')?.value?.trim();
-    if(k) composition[k] = v||'';
-  });
-
-  const rec = { grade, colourCode, composition };
-  if(editId) rec.id = editId;
-  await POST('/api/qms2/grades', rec);
-  _cpGradeCache = null;
-  document.getElementById('grade-modal')?.remove();
-  toast(`Grade ${grade} saved ✅`,'s');
-  renderGradeMaster();
-}
-
-async function printGrade(gradeId){
-  const grades = await GET('/api/qms2/grades');
-  const g = grades.find(x=>x.id===gradeId);
-  if(!g){ toast('Grade not found','d'); return; }
-  const comp = g.composition||{};
-  const cc = g.colourCode||'';
-  const docNum = `GM-${(g.grade||'').replace(/\s+/g,'')}-REV-A`;
-  const today = new Date().toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'});
-
-  const win = window.open('','_blank','width=794,height=1123');
-  win.document.write(`<!DOCTYPE html><html><head><title>Grade Master — ${g.grade}</title>
-  <style>
-    *{box-sizing:border-box;margin:0;padding:0}
-    body{font-family:Arial,sans-serif;font-size:12px;background:#e5e7eb;display:flex;justify-content:center;padding:20px}
-    #page{width:210mm;min-height:297mm;background:#fff;padding:18mm 16mm;box-shadow:0 2px 16px #0003}
-    .hdr{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #0d2f6e;padding-bottom:10px;margin-bottom:14px}
-    .hdr-left h1{font-size:20px;color:#0d2f6e;font-weight:800}
-    .hdr-left p{font-size:11px;color:#6b7280;margin-top:2px}
-    .hdr-right{text-align:right;font-size:10.5px;color:#374151;line-height:1.7}
-    .hdr-right b{color:#0d2f6e}
-    .grade-title{font-size:22px;font-weight:800;color:#0d2f6e;margin-bottom:4px}
-    .colour-row{display:flex;align-items:center;gap:10px;margin-bottom:16px}
-    .colour-swatch{width:28px;height:28px;border-radius:50%;border:1px solid #ccc}
-    .colour-label{font-size:13px;color:#374151}
-    table{width:100%;border-collapse:collapse;margin-bottom:18px}
-    th{background:#0d2f6e;color:#fff;padding:7px 10px;font-size:11.5px;text-align:left}
-    td{padding:6px 10px;border-bottom:1px solid #e5e7eb;font-size:12px}
-    tr:nth-child(even) td{background:#f8fafc}
-    .footer{border-top:1px solid #e5e7eb;padding-top:10px;display:flex;justify-content:space-between;font-size:10px;color:#9ca3af;margin-top:auto}
-    .controlled{background:#fef9c3;border:1px solid #fbbf24;border-radius:4px;padding:4px 10px;font-size:10px;color:#92400e;font-weight:700;display:inline-block;margin-bottom:12px}
-    @media print{body{background:#fff;padding:0}#page{box-shadow:none;width:100%;min-height:auto}}
-  </style></head><body>
-  <div id="page">
-    <div class="hdr">
-      <div class="hdr-left">
-        <h1>V R ALUCAST</h1>
-        <p>Grade Master — Controlled Document</p>
-      </div>
-      <div class="hdr-right">
-        <div><b>Doc No:</b> ${docNum}</div>
-        <div><b>Issue Date:</b> ${today}</div>
-        <div><b>Rev:</b> A</div>
-      </div>
-    </div>
-    <div class="controlled">CONTROLLED DOCUMENT — DO NOT COPY WITHOUT AUTHORIZATION</div>
-    <div class="grade-title">${esc(g.grade)}</div>
-    ${cc?`<div class="colour-row">
-      <span class="colour-swatch" style="background:${esc(cc)}"></span>
-      <span class="colour-label">Colour Code: <b>${esc(cc)}</b></span>
-    </div>`:''}
-    <table>
-      <tr><th>Element</th><th>Range / Limit (%)</th></tr>
-      ${Object.entries(comp).map(([el,v])=>`<tr><td style="font-weight:700">${esc(el)}</td><td>${esc(v)}</td></tr>`).join('')}
-    </table>
-    <div class="footer">
-      <span>V R ALUCAST — Grade Master</span>
-      <span>${docNum} | Rev A | ${today}</span>
-      <span>Page 1 of 1</span>
-    </div>
-  </div>
-  <script>window.onload=()=>{window.print();}<\/script>
-  </body></html>`);
-  win.document.close();
-}
-
-async function deleteGrade(id){
-  if(!confirm('Delete this grade? This cannot be undone.')) return;
-  await DEL(`/api/qms2/grades/${id}`);
-  toast('Deleted','d');
-  renderGradeMaster();
-}
+// One Grade Master for the whole system: Process Quality → Grade Master
+function renderGradeMaster(){ nav('pq-grades'); }
 
 // ── CP Cell Event Handlers ────────────────────────────────────────────
 const _cpPending = {};
 let _cpSaveTimer = null;
-let _cpGradeCache = null;
-
-async function _getCpGrades(){
-  if(!_cpGradeCache) _cpGradeCache = await GET('/api/qms2/grades').catch(()=>[]);
-  return _cpGradeCache||[];
-}
+// Not cached, so Grade Master edits apply straight away
+const _getCpGrades = _grades;
 
 async function _tryGradeAutoFill(rowId, specValue, tr){
   if(!specValue?.trim()) return;
@@ -2419,6 +2212,6 @@ return {
   renderArchive,
   renderChecksheets, fillCS, saveCS, viewCSRecord, delCSRecord,
   printPfmea, printCP, printCS,
-  renderGradeMaster, showGradeForm, saveGrade, deleteGrade, printGrade, _addElementRow,
+  renderGradeMaster,
 };
 })();

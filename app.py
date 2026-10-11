@@ -1750,6 +1750,55 @@ def seed_pq_grades():
     db.session.commit()
     print("Grade Master seeded (8 grades from VRA-SOP-001 / VRA-SOP-017)")
 
+PQ_GRADE_ELEMENTS = ['Si','Fe','Cu','Mg','Mn','Ti','Zn','Ni','Pb','Sn','Sr','Al']
+
+def merge_qms2_grades_into_grade_master():
+    """One-time merge of the old PFMEA grade list (qms2_grades) into the Grade Master (pq_grades).
+    Grade Master values win; grades missing there are copied, blank fields are filled,
+    and every difference is saved as a report shown on the Grade Master page."""
+    if GenericRecord.query.filter_by(module='setting_grades_merged').first():
+        return
+    norm = lambda v: re.sub(r'[\s%]', '', str(v or '')).lower()
+    master = GenericRecord.query.filter_by(module='pq_grades').all()
+    by_key = {_grade_key(safe_json_loads(r.data, {}).get('grade')): r for r in master}
+    order = max([safe_json_loads(r.data, {}).get('order') or 0 for r in master] or [0])
+    added, diffs = [], []
+    for old in GenericRecord.query.filter_by(module='qms2_grades').all():
+        o = safe_json_loads(old.data, {})
+        name, comp = str(o.get('grade') or '').strip(), o.get('composition') or {}
+        if not _grade_key(name):
+            continue
+        r = by_key.get(_grade_key(name))
+        if not r:
+            order += 1
+            other = ', '.join(f'{k} {v}' for k, v in comp.items() if k not in PQ_GRADE_ELEMENTS and v)
+            notes = 'Copied from the old PFMEA Grade Master.' + (f' Other elements: {other}' if other else '')
+            new = {'grade': name, 'colourCode': o.get('colourCode') or '', 'notes': notes, 'order': order,
+                   'elements': {el: comp.get(el, '') for el in PQ_GRADE_ELEMENTS}}
+            r = GenericRecord(module='pq_grades', data=json.dumps(new))
+            db.session.add(r)
+            by_key[_grade_key(name)] = r
+            added.append(name)
+            continue
+        g = safe_json_loads(r.data, {})
+        g.setdefault('elements', {})
+        if o.get('colourCode') and not g.get('colourCode'):
+            g['colourCode'] = o['colourCode']
+        elif o.get('colourCode') and norm(o['colourCode']) != norm(g.get('colourCode')):
+            diffs.append(f"{g['grade']} colour code: Grade Master has {g['colourCode']}, PFMEA list had {o['colourCode']}")
+        for el, v in comp.items():
+            if not v:
+                continue
+            if el in PQ_GRADE_ELEMENTS and not g['elements'].get(el):
+                g['elements'][el] = v
+            elif norm(v) != norm(g['elements'].get(el)):
+                diffs.append(f"{g['grade']} {el}: Grade Master has {g['elements'].get(el) or '(blank)'}, PFMEA list had {v}")
+        r.data = json.dumps(g)
+    db.session.add(GenericRecord(module='setting_grades_merged',
+                                 data=json.dumps({'added': added, 'differences': diffs, 'dismissed': False})))
+    db.session.commit()
+    print(f"Grade lists merged: {len(added)} added, {len(diffs)} differences")
+
 def migrate_columns():
     """create_all() never alters existing tables — add columns introduced after first deploy."""
     insp = db.inspect(db.engine)
@@ -1771,6 +1820,7 @@ with app.app_context():
         seed_pq_pfmea_rows_for_sample_part()
         seed_pq_cp_templates()
         seed_pq_grades()
+        merge_qms2_grades_into_grade_master()
         # Note: seed_defaults() removed — default data comes from backup restore
     except Exception as e:
         print(f"Startup warning: {e}")
