@@ -1719,6 +1719,8 @@ async function mktPrintQuotation(id){
     ...(q.notes?[esc(q.notes)]:[]),
     'Subject to Ichalkaranji jurisdiction.',
   ];
+  // Operations and charges left at 0 are not part of this quote, so their
+  // rows are left off the print.
   const cav=num(inp.cavities)||1;
   const pct=v=>+(num(v)*100).toFixed(2);
   const secNum=v=>+num(v).toFixed(1);
@@ -1748,24 +1750,24 @@ async function mktPrintQuotation(id){
       <tr><td>Net Weight</td><td>KG</td><td style="text-align:right">${num(inp.netWeight).toFixed(3)}</td></tr>
       <tr><td>Total Product Weight (incl. melting loss ${pct(inp.meltingLossPct)}%)</td><td>KG</td><td style="text-align:right">${c.totalProductWeight.toFixed(3)}</td></tr>
       <tr><td>Total Raw Material Cost (A)</td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.totalRawMaterialCost)}</td></tr>
-      <tr><td>PDC Machine Tonnage</td><td>TON</td><td style="text-align:right">${num(inp.pdcTonnage)||'—'}</td></tr>
+      ${num(inp.pdcTonnage)?`<tr><td>PDC Machine Tonnage</td><td>TON</td><td style="text-align:right">${num(inp.pdcTonnage)}</td></tr>`:''}
       <tr><td>Shot Rate</td><td>INR/SHOT</td><td style="text-align:right">₹${mktINR(inp.shotRate)}</td></tr>
       <tr><td>No. of Cavities</td><td>NOS</td><td style="text-align:right">${cav}</td></tr>
       <tr><td>Actual Shot Rate / Part (B) <span style="color:#666;font-size:7pt">— Shot rate ÷ No. of cavities</span></td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.actualShotRate)}</td></tr>
-      <tr><td>Fettling</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.fettling)}</td></tr>
-      <tr><td>Trimming</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.trimming)}</td></tr>
-      <tr><td>Shot Blasting <span style="color:#666;font-size:7pt">— ₹${mktINR(c.shotBlastingPerKg)}/KG</span></td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.shotBlastingCost)}</td></tr>
-      <tr><td>CNC <span style="color:#666;font-size:7pt">— MHR ₹${mktINR(inp.cncCostPerHour)}/hr · Cycle time ${secNum(c.cncCycleTimeSec)} sec</span></td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.cncCost)}</td></tr>
-      <tr><td>VMC <span style="color:#666;font-size:7pt">— MHR ₹${mktINR(inp.vmcCostPerHour)}/hr · Cycle time ${secNum(c.vmcCycleTimeSec)} sec</span></td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.vmcCost)}</td></tr>
-      <tr><td>Drilling &amp; Counter Sunk</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.drilling)}</td></tr>
-      <tr><td>Leak Test</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.leakTest)}</td></tr>
-      <tr><td>Inspection</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.inspection)}</td></tr>
+      ${num(inp.fettling)?`<tr><td>Fettling</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.fettling)}</td></tr>`:''}
+      ${num(inp.trimming)?`<tr><td>Trimming</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.trimming)}</td></tr>`:''}
+      ${num(c.shotBlastingCost)?`<tr><td>Shot Blasting <span style="color:#666;font-size:7pt">— ₹${mktINR(c.shotBlastingPerKg)}/KG</span></td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.shotBlastingCost)}</td></tr>`:''}
+      ${num(c.cncCost)?`<tr><td>CNC <span style="color:#666;font-size:7pt">— MHR ₹${mktINR(inp.cncCostPerHour)}/hr · Cycle time ${secNum(c.cncCycleTimeSec)} sec</span></td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.cncCost)}</td></tr>`:''}
+      ${num(c.vmcCost)?`<tr><td>VMC <span style="color:#666;font-size:7pt">— MHR ₹${mktINR(inp.vmcCostPerHour)}/hr · Cycle time ${secNum(c.vmcCycleTimeSec)} sec</span></td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.vmcCost)}</td></tr>`:''}
+      ${num(inp.drilling)?`<tr><td>Drilling &amp; Counter Sunk</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.drilling)}</td></tr>`:''}
+      ${num(inp.leakTest)?`<tr><td>Leak Test</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.leakTest)}</td></tr>`:''}
+      ${num(inp.inspection)?`<tr><td>Inspection</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.inspection)}</td></tr>`:''}
       <tr><td>Total Other Process Cost (C)</td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.otherProcessCost)}</td></tr>
       <tr><td>Total Process Cost (B+C)</td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.totalProcessCost)}</td></tr>
-      <tr><td>Casting Rejection (${pct(inp.castingRejectionPct)}%)</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.castingRejectionAmt)}</td></tr>
-      <tr><td>Packing</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.packing)}</td></tr>
-      <tr><td>Transportation</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.transportation)}</td></tr>
-      <tr><td>Profit &amp; Overheads (${pct(inp.profitOverheadsPct)}%)</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.profitOverheadsAmt)}</td></tr>
+      ${num(c.castingRejectionAmt)?`<tr><td>Casting Rejection (${pct(inp.castingRejectionPct)}%)</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.castingRejectionAmt)}</td></tr>`:''}
+      ${num(inp.packing)?`<tr><td>Packing</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.packing)}</td></tr>`:''}
+      ${num(inp.transportation)?`<tr><td>Transportation</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.transportation)}</td></tr>`:''}
+      ${num(c.profitOverheadsAmt)?`<tr><td>Profit &amp; Overheads (${pct(inp.profitOverheadsPct)}%)</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.profitOverheadsAmt)}</td></tr>`:''}
     </tbody>
   </table>
 
