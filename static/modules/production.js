@@ -2077,6 +2077,40 @@ function prodRmLedger(ctx,{lots,adj,shiftRows,from='',to,skipCountOn=null}){
   return {rows, counts};
 }
 
+// ── Part ledger ───────────────────────────────────────
+// Same idea for castings: OK produced adds, fettling rejections and dispatches subtract, and a physical
+// count (pieces at the END of its date) resets the balance. The gap is shown as the count difference.
+function prodPartLedger(ctx,{shiftRows,disp,adj,fet,from='',to,skipCountOn=null}){
+  const ev=[];
+  const push=(partId,date,type,qty,extra={})=>{ if(!partId||(date&&date>to)) return; ev.push({k:String(partId),date:date||'',type,qty,...extra}); };
+  shiftRows.forEach(r=>Object.entries(r.c.byPart).forEach(([k,v])=>v.okPcs&&push(k,r.s.date,'made',v.okPcs)));
+  disp.forEach(d=>push(d.partId,d.date,'disp',prodN(d.qty)));
+  fet.forEach(e=>(e.rows||[]).forEach(r=>{ push(r.partId,e.date,'fetRej',Math.min(prodN(r.rej),prodN(r.qty)),{fetQty:prodN(r.qty)}); }));
+  adj.filter(a=>a.kind==='part').forEach(a=>{
+    if(a.reason===PROD_COUNT){ if(a.date!==skipCountOn) push(a.partId,a.date,'count',prodN(a.counted),{rec:a}); }
+    else push(a.partId,a.date,a.reason==='Opening Stock'?'open':'adj',prodN(a.qty)); });
+  ev.sort((a,b)=>a.date.localeCompare(b.date)||(a.type==='count')-(b.type==='count')||(a.rec?.id||0)-(b.rec?.id||0));
+
+  const rows={}, counts=[];
+  const R=k=>rows[k]||(rows[k]={partId:k,open:0,made:0,adj:0,fetRej:0,disp:0,short:0,bal:0,made2date:0,fet2date:0});
+  const sign={open:1,adj:1,made:1,fetRej:-1,disp:-1};
+  for(const e of ev){
+    const x=R(e.k), inPeriod=!from||e.date>=from;
+    if(e.type==='made') x.made2date+=e.qty;
+    if(e.type==='fetRej') x.fet2date+=e.fetQty;
+    if(e.type==='count'){
+      counts.push({...e.rec, partId:e.k, book:x.bal, counted:e.qty, diff:e.qty-x.bal});
+      if(inPeriod) x.short+=x.bal-e.qty;
+      x.bal=e.qty;
+    } else {
+      x.bal+=sign[e.type]*e.qty;
+      if(inPeriod) x[e.type]+=e.qty;
+    }
+    if(!inPeriod) x.open=x.bal;
+  }
+  return {rows, counts};
+}
+
 // Stock statement for a period: Opening (everything before From) + movements in the period = Closing (as on To)
 async function prodRenderStock(f={}){
   const ctx=await prodCtx();
@@ -2092,27 +2126,13 @@ async function prodRenderStock(f={}){
   const [shiftRows,disp,adj,fet]=await Promise.all([
     prodLoadShifts(ctx,{to}), db.prodDispatch.toArray().catch(()=>[]), db.prodStockAdj.toArray().catch(()=>[]),
     db.prodFettling.toArray().catch(()=>[])]);
-  const aggOpen=prodAgg(shiftRows.filter(r=>before(r.s.date)).map(r=>r.c));
-  const aggPer=prodAgg(shiftRows.filter(r=>inP(r.s.date)).map(r=>r.c));
   const lots=ctx.lots.filter(l=>(l.date||'')<=to);
   const noWt=lots.filter(l=>!prodN(l.weightKg));
-  const isOpening=a=>before(a.date)||(inP(a.date)&&a.reason==='Opening Stock');
-  const isMove=a=>inP(a.date)&&a.reason!=='Opening Stock';
   const {rows:rm,counts}=prodRmLedger(ctx,{lots,adj,shiftRows,from,to});
   const countList=counts.filter(c=>inP(c.date)).reverse();
 
-  const pt={};
-  const p=k=>pt[k]||(pt[k]={open:0,adj:0,made:0,disp:0,fetRej:0,made2date:0,fet2date:0});
-  Object.entries(aggOpen.byPart).forEach(([k,v])=>{ const x=p(k); x.open+=v.okPcs; x.made2date+=v.okPcs; });
-  Object.entries(aggPer.byPart).forEach(([k,v])=>{ const x=p(k); x.made+=v.okPcs; x.made2date+=v.okPcs; });
-  disp.forEach(d=>{ if(before(d.date)) p(d.partId).open-=prodN(d.qty); else if(inP(d.date)) p(d.partId).disp+=prodN(d.qty); });
-  adj.filter(a=>a.kind==='part').forEach(a=>{ const x=p(a.partId); if(isOpening(a)) x.open+=prodN(a.qty); else if(isMove(a)) x.adj+=prodN(a.qty); });
-  fet.forEach(e=>(e.rows||[]).forEach(r=>{
-    if((e.date||'')>to) return;
-    const x=p(r.partId), rej=Math.min(prodN(r.rej),prodN(r.qty));
-    x.fet2date+=prodN(r.qty);
-    if(before(e.date)) x.open-=rej; else x.fetRej+=rej;
-  }));
+  const {rows:pt,counts:pCounts}=prodPartLedger(ctx,{shiftRows,disp,adj,fet,from,to});
+  const pCountList=pCounts.filter(c=>inP(c.date)).reverse();
 
   const num=(v,dp=0)=>`<td class="mono" style="text-align:right">${prodFmt(v,dp)}</td>`;
   const bal=(v,unit,dp)=>`<td class="mono" style="text-align:right;font-weight:700;color:${v<0?'#dc2626':'#0d2f6e'}">${prodFmt(v,dp)}${unit}</td>`;
@@ -2155,11 +2175,18 @@ async function prodRenderStock(f={}){
       <td style="font-size:12px">${esc(c.createdBy||'')}</td><td><button class="btn btn-r btn-xs" onclick="prodDelAdj(${c.id})">🗑️</button></td></tr>`; }).join('')||prodEmpty(8,'No physical counts in this period. Use 📋 Physical Stock Count to enter one.')}</tbody>
   </table><div style="font-size:11px;color:#6b7280;padding:6px 12px">Set melting loss in Machines &amp; Settings: ${prodFmt(ctx.cfg.meltLossPct,1)}%. The first count of a grade also absorbs any old data errors, so its loss % may not be meaningful.</div></div></div>
   <div class="card"><div class="ch"><h5>Part stock (castings, pcs) — ${periodLbl}</h5></div><div class="tw"><table>
-    <thead><tr><th>Part</th><th>Grade</th><th style="text-align:right">Opening</th><th style="text-align:right">+ OK produced</th><th style="text-align:right">± Adjustments</th><th style="text-align:right">− Fettling rejected</th><th style="text-align:right">− Dispatched</th><th style="text-align:right">= Closing</th><th style="text-align:right" title="OK castings produced but not yet fettled, as on To date">of which not fettled</th></tr></thead>
+    <thead><tr><th>Part</th><th>Grade</th><th style="text-align:right">Opening</th><th style="text-align:right">+ OK produced</th><th style="text-align:right">± Adjustments</th><th style="text-align:right">− Fettling rejected</th><th style="text-align:right">− Dispatched</th><th style="text-align:right" title="System stock minus physically counted pieces, at each count">− Count difference</th><th style="text-align:right">= Closing</th><th style="text-align:right" title="OK castings produced but not yet fettled, as on To date">of which not fettled</th></tr></thead>
     <tbody>${ptRows.map(({part,v})=>`<tr>
       <td>${esc(prodPartLabel(part))}</td><td>${esc(part?.grade||'')}</td>
-      ${bal(v.open,'',0)}${num(v.made)}${num(v.adj)}${num(v.fetRej)}${num(v.disp)}${bal(v.open+v.made+v.adj-v.fetRej-v.disp,'',0)}
-      <td class="mono" style="text-align:right;color:#6b7280">${prodFmt(Math.max(0,v.made2date-v.fet2date))}</td></tr>`).join('')||prodEmpty(9,'No part movements yet.')}</tbody>
+      ${bal(v.open,'',0)}${num(v.made)}${num(v.adj)}${num(v.fetRej)}${num(v.disp)}${num(v.short)}${bal(v.open+v.made+v.adj-v.fetRej-v.disp-v.short,'',0)}
+      <td class="mono" style="text-align:right;color:#6b7280">${prodFmt(Math.max(0,v.made2date-v.fet2date))}</td></tr>`).join('')||prodEmpty(10,'No part movements yet.')}</tbody>
+  </table></div></div>
+  <div class="card"><div class="ch"><h5>📋 Part stock counts — actual vs system</h5></div><div class="tw"><table>
+    <thead><tr><th>Count date (end of day)</th><th>Part</th><th style="text-align:right">System (pcs)</th><th style="text-align:right">Actual (pcs)</th><th style="text-align:right">Difference (pcs)</th><th>By</th><th></th></tr></thead>
+    <tbody>${pCountList.map(c=>`<tr><td class="mono">${esc(c.date)}</td><td>${esc(prodPartLabel(ctx.partById[c.partId]))}</td>
+      ${num(c.book)}<td class="mono" style="text-align:right;font-weight:700">${prodFmt(c.counted)}</td>
+      <td class="mono" style="text-align:right;font-weight:700;color:${c.diff<0?'#dc2626':c.diff>0?'#16a34a':'#6b7280'}">${c.diff>0?'+':''}${prodFmt(c.diff)}${c.diff<0?' (short)':c.diff>0?' (excess)':''}</td>
+      <td style="font-size:12px">${esc(c.createdBy||'')}</td><td><button class="btn btn-r btn-xs" onclick="prodDelAdj(${c.id})">🗑️</button></td></tr>`).join('')||prodEmpty(7,'No part counts in this period. Use 📋 Physical Stock Count → Parts to enter one.')}</tbody>
   </table></div></div>
   <div class="card"><div class="ch"><h5>Stock adjustments in this period</h5></div><div class="tw"><table>
     <thead><tr><th>Date</th><th>Type</th><th>Item</th><th style="text-align:right">Qty</th><th>Reason</th><th>Remark</th><th>By</th><th></th></tr></thead>
@@ -2176,11 +2203,14 @@ async function prodOpenCount(){
   const ctx=await prodCtx();
   const ov=document.createElement('div'); ov.className='overlay'; ov.id='pcn-ov';
   ov.innerHTML=`<div class="modal" style="width:620px;max-width:95vw">
-    <h3>📋 Physical Stock Count — Raw Material</h3>
-    <div style="font-size:12px;color:#6b7280;margin-bottom:10px">Enter the weighed stock at the <b>end of the count date</b>. Leave a grade blank to skip it. The stock is reset to your figure and the difference from paper is recorded as melting loss.</div>
-    <div class="fg" style="max-width:220px"><label class="lbl">Count date</label><input class="fc" type="date" id="pcn-date" value="${prodToday()}" max="${prodToday()}" onchange="prodCountRefresh()"></div>
+    <h3>📋 Physical Stock Count</h3>
+    <div style="font-size:12px;color:#6b7280;margin-bottom:10px">Enter the stock at the <b>end of the count date</b>. Leave a row blank to skip it. The stock is reset to your figure; entries after that date add to or subtract from it.</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;max-width:440px">
+      <div class="fg"><label class="lbl">Stock type</label><select class="fc" id="pcn-kind" onchange="prodCountRefresh()"><option value="rm">Raw material (kg)</option><option value="part">Parts / castings (pcs)</option></select></div>
+      <div class="fg"><label class="lbl">Count date</label><input class="fc" type="date" id="pcn-date" value="${prodToday()}" max="${prodToday()}" onchange="prodCountRefresh()"></div>
+    </div>
     <div class="tw" style="max-height:50vh;overflow:auto"><table>
-      <thead><tr><th>Grade</th><th style="text-align:right">On paper (kg)</th><th style="text-align:right;width:150px">Actual (kg)</th><th style="text-align:right">Melting loss (kg)</th></tr></thead>
+      <thead id="pcn-head"></thead>
       <tbody id="pcn-body"><tr><td colspan="4" style="text-align:center;color:#9ca3af;padding:16px">Loading…</td></tr></tbody>
     </table></div>
     <div class="fg" style="margin-top:10px"><label class="lbl">Remark</label><input class="fc" id="pcn-remark" placeholder="e.g. Month-end stock-take"></div>
@@ -2190,42 +2220,59 @@ async function prodOpenCount(){
   prodCountRefresh();
 }
 async function prodCountRefresh(){
-  const ctx=await prodCtx(), date=document.getElementById('pcn-date')?.value||prodToday();
-  const [shiftRows,adj]=await Promise.all([prodLoadShifts(ctx,{to:date}), db.prodStockAdj.toArray().catch(()=>[])]);
-  // Paper stock at end of the count date, ignoring any count already saved for that date (it will be replaced)
-  const {rows}=prodRmLedger(ctx,{lots:ctx.lots,adj,shiftRows,to:date,skipCountOn:date});
-  const prev=Object.fromEntries(adj.filter(a=>a.kind==='rm'&&a.reason===PROD_COUNT&&a.date===date).map(a=>[gradeKey(a.grade),a.counted]));
-  const list=[...ctx.grades.map(g=>({key:gradeKey(g),name:g})),
-    ...Object.values(rows).filter(r=>!ctx.grades.some(g=>gradeKey(g)===r.key)).map(r=>({key:r.key,name:r.name}))];
-  window._pcn={date,list:list.map(x=>({...x,book:rows[x.key]?.bal||0}))};
-  document.getElementById('pcn-body').innerHTML=window._pcn.list.map((x,i)=>`<tr>
-    <td><span class="badge" style="background:#FAEEDA;color:#BA7517">${esc(x.name)}</span>${ctx.grades.some(g=>gradeKey(g)===x.key)?'':' <span style="font-size:11px;color:#d97706">not in Grade Master</span>'}</td>
-    <td class="mono" style="text-align:right">${prodFmt(x.book,1)}</td>
-    <td><input class="fc mono" style="text-align:right" type="number" min="0" step="0.1" id="pcn-q-${i}" value="${prev[x.key]??''}" oninput="prodCountDiff(${i})"></td>
-    <td class="mono" style="text-align:right" id="pcn-d-${i}"></td></tr>`).join('')||prodEmpty(4,'No grades in the Grade Master.');
-  window._pcn.list.forEach((x,i)=>prodCountDiff(i));
+  const ctx=await prodCtx(), date=document.getElementById('pcn-date')?.value||prodToday(), kind=document.getElementById('pcn-kind')?.value||'rm';
+  const [shiftRows,adj,disp,fet]=await Promise.all([prodLoadShifts(ctx,{to:date}), db.prodStockAdj.toArray().catch(()=>[]),
+    db.prodDispatch.toArray().catch(()=>[]), db.prodFettling.toArray().catch(()=>[])]);
+  const sameDay=adj.filter(a=>a.kind===kind&&a.reason===PROD_COUNT&&a.date===date);
+  let list;
+  // System stock at end of the count date, ignoring any count already saved for that date (it will be replaced)
+  if(kind==='rm'){
+    const {rows}=prodRmLedger(ctx,{lots:ctx.lots,adj,shiftRows,to:date,skipCountOn:date});
+    const prev=Object.fromEntries(sameDay.map(a=>[gradeKey(a.grade),a.counted]));
+    list=[...ctx.grades.map(g=>({key:gradeKey(g),name:g})),
+      ...Object.values(rows).filter(r=>!ctx.grades.some(g=>gradeKey(g)===r.key)).map(r=>({key:r.key,name:r.name,odd:true}))]
+      .map(x=>({...x,book:rows[x.key]?.bal||0,prev:prev[x.key]}));
+  } else {
+    const {rows}=prodPartLedger(ctx,{shiftRows,disp,adj,fet,to:date,skipCountOn:date});
+    const prev=Object.fromEntries(sameDay.map(a=>[String(a.partId),a.counted]));
+    list=ctx.parts.filter(p=>p.active!==false||rows[String(p.id)]).map(p=>({key:String(p.id),name:prodPartLabel(p),book:rows[String(p.id)]?.bal||0,prev:prev[String(p.id)]}));
+  }
+  const rm=kind==='rm', dp=rm?1:0;
+  window._pcn={date,kind,list};
+  document.getElementById('pcn-head').innerHTML=`<tr><th>${rm?'Grade':'Part'}</th><th style="text-align:right">${rm?'On paper (kg)':'System (pcs)'}</th><th style="text-align:right;width:150px">Actual (${rm?'kg':'pcs'})</th><th style="text-align:right">${rm?'Melting loss (kg)':'Difference (pcs)'}</th></tr>`;
+  document.getElementById('pcn-body').innerHTML=list.map((x,i)=>`<tr>
+    <td>${rm?`<span class="badge" style="background:#FAEEDA;color:#BA7517">${esc(x.name)}</span>${x.odd?' <span style="font-size:11px;color:#d97706">not in Grade Master</span>':''}`:esc(x.name)}</td>
+    <td class="mono" style="text-align:right">${prodFmt(x.book,dp)}</td>
+    <td><input class="fc mono" style="text-align:right" type="number" min="0" step="${rm?'0.1':'1'}" id="pcn-q-${i}" value="${x.prev??''}" oninput="prodCountDiff(${i})"></td>
+    <td class="mono" style="text-align:right" id="pcn-d-${i}"></td></tr>`).join('')||prodEmpty(4,rm?'No grades in the Grade Master.':'No parts in the Part Master.');
+  list.forEach((x,i)=>prodCountDiff(i));
 }
 function prodCountDiff(i){
-  const x=window._pcn.list[i], v=document.getElementById('pcn-q-'+i)?.value, el=document.getElementById('pcn-d-'+i);
+  const {list,kind}=window._pcn, x=list[i], v=document.getElementById('pcn-q-'+i)?.value, el=document.getElementById('pcn-d-'+i);
   if(!el) return;
   if(v===''||v==null){ el.textContent=''; return; }
-  const loss=x.book-prodN(v);
-  el.innerHTML=`<span style="font-weight:700;color:${loss<0?'#16a34a':'#b45309'}">${prodFmt(loss,1)}${loss<0?' (gain)':''}</span>`;
+  if(kind==='rm'){ const loss=x.book-prodN(v);
+    el.innerHTML=`<span style="font-weight:700;color:${loss<0?'#16a34a':'#b45309'}">${prodFmt(loss,1)}${loss<0?' (gain)':''}</span>`; }
+  else { const d=prodN(v)-x.book;
+    el.innerHTML=`<span style="font-weight:700;color:${d<0?'#dc2626':d>0?'#16a34a':'#6b7280'}">${d>0?'+':''}${prodFmt(d)}${d<0?' (short)':d>0?' (excess)':''}</span>`; }
 }
 async function prodSaveCount(){
-  const {date,list}=window._pcn||{}; if(!date) return;
+  const {date,kind,list}=window._pcn||{}; if(!date) return;
   if(date>prodToday()){ toast('Count date cannot be in the future','d'); return; }
   const entered=list.map((x,i)=>({...x,v:document.getElementById('pcn-q-'+i)?.value})).filter(x=>x.v!==''&&x.v!=null);
-  if(!entered.length){ toast('Enter the actual stock for at least one grade','d'); return; }
+  if(!entered.length){ toast('Enter the actual stock for at least one row','d'); return; }
   if(entered.some(x=>!(prodN(x.v)>=0))){ toast('Actual stock cannot be negative','d'); return; }
   const remark=document.getElementById('pcn-remark').value.trim();
   const adj=await db.prodStockAdj.toArray().catch(()=>[]);
+  const same=(a,x)=>kind==='rm'?gradeKey(a.grade)===x.key:String(a.partId)===x.key;
   for(const x of entered){
-    // One count per grade per date: replace an earlier entry for the same day
-    for(const old of adj.filter(a=>a.kind==='rm'&&a.reason===PROD_COUNT&&a.date===date&&gradeKey(a.grade)===x.key)) await db.prodStockAdj.delete(old.id);
-    if(!await db.prodStockAdj.add({kind:'rm',reason:PROD_COUNT,date,grade:x.name,counted:prodN(x.v),qty:0,remark,createdBy:Auth.user?.name||''})){ toast('Save failed','d'); return; }
+    // One count per item per date: replace an earlier entry for the same day
+    for(const old of adj.filter(a=>a.kind===kind&&a.reason===PROD_COUNT&&a.date===date&&same(a,x))) await db.prodStockAdj.delete(old.id);
+    const rec={kind,reason:PROD_COUNT,date,counted:prodN(x.v),qty:0,remark,createdBy:Auth.user?.name||''};
+    if(kind==='rm') rec.grade=x.name; else rec.partId=+x.key;
+    if(!await db.prodStockAdj.add(rec)){ toast('Save failed','d'); return; }
   }
-  prodClose('pcn-ov'); toast(`✅ Physical count saved for ${entered.length} grade${entered.length>1?'s':''}`);
+  prodClose('pcn-ov'); toast(`✅ Physical count saved for ${entered.length} ${kind==='rm'?'grade':'part'}${entered.length>1?'s':''}`);
   prodRenderStock(window._pst||{});
 }
 
