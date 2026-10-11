@@ -555,9 +555,11 @@ def restore():
         return jsonify({'error':'Invalid backup: "documents" must be a list of objects'}), 400
     if data.get('settings') is not None and not isinstance(data['settings'], dict):
         return jsonify({'error':'Invalid backup: "settings" must be an object'}), 400
+    if isinstance(data.get('audit'), list) and not all(isinstance(x, dict) for x in data['audit']):
+        return jsonify({'error':'Invalid backup: "audit" must be a list of objects'}), 400
     for key, value in data.items():
-        if key in ('exportedAt','exportedBy','appVersion','company','documents','versions',
-                   'audit','users','customDocTypes','settings','records','backupErrors'):
+        if key in ('exportedAt','exportedBy','appVersion','company','documents',
+                   'users','customDocTypes','settings','records','backupErrors'):
             continue
         if isinstance(value, list) and not all(isinstance(x, dict) for x in value):
             return jsonify({'error':f'Invalid backup: "{key}" must be a list of objects'}), 400
@@ -565,6 +567,8 @@ def restore():
     # Documents — clear all and restore fresh, but only if the file actually
     # contains a documents list; a file without one must not wipe them.
     doc_count = 0
+    doc_id_map = {}  # old document id (in the backup) -> new id after restore
+    new_docs = []
     if docs_in is not None:
         Document.query.delete()
     for d in (docs_in or []):
@@ -577,7 +581,14 @@ def restore():
             extra=json.dumps(d.get('extra',{}))
         )
         db.session.add(doc)
+        new_docs.append((d.get('id'), doc))
         doc_count += 1
+    # Documents get fresh ids on restore, so version/audit rows that point at
+    # a document by id must be re-pointed at the new one.
+    db.session.flush()
+    for old_id, doc in new_docs:
+        if old_id is not None:
+            doc_id_map[old_id] = doc.id
 
     # Settings
     for key, value in data.get('settings',{}).items():
@@ -586,7 +597,7 @@ def restore():
 
     # All array-type module data
     skip_keys = {'exportedAt','exportedBy','appVersion','company','documents',
-                 'versions','audit','users','customDocTypes','settings','records','backupErrors'}
+                 'audit','users','customDocTypes','settings','records','backupErrors'}
     module_count = 0
     for key, value in data.items():
         if key in skip_keys: continue
@@ -597,8 +608,29 @@ def restore():
         db.session.flush()
         for rec in value:
             nr = {k:v for k,v in rec.items() if k not in ('id','_rid')}
+            if key == 'versions' and nr.get('docId') in doc_id_map:
+                nr['docId'] = doc_id_map[nr['docId']]
             db.session.add(GenericRecord(module=key, data=json.dumps(nr)))
             module_count += 1
+
+    # Audit log — same rule as the other modules: only replaced if the file
+    # actually contains entries, so a backup without any can't wipe the trail.
+    audit_in = data.get('audit')
+    audit_count = 0
+    if isinstance(audit_in, list) and audit_in:
+        AuditLog.query.delete()
+        for a in audit_in:
+            try:
+                ts = datetime.fromisoformat(str(a.get('timestamp')))
+            except (TypeError, ValueError):
+                ts = datetime.utcnow()
+            doc_id = a.get('docId')
+            db.session.add(AuditLog(
+                action=a.get('action',''), module='documents',
+                doc_id=doc_id_map.get(doc_id, doc_id),
+                user=a.get('user',''), notes=a.get('notes'),
+                detail=a.get('notes'), timestamp=ts))
+            audit_count += 1
 
     # customDocTypes as setting
     if data.get('customDocTypes'):
@@ -620,7 +652,7 @@ def restore():
             db.session.add(lot)
 
     db.session.commit()
-    return jsonify({'ok':True,'documents':doc_count,'records':module_count})
+    return jsonify({'ok':True,'documents':doc_count,'records':module_count,'audit':audit_count})
 
 
 # ══════════════════════════════════════════════════════
