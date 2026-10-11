@@ -2084,7 +2084,7 @@ function prodPartLedger(ctx,{shiftRows,disp,adj,fet,from='',to,skipCountOn=null}
   const ev=[];
   const push=(partId,date,type,qty,extra={})=>{ if(!partId||(date&&date>to)) return; ev.push({k:String(partId),date:date||'',type,qty,...extra}); };
   shiftRows.forEach(r=>Object.entries(r.c.byPart).forEach(([k,v])=>v.okPcs&&push(k,r.s.date,'made',v.okPcs)));
-  disp.forEach(d=>push(d.partId,d.date,'disp',prodN(d.qty)));
+  disp.filter(d=>!d.excluded).forEach(d=>push(d.partId,d.date,'disp',prodN(d.qty)));
   fet.forEach(e=>(e.rows||[]).forEach(r=>{ push(r.partId,e.date,'fetRej',Math.min(prodN(r.rej),prodN(r.qty)),{fetQty:prodN(r.qty)}); }));
   adj.filter(a=>a.kind==='part').forEach(a=>{
     if(a.reason===PROD_COUNT){ if(a.date!==skipCountOn) push(a.partId,a.date,'count',prodN(a.counted),{rec:a}); }
@@ -2317,23 +2317,182 @@ async function prodDelAdj(id){
 async function prodRenderDispatch(f={}){
   const ctx=await prodCtx();
   f={from:f.from||prodToday().slice(0,8)+'01', to:f.to||prodToday(), partId:f.partId||''};
+  window._pdpF=f;
   const all=await db.prodDispatch.toArray().catch(()=>[]);
-  const rows=all.filter(d=>d.date>=f.from&&d.date<=f.to&&(!f.partId||String(d.partId)===String(f.partId)))
+  const inRange=all.filter(d=>d.date>=f.from&&d.date<=f.to&&(!f.partId||String(d.partId)===String(f.partId)))
     .sort((a,b)=>b.date.localeCompare(a.date)||b.id-a.id);
+  const rows=inRange.filter(d=>!d.excluded), excl=inRange.filter(d=>d.excluded);
   const tot=rows.reduce((s,d)=>s+prodN(d.qty),0);
+  const src=d=>d.source==='BUSY'?' <span class="badge" style="background:#e0e7ff;color:#3730a3;font-size:10px">BUSY</span>':'';
   setC(`
-  <div class="ph"><h2>🚚 Dispatch Register</h2><button class="btn btn-p" onclick="prodOpenDispatch()">➕ New Dispatch</button></div>
+  <div class="ph"><h2>🚚 Dispatch Register</h2><div style="display:flex;gap:8px">
+    <button class="btn btn-o" onclick="prodOpenBusyImport()">⬆ Import from BUSY</button>
+    <button class="btn btn-p" onclick="prodOpenDispatch()">➕ New Dispatch</button></div></div>
   ${prodFilterBar('pdp',f,ctx,{machine:false,shift:false,part:true,onApply:'prodRenderDispatch'})}
   <div class="card"><div class="tw"><table>
     <thead><tr><th>Date</th><th>Part</th><th style="text-align:right">Qty</th><th>Customer</th><th>Invoice / Challan</th><th>Remark</th><th></th></tr></thead>
     <tbody>${rows.map(d=>`<tr><td class="mono">${esc(d.date)}</td><td>${esc(prodPartLabel(ctx.partById[d.partId]))}</td>
       <td class="mono" style="text-align:right;font-weight:600">${prodFmt(prodN(d.qty))}</td><td>${esc(d.customer||'')}</td>
-      <td class="mono">${esc(d.invoice||'')}</td><td style="font-size:12px">${esc(d.remark||'')}</td>
-      <td style="white-space:nowrap"><button class="btn btn-o btn-xs" onclick="prodOpenDispatch(${d.id})">✏️</button>
+      <td class="mono">${esc(d.invoice||'')}${src(d)}</td><td style="font-size:12px">${esc(d.remark||'')}</td>
+      <td style="white-space:nowrap">${d.source==='BUSY'?`<button class="btn btn-o btn-xs" title="Not a real dispatch (e.g. weight difference) — exclude from stock" onclick="prodSetExcluded(${d.id},true)">⊘ Exclude</button>`:''}
+        <button class="btn btn-o btn-xs" onclick="prodOpenDispatch(${d.id})">✏️</button>
         <button class="btn btn-r btn-xs" onclick="prodDelDispatch(${d.id})">🗑️</button></td></tr>`).join('')||prodEmpty(7,'No dispatches in this range.')}</tbody>
     ${rows.length?`<tfoot><tr style="font-weight:700"><td colspan="2">TOTAL</td><td class="mono" style="text-align:right">${prodFmt(tot)}</td><td colspan="4"></td></tr></tfoot>`:''}
-  </table></div></div>`);
+  </table></div></div>
+  ${excl.length?`<div class="card"><div class="ch"><h5>⊘ Excluded invoices — not counted in stock</h5></div><div class="tw"><table>
+    <thead><tr><th>Date</th><th>Invoice</th><th>Customer</th><th>BUSY item</th><th style="text-align:right">Qty</th><th>Reason</th><th></th></tr></thead>
+    <tbody>${excl.map(d=>`<tr style="color:#6b7280"><td class="mono">${esc(d.date)}</td><td class="mono">${esc(d.invoice||'')}</td><td>${esc(d.customer||'')}</td>
+      <td>${esc(d.busyItem||prodPartLabel(ctx.partById[d.partId]))}</td><td class="mono" style="text-align:right">${prodFmt(prodN(d.qty))}</td>
+      <td style="font-size:12px">${esc(d.excludeReason||'')}</td>
+      <td><button class="btn btn-o btn-xs" onclick="prodSetExcluded(${d.id},false)" ${d.partId?'':'disabled title="Item is not matched to a part — import it again to match it"'}>↺ Count in stock</button></td></tr>`).join('')}</tbody>
+  </table></div></div>`:''}`);
 }
+async function prodSetExcluded(id,excluded){
+  const reason=excluded?prompt('Why is this invoice excluded? (e.g. weight difference)','Weight difference'):'';
+  if(excluded&&reason===null) return;
+  if(!await db.prodDispatch.update(id,{excluded,excludeReason:excluded?(reason||'Excluded').trim():''})){ toast('Save failed','d'); return; }
+  toast(excluded?'Excluded from stock':'✅ Counted in stock again'); prodRenderDispatch(window._pdpF||{});
+}
+
+// ══════════════════════════════════════════════════════
+//  BUSY IMPORT — "List of Sales Vouchers" exported from BUSY to Excel
+//  Each invoice line becomes a dispatch. Lines are keyed by invoice + item, so re-importing
+//  overlapping dates never adds anything twice. Invoices that are not real dispatches (weight
+//  or rate differences) are saved as excluded, so they stay visible and never come back.
+// ══════════════════════════════════════════════════════
+const PROD_BUSY_DEFAULT_RULES='weight diff, wt diff, wt. diff, weight difference, rate diff, rate difference';
+function prodLoadXlsx(){
+  if(window.XLSX) return Promise.resolve();
+  return new Promise((ok,fail)=>{ const sc=document.createElement('script');
+    sc.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'; sc.onload=ok; sc.onerror=()=>fail(new Error('Could not load the Excel reader')); document.head.appendChild(sc); });
+}
+const prodBusyNorm=v=>String(v||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+function prodBusyDate(v){
+  if(v instanceof Date) return prodDate(v);
+  const m=String(v||'').trim().match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{2,4})$/);
+  if(!m) return '';
+  const y=m[3].length===2?'20'+m[3]:m[3];
+  return `${y}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
+}
+// Read the sheet into invoice lines; the date / bill no / party continue from the row above
+function prodBusyParse(rows){
+  const hi=rows.findIndex(r=>r.some(c=>/^date$/i.test(String(c||'').trim()))&&r.some(c=>/item/i.test(String(c||''))));
+  if(hi<0) throw new Error('Could not find the header row (Date, Vch/Bill No, Particulars, Item Details, Qty.)');
+  const h=rows[hi].map(c=>String(c||'').trim().toLowerCase());
+  const col=re=>h.findIndex(c=>re.test(c));
+  const C={date:col(/^date$/),vch:col(/vch|bill/),party:col(/particular|party|customer/),item:col(/item/),qty:col(/^qty/),unit:col(/^unit/),notes:col(/note|narration|remark/)};
+  if(C.vch<0||C.item<0||C.qty<0) throw new Error('Missing Vch/Bill No, Item Details or Qty. column');
+  const lines=[], seen={}; let cur={};
+  for(const r of rows.slice(hi+1)){
+    const item=String(r[C.item]??'').trim(), qty=prodN(r[C.qty]);
+    if(r[C.vch]) cur={date:prodBusyDate(r[C.date]), invoice:String(r[C.vch]).trim(), customer:String(r[C.party]??'').trim(), notes:C.notes>=0?String(r[C.notes]??'').trim():''};
+    if(!item||/^total$/i.test(item)||!cur.invoice) continue;
+    const base=`${cur.invoice}|${prodBusyNorm(item)}`, n=(seen[base]=(seen[base]||0)+1);
+    lines.push({...cur, item, qty, unit:C.unit>=0?String(r[C.unit]??''):'', key:`${base}|${n}`,
+      notes:[cur.notes, C.notes>=0&&!r[C.vch]?String(r[C.notes]??'').trim():''].filter(Boolean).join(' ')});
+  }
+  return lines;
+}
+function prodBusyMatch(item,parts){
+  const n=prodBusyNorm(item);
+  return parts.find(p=>(p.busyItems||[]).some(b=>prodBusyNorm(b)===n))
+    || parts.find(p=>prodBusyNorm(p.partNumber).length>=4&&n.includes(prodBusyNorm(p.partNumber)))
+    || parts.find(p=>p.partName&&prodBusyNorm(p.partName)===n) || null;
+}
+
+async function prodOpenBusyImport(){
+  const cfg=await DB.getSetting('busyImport').catch(()=>null)||{};
+  const ov=document.createElement('div'); ov.className='overlay'; ov.id='pbi-ov';
+  ov.innerHTML=`<div class="modal" style="width:1000px;max-width:96vw">
+    <h3>⬆ Import dispatches from BUSY</h3>
+    <div style="font-size:12px;color:#6b7280;margin-bottom:10px">In BUSY open <b>List of Sales Vouchers</b> (with item details) for a date range and export it to Excel, then choose the file here.
+      Invoices already imported are skipped, so overlapping dates are safe.</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="fg"><label class="lbl">BUSY Excel file</label><input class="fc" type="file" id="pbi-file" accept=".xlsx,.xls" onchange="prodBusyRead()"></div>
+      <div class="fg"><label class="lbl" title="Invoices whose item, notes or bill no. contain any of these are unticked automatically">Auto-exclude invoices containing (comma separated)</label>
+        <input class="fc" id="pbi-rules" value="${esc(cfg.rules??PROD_BUSY_DEFAULT_RULES)}" onchange="prodBusyPreview()"></div>
+    </div>
+    <div id="pbi-prev" style="max-height:55vh;overflow:auto"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px"><button class="btn btn-o" onclick="prodClose('pbi-ov')">Cancel</button>
+      <button class="btn btn-p" id="pbi-go" onclick="prodBusySave()" disabled>⬆ Import</button></div>
+  </div>`;
+  document.body.appendChild(ov);
+}
+async function prodBusyRead(){
+  const f=document.getElementById('pbi-file').files[0], prev=document.getElementById('pbi-prev'); if(!f) return;
+  prev.innerHTML='<div style="padding:16px;color:#9ca3af">Reading…</div>';
+  try{
+    await prodLoadXlsx();
+    const wb=XLSX.read(await f.arrayBuffer(),{type:'array',cellDates:true});
+    const lines=prodBusyParse(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,raw:true,defval:null}));
+    if(!lines.length) throw new Error('No invoice lines found in the file');
+    const [ctx,all]=await Promise.all([prodCtx(),db.prodDispatch.toArray().catch(()=>[])]);
+    const done=Object.fromEntries(all.filter(d=>d.busyKey).map(d=>[d.busyKey,d]));
+    window._pbi={ctx,lines:lines.map(l=>({...l,existing:done[l.key]||null,partId:(prodBusyMatch(l.item,ctx.parts)||{}).id||''})),inv:{}};
+    prodBusyPreview();
+  }catch(e){ prev.innerHTML=`<div class="alert al-w" style="display:block">⚠️ ${esc(e.message)}</div>`; }
+}
+function prodBusyPreview(){
+  const st=window._pbi; if(!st) return;
+  const rules=document.getElementById('pbi-rules').value.split(',').map(w=>w.trim().toLowerCase()).filter(Boolean);
+  const invs=[...new Set(st.lines.map(l=>l.invoice))];
+  for(const inv of invs){
+    const ls=st.lines.filter(l=>l.invoice===inv), text=ls.map(l=>`${l.invoice} ${l.item} ${l.notes}`).join(' ').toLowerCase();
+    const hit=rules.find(w=>text.includes(w));
+    const prevState=st.inv[inv]||{};
+    st.inv[inv]={ include: prevState.manual?prevState.include:!hit, manual:prevState.manual, reason:hit?`Matches "${hit}"`:'',
+      done:ls.every(l=>l.existing) };
+  }
+  const opts=pid=>`<option value="">— match to part —</option>`+st.ctx.parts.map(p=>`<option value="${p.id}" ${String(p.id)===String(pid)?'selected':''}>${esc(prodPartLabel(p))}</option>`).join('');
+  const nNew=invs.filter(i=>!st.inv[i].done).length;
+  document.getElementById('pbi-prev').innerHTML=`<div style="font-size:12px;margin:4px 0 8px">${st.lines.length} lines in ${invs.length} invoices · <b>${nNew}</b> new · ${invs.length-nNew} already imported. Untick an invoice that is not a real dispatch (e.g. weight difference).</div>
+  <table><thead><tr><th style="width:60px">Count</th><th>Date</th><th>Invoice</th><th>Customer</th><th>BUSY item</th><th style="text-align:right">Qty</th><th>Part in VRA DMS</th></tr></thead><tbody>
+  ${invs.map(inv=>{ const s=st.inv[inv]; return st.lines.map((l,i)=>l.invoice!==inv?'':`<tr style="${s.done?'color:#9ca3af':!s.include?'background:#fef2f2':''}">
+    ${st.lines.findIndex(x=>x.invoice===inv)===i?`<td rowspan="${st.lines.filter(x=>x.invoice===inv).length}" style="vertical-align:top">${s.done?'<span style="font-size:11px">Already<br>imported</span>':`<input type="checkbox" ${s.include?'checked':''} onchange="prodBusyTick('${esc(inv)}',this.checked)">`}${!s.done&&!s.include&&s.reason?`<div style="font-size:10px;color:#b91c1c">${esc(s.reason)}</div>`:''}</td>`:''}
+    <td class="mono">${esc(l.date)}</td><td class="mono">${esc(l.invoice)}</td><td style="font-size:12px">${esc(l.customer)}</td>
+    <td style="font-size:12px">${esc(l.item)}${l.notes?`<div style="color:#6b7280;font-size:11px">${esc(l.notes)}</div>`:''}</td>
+    <td class="mono" style="text-align:right">${prodFmt(l.qty)} ${esc(l.unit)}</td>
+    <td>${s.done?esc(l.existing.excluded?'Excluded':prodPartLabel(st.ctx.partById[l.existing.partId])):`<select class="fc" style="min-width:220px;${!l.partId&&s.include?'border-color:#dc2626':''}" onchange="prodBusySetPart(${i},this.value)">${opts(l.partId)}</select>`}</td></tr>`).join(''); }).join('')}
+  </tbody></table>`;
+  document.getElementById('pbi-go').disabled=!nNew;
+}
+function prodBusyTick(inv,on){ const s=window._pbi.inv[inv]; s.include=on; s.manual=true; prodBusyPreview(); }
+function prodBusySetPart(i,pid){
+  const st=window._pbi, item=prodBusyNorm(st.lines[i].item);
+  // Same BUSY item elsewhere in the file gets the same part
+  st.lines.forEach(l=>{ if(prodBusyNorm(l.item)===item&&!l.existing) l.partId=pid; });
+  prodBusyPreview();
+}
+async function prodBusySave(){
+  const st=window._pbi; if(!st) return;
+  const todo=st.lines.filter(l=>!l.existing);
+  const missing=todo.filter(l=>st.inv[l.invoice].include&&!l.partId);
+  if(missing.length){ toast(`Match ${missing.length} BUSY item${missing.length>1?'s':''} to a part, or untick the invoice`,'d'); return; }
+  const bad=todo.filter(l=>st.inv[l.invoice].include&&!(l.qty>0)||!l.date);
+  if(bad.length){ toast(`Invoice ${bad[0].invoice} has no date or quantity`,'d'); return; }
+  const btn=document.getElementById('pbi-go'); btn.disabled=true; btn.textContent='Importing…';
+  await DB.setSetting('busyImport',{rules:document.getElementById('pbi-rules').value}).catch(()=>{});
+  // Remember which BUSY item is which part, so next import matches automatically
+  const map={};
+  todo.filter(l=>l.partId).forEach(l=>{ (map[l.partId]=map[l.partId]||new Set()).add(l.item); });
+  for(const [pid,items] of Object.entries(map)){
+    const p=st.ctx.partById[pid]; if(!p) continue;
+    const have=p.busyItems||[], add=[...items].filter(it=>!have.some(b=>prodBusyNorm(b)===prodBusyNorm(it)));
+    if(add.length) await db.prodParts.update(p.id,{busyItems:[...have,...add]});
+  }
+  let n=0, x=0;
+  for(const l of todo){
+    const s=st.inv[l.invoice];
+    const rec={date:l.date, partId:l.partId?+l.partId:null, qty:l.qty, customer:l.customer, invoice:l.invoice, remark:l.notes,
+      source:'BUSY', busyKey:l.key, busyItem:l.item, excluded:!s.include, excludeReason:s.include?'':(s.reason||'Unticked at import'),
+      createdBy:Auth.user?.name||''};
+    if(!await db.prodDispatch.add(rec)){ toast(`Import stopped at invoice ${l.invoice} — save failed`,'d'); btn.textContent='⬆ Import'; return; }
+    s.include?n++:x++;
+  }
+  prodClose('pbi-ov'); toast(`✅ Imported ${n} dispatch line${n===1?'':'s'}${x?`, ${x} excluded`:''}`);
+  prodRenderDispatch(window._pdpF||{});
+}
+
 async function prodOpenDispatch(id=null){
   const ctx=await prodCtx();
   const d=id? await db.prodDispatch.get(id) : null;
