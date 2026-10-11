@@ -5,6 +5,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime, timedelta
 import os
 import json
+import re
 import secrets
 
 app = Flask(__name__, static_folder='static')
@@ -81,6 +82,23 @@ class RMLot(db.Model):
             'grade':self.grade,'supplier':self.supplier,'invoice':self.invoice,
             'approvedBy':self.approved_by,'spectro':self.spectro,'bundles':self.bundles,
             'weightKg':self.weight_kg}
+
+def _grade_key(g):
+    # "ADC 12", "adc-12" and "ADC12" all compare equal
+    return re.sub(r'[^A-Z0-9]', '', str(g or '').upper())
+
+def _master_grade(g):
+    # Grade Master spelling of g ("adc 12" -> "ADC12"), or None if it is not in the Grade Master
+    k = _grade_key(g)
+    if not k:
+        return None
+    for r in GenericRecord.query.filter_by(module='pq_grades').all():
+        name = safe_json_loads(r.data, {}).get('grade')
+        if name and _grade_key(name) == k:
+            return name
+    return None
+
+GRADE_NOT_IN_MASTER = 'Grade must be selected from the Grade Master'
 
 def _to_float(v):
     try:
@@ -453,9 +471,12 @@ def save_rm_lot():
     existing = RMLot.query.filter_by(lot_number=d.get('lotNumber','')).first()
     if existing:
         return jsonify({'id': existing.id})
+    grade = _master_grade(d.get('grade'))
+    if not grade:
+        return jsonify({'error': GRADE_NOT_IN_MASTER}), 400
     lot = RMLot(
         lot_number=d.get('lotNumber'), date=d.get('date',''),
-        grade=d.get('grade',''), supplier=d.get('supplier',''),
+        grade=grade, supplier=d.get('supplier',''),
         invoice=d.get('invoice',''), approved_by=d.get('approvedBy',''),
         spectro=d.get('spectro',''), bundles=d.get('bundles',1),
         weight_kg=_to_float(d.get('weightKg'))
@@ -466,14 +487,42 @@ def save_rm_lot():
 
 @app.route('/api/rm/lots/<int:lid>', methods=['POST'])
 def update_rm_lot(lid):
-    # Only the received weight is editable — lot identity fields stay as printed on the labels.
+    # Partial update: only the fields sent are changed. The lot number stays as printed on the labels.
     l = RMLot.query.get(lid)
     if not l:
         return jsonify({'error': 'Not found'}), 404
     d = request.get_json(silent=True) or {}
-    l.weight_kg = _to_float(d.get('weightKg'))
+    if 'grade' in d and d.get('grade') != l.grade:
+        # A changed grade must come from the Grade Master; an old unchanged one is left as is
+        grade = _master_grade(d.get('grade'))
+        if not grade:
+            return jsonify({'error': GRADE_NOT_IN_MASTER}), 400
+        d['grade'] = grade
+    fields = {'date':'date', 'grade':'grade', 'supplier':'supplier', 'invoice':'invoice',
+              'approvedBy':'approved_by', 'spectro':'spectro'}
+    for k, col in fields.items():
+        if k in d:
+            setattr(l, col, str(d.get(k) or '').strip())
+    if 'bundles' in d:
+        try:
+            l.bundles = max(1, int(d.get('bundles')))
+        except (TypeError, ValueError):
+            pass
+    if 'weightKg' in d:
+        l.weight_kg = _to_float(d.get('weightKg'))
     db.session.commit()
     return jsonify(l.to_dict())
+
+@app.route('/api/rm/lots/rename-grade', methods=['POST'])
+def rename_rm_grade():
+    # Merge a misspelled / duplicate grade into the correct one across all lots.
+    d = request.get_json(silent=True) or {}
+    old, new = str(d.get('from') or ''), _master_grade(d.get('to'))
+    if not new:
+        return jsonify({'error': GRADE_NOT_IN_MASTER}), 400
+    n = RMLot.query.filter(RMLot.grade == old).update({'grade': new})
+    db.session.commit()
+    return jsonify({'updated': n})
 
 @app.route('/api/rm/lots/<int:lid>', methods=['DELETE'])
 def delete_rm_lot(lid):

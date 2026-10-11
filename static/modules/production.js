@@ -71,6 +71,12 @@ function prodOpts(items,sel,{val=x=>x,label=x=>x,blank=null}={}){
   return (blank!==null?`<option value="">${esc(blank)}</option>`:'')+
     items.map(x=>`<option value="${esc(val(x))}" ${String(val(x))===String(sel??'')?'selected':''}>${esc(label(x))}</option>`).join('');
 }
+// Grade dropdown from the Grade Master only. An old value not in the master stays selected
+// (flagged) so editing a record never changes its grade silently.
+function prodGradeOpts(grades,cur,blank){
+  const extra=cur&&!grades.includes(cur)?`<option value="${esc(cur)}" selected>${esc(cur)} (not in Grade Master)</option>`:'';
+  return prodOpts(grades,cur,blank===undefined?{}:{blank})+extra;
+}
 function prodEmpty(cols,msg){ return `<tr><td colspan="${cols}" style="text-align:center;padding:20px;color:#9ca3af">${msg}</td></tr>`; }
 function prodTile(icon,value,label,color,bg='#edf1fb'){
   return `<div class="sc"><div class="si" style="background:${bg}">${icon}</div><div><div class="sv" ${color?`style="color:${color}"`:''}>${value}</div><div class="sl2">${label}</div></div></div>`;
@@ -104,12 +110,9 @@ async function prodCtx(){
   parts.sort((a,b)=>String(a.partNumber).localeCompare(String(b.partNumber)));
   defects.sort((a,b)=>(prodN(a.order)||99)-(prodN(b.order)||99) || String(a.code).localeCompare(String(b.code)));
   const lotList=Array.isArray(lots)?lots:[];
-  const grades=new Set();
-  (Array.isArray(pqGrades)?pqGrades:[]).forEach(g=>g.grade&&grades.add(g.grade));
-  if(typeof rmGetList==='function') (rmGetList('grades')||[]).forEach(g=>g&&grades.add(g));
-  parts.forEach(p=>p.grade&&grades.add(p.grade));
-  lotList.forEach(l=>l.grade&&grades.add(l.grade));
-  return {machines, parts, defects, cfg, lots:lotList, grades:[...grades].sort(),
+  // Grades come only from the Grade Master — no other source, so no misspelled variants
+  const grades=[...new Set((Array.isArray(pqGrades)?pqGrades:[]).sort((a,b)=>(a.order??a.id)-(b.order??b.id)).map(g=>g.grade).filter(Boolean))];
+  return {machines, parts, defects, cfg, lots:lotList, grades,
     machineById:Object.fromEntries(machines.map(m=>[m.id,m])),
     partById:Object.fromEntries(parts.map(p=>[p.id,p])),
     defectByCode:Object.fromEntries(defects.map(d=>[d.code,d]))};
@@ -529,7 +532,7 @@ function prodPsRenderRuns(){
     <tbody>${rec.runs.map((x,i)=>{ const p=ctx.partById[x.partId], ct=prodCT(p,rec.machineId);
       return `<tr>
       <td><select class="fc" onchange="prodPsRunPart(${i},this.value)">${prodOpts(ctx.parts.filter(y=>y.active!==false||String(y.id)===String(x.partId)),x.partId,{val:y=>y.id,label:prodPartLabel,blank:'— select part —'})}</select></td>
-      <td><select class="fc" onchange="prodPsRun(${i},'grade',this.value)">${prodOpts([...new Set([...ctx.grades,x.grade].filter(Boolean))],x.grade,{blank:'—'})}</select></td>
+      <td><select class="fc" onchange="prodPsRun(${i},'grade',this.value)">${prodGradeOpts(ctx.grades,x.grade,'—')}</select></td>
       <td>${num(i,'cavities',x.cavities,`min="1" id="ps-cv-${i}"`)}</td>
       <td>${num(i,'shots',x.shots)}</td>
       <td>${num(i,'offShots',x.offShots)}</td>
@@ -2090,7 +2093,7 @@ async function prodOpenAdj(){
     <h3>Stock adjustment</h3>
     <div class="fg"><label class="lbl">Type</label><select class="fc" id="pad-kind" onchange="document.getElementById('pad-g').style.display=this.value==='rm'?'':'none';document.getElementById('pad-p').style.display=this.value==='rm'?'none':''">
       <option value="rm">Raw material (kg)</option><option value="part">Part (pcs)</option></select></div>
-    <div class="fg" id="pad-g"><label class="lbl">Grade</label><select class="fc" id="pad-grade">${prodOpts(ctx.grades,'')}</select></div>
+    <div class="fg" id="pad-g"><label class="lbl">Grade</label><select class="fc" id="pad-grade">${prodGradeOpts(ctx.grades,'','— select —')}</select></div>
     <div class="fg" id="pad-p" style="display:none"><label class="lbl">Part</label><select class="fc" id="pad-part">${prodOpts(ctx.parts,'',{val:p=>p.id,label:prodPartLabel})}</select></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
       <div class="fg"><label class="lbl">Date</label><input class="fc" type="date" id="pad-date" value="${prodToday()}"></div>
@@ -2209,7 +2212,7 @@ async function prodOpenPart(id=null){
       <div class="fg"><label class="lbl">Part Number *</label><input class="fc mono" id="ppt-pn" value="${esc(p?.partNumber||'')}"></div>
       <div class="fg"><label class="lbl">Part Name *</label><input class="fc" id="ppt-name" value="${esc(p?.partName||'')}"></div>
       <div class="fg"><label class="lbl">Customer</label><input class="fc" id="ppt-cust" value="${esc(p?.customer||'')}"></div>
-      <div class="fg"><label class="lbl">Default Grade</label><select class="fc" id="ppt-grade">${prodOpts([...new Set([...ctx.grades,p?.grade].filter(Boolean))],p?.grade,{blank:'—'})}</select></div>
+      <div class="fg"><label class="lbl">Default Grade</label><select class="fc" id="ppt-grade">${prodGradeOpts(ctx.grades,p?.grade,'—')}</select></div>
       <div class="fg"><label class="lbl">Net weight per part (kg) *</label><input class="fc" type="number" step="0.001" min="0" id="ppt-wt" value="${esc(p?.netWeightKg??'')}"></div>
       <div class="fg"><label class="lbl">Cavities in die</label><input class="fc" type="number" min="1" id="ppt-cav" value="${esc(p?.cavities??1)}"></div>
       ${ctx.machines.map(m=>`<div class="fg"><label class="lbl">Target cycle time on ${esc(m.code)} (sec/shot)</label><input class="fc" type="number" step="0.1" min="0" data-ct="${m.id}" value="${esc((p?.cycleTimes||{})[m.id]??'')}" placeholder="blank = not run on this machine"></div>`).join('')}
