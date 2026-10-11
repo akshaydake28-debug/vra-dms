@@ -466,14 +466,36 @@ def save_rm_lot():
 
 @app.route('/api/rm/lots/<int:lid>', methods=['POST'])
 def update_rm_lot(lid):
-    # Only the received weight is editable — lot identity fields stay as printed on the labels.
+    # Partial update: only the fields sent are changed. The lot number stays as printed on the labels.
     l = RMLot.query.get(lid)
     if not l:
         return jsonify({'error': 'Not found'}), 404
     d = request.get_json(silent=True) or {}
-    l.weight_kg = _to_float(d.get('weightKg'))
+    fields = {'date':'date', 'grade':'grade', 'supplier':'supplier', 'invoice':'invoice',
+              'approvedBy':'approved_by', 'spectro':'spectro'}
+    for k, col in fields.items():
+        if k in d:
+            setattr(l, col, str(d.get(k) or '').strip())
+    if 'bundles' in d:
+        try:
+            l.bundles = max(1, int(d.get('bundles')))
+        except (TypeError, ValueError):
+            pass
+    if 'weightKg' in d:
+        l.weight_kg = _to_float(d.get('weightKg'))
     db.session.commit()
     return jsonify(l.to_dict())
+
+@app.route('/api/rm/lots/rename-grade', methods=['POST'])
+def rename_rm_grade():
+    # Merge a misspelled / duplicate grade into the correct one across all lots.
+    d = request.get_json(silent=True) or {}
+    old, new = str(d.get('from') or ''), str(d.get('to') or '').strip()
+    if not new:
+        return jsonify({'error': 'New grade required'}), 400
+    n = RMLot.query.filter(RMLot.grade == old).update({'grade': new})
+    db.session.commit()
+    return jsonify({'updated': n})
 
 @app.route('/api/rm/lots/<int:lid>', methods=['DELETE'])
 def delete_rm_lot(lid):

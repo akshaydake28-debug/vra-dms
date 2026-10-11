@@ -224,7 +224,7 @@ async function rmRenderRegister(){
   const lots=await rmGetLots();
   const now=new Date(),tm=lots.filter(l=>{const d=new Date(l.date);return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear();}),pend=lots.filter(l=>l.spectro==='Pending');
   const tmKg=tm.reduce((s,l)=>s+(+l.weightKg||0),0),noWt=lots.filter(l=>!(+l.weightKg)).length;
-  setC(`<div class="ph"><h2>Raw Material — Lot Register</h2><button class="btn btn-p" onclick="nav('rm-labels')">➕ New Lot</button></div>
+  setC(`<div class="ph"><h2>Raw Material — Lot Register</h2><div style="display:flex;gap:8px"><button class="btn btn-o" onclick="rmOpenMerge()" title="Fix a misspelled or duplicate grade on all lots">🔀 Merge Grades</button><button class="btn btn-p" onclick="nav('rm-labels')">➕ New Lot</button></div></div>
   <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
     <div class="kpi-card"><div class="kpi-n">${lots.length}</div><div class="kpi-l">Total Lots</div></div>
     <div class="kpi-card"><div class="kpi-n">${tm.length}</div><div class="kpi-l">This Month</div></div>
@@ -237,13 +237,14 @@ async function rmRenderRegister(){
     <tbody>${lots.map(l=>`<tr>
       <td style="font-family:monospace;font-weight:700;color:#27500A">${l.lotNumber}</td>
       <td>${rmFmtDate(l.date)}</td>
-      <td><span class="badge" style="background:#FAEEDA;color:#BA7517">${l.grade}</span></td>
+      <td><span class="badge" style="background:#FAEEDA;color:#BA7517">${esc(l.grade)}</span></td>
       <td>${esc(l.supplier)}</td><td style="font-family:monospace;font-size:12px">${esc(l.invoice)}</td>
       <td style="text-align:right;white-space:nowrap;font-family:monospace">${+l.weightKg?(+l.weightKg).toLocaleString('en-IN',{maximumFractionDigits:1}):'<span style="color:#d97706">—</span>'}
         <button class="btn btn-o btn-xs" title="Edit weight" onclick="rmEditWeight(${l.id},${+l.weightKg||0})">✏️</button></td>
       <td><span class="badge ${l.spectro==='Done'?'ba':'bp'}">${l.spectro}</span></td>
-      <td>${l.approvedBy}</td><td style="text-align:center">${l.bundles}</td>
+      <td>${esc(l.approvedBy)}</td><td style="text-align:center">${l.bundles}</td>
       <td><div style="display:flex;gap:5px">
+        <button class="btn btn-o btn-sm" title="Edit lot" onclick="rmOpenEdit(${l.id})">✏️</button>
         <button class="btn btn-sm" style="background:#FAEEDA;color:#BA7517" onclick="rmPrintReg(${l.id})">🖨</button>
         <button class="btn btn-r btn-sm" onclick="rmDelLot(${l.id})">✕</button>
       </div></td>
@@ -264,6 +265,74 @@ async function rmEditWeight(id,cur){
     toast('✅ Weight saved');
   }catch(e){toast('Save failed','d');}
   rmRenderRegister();
+}
+
+// All grades known: the managed list plus any grade already used on a lot
+function rmAllGrades(lots){return[...new Set([...rmGetList('grades'),...lots.map(l=>l.grade).filter(Boolean)])];}
+function rmClose(id){document.getElementById(id)?.remove();}
+
+async function rmOpenEdit(id){
+  const lots=await rmGetLots(),l=lots.find(x=>x.id===id);if(!l)return;
+  const grades=rmAllGrades(lots),appr=[...new Set([...rmGetList('approvers'),l.approvedBy].filter(Boolean))];
+  const opt=(arr,cur)=>arr.map(o=>`<option${o===cur?' selected':''}>${esc(o)}</option>`).join('');
+  const ov=document.createElement('div');ov.className='overlay';ov.id='rme-ov';
+  ov.innerHTML=`<div class="modal" style="width:520px">
+    <h3>Edit Lot — <span style="font-family:monospace;color:#27500A">${esc(l.lotNumber)}</span></h3>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="fg"><label class="lbl">Received Date</label><input class="fc" type="date" id="rme-date" value="${esc(l.date)}"></div>
+      <div class="fg"><label class="lbl">Alloy Grade</label><select class="fc" id="rme-grade">${opt(grades,l.grade)}</select></div>
+      <div class="fg"><label class="lbl">Supplier</label><input class="fc" id="rme-sup" value="${esc(l.supplier)}"></div>
+      <div class="fg"><label class="lbl">Invoice No.</label><input class="fc" id="rme-inv" value="${esc(l.invoice)}"></div>
+      <div class="fg"><label class="lbl">Net Weight (kg)</label><input class="fc" type="number" min="0" step="0.1" id="rme-wt" value="${+l.weightKg||''}"></div>
+      <div class="fg"><label class="lbl">Bundles</label><input class="fc" type="number" min="1" step="1" id="rme-bun" value="${+l.bundles||1}"></div>
+      <div class="fg"><label class="lbl">Approved By</label><select class="fc" id="rme-appr"><option value="">— Select —</option>${opt(appr,l.approvedBy)}</select></div>
+      <div class="fg"><label class="lbl">Spectro Status</label><select class="fc" id="rme-spec">${opt(['Done','Pending','Not Required'],l.spectro)}</select></div>
+    </div>
+    <div style="font-size:11px;color:#6b7280;margin-bottom:10px">The lot number stays as printed on the labels. Re-print labels if you change details shown on them.</div>
+    <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-o" onclick="rmClose('rme-ov')">Cancel</button><button class="btn btn-p" onclick="rmSaveEdit(${l.id})">💾 Save</button></div>
+  </div>`;
+  document.body.appendChild(ov);
+}
+async function rmSaveEdit(id){
+  const v=k=>document.getElementById(k).value;
+  const wt=v('rme-wt').trim(),body={date:v('rme-date'),grade:v('rme-grade'),supplier:v('rme-sup').trim(),invoice:v('rme-inv').trim(),
+    approvedBy:v('rme-appr'),spectro:v('rme-spec'),bundles:parseInt(v('rme-bun'))||1,weightKg:wt===''?null:parseFloat(wt)};
+  if(!body.date||!body.grade){toast('Date and grade are required','d');return;}
+  if(wt!==''&&!(body.weightKg>=0)){toast('Enter a valid weight','d');return;}
+  try{
+    const r=await fetch(window.location.origin+'/api/rm/lots/'+id,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!r.ok)throw new Error(r.status);
+    rmClose('rme-ov');toast('✅ Lot updated');rmRenderRegister();
+  }catch(e){toast('Save failed','d');}
+}
+
+// Merge a misspelled / duplicate grade into the correct one on every lot
+async function rmOpenMerge(){
+  const lots=await rmGetLots(),cnt={};lots.forEach(l=>{const g=l.grade||'';cnt[g]=(cnt[g]||0)+1;});
+  const used=Object.keys(cnt).sort(),all=rmAllGrades(lots);
+  if(!used.length){toast('No lots yet','d');return;}
+  const ov=document.createElement('div');ov.className='overlay';ov.id='rmm-ov';
+  ov.innerHTML=`<div class="modal" style="width:440px">
+    <h3>🔀 Merge Grades</h3>
+    <div style="font-size:12px;color:#6b7280;margin-bottom:10px">Moves every lot with the wrong grade to the correct grade, so stock shows as one entry.</div>
+    <div class="fg"><label class="lbl">Wrong / duplicate grade</label><select class="fc" id="rmm-from">${used.map(g=>`<option value="${esc(g)}">${esc(g||'(blank)')} — ${cnt[g]} lot${cnt[g]>1?'s':''}</option>`).join('')}</select></div>
+    <div class="fg"><label class="lbl">Correct grade</label><input class="fc" id="rmm-to" list="rmm-list" placeholder="Pick or type the correct grade"><datalist id="rmm-list">${all.map(g=>`<option value="${esc(g)}">`).join('')}</datalist></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-o" onclick="rmClose('rmm-ov')">Cancel</button><button class="btn btn-p" onclick="rmSaveMerge()">Merge</button></div>
+  </div>`;
+  document.body.appendChild(ov);
+}
+async function rmSaveMerge(){
+  const from=document.getElementById('rmm-from').value,to=document.getElementById('rmm-to').value.trim();
+  if(!to){toast('Enter the correct grade','d');return;}
+  if(from===to){toast('Both grades are the same','d');return;}
+  if(!confirm(`Change grade "${from||'(blank)'}" to "${to}" on all its lots?`))return;
+  try{
+    const r=await fetch(window.location.origin+'/api/rm/lots/rename-grade',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({from,to})});
+    if(!r.ok)throw new Error(r.status);const d=await r.json();
+    // Keep the managed grade list clean: add the correct grade, drop the wrong one
+    const gl=rmGetList('grades').filter(g=>g!==from);if(!gl.includes(to))gl.push(to);rmSaveList('grades',gl);
+    rmClose('rmm-ov');toast(`✅ ${d.updated} lot${d.updated===1?'':'s'} moved to ${to}`);rmRenderRegister();
+  }catch(e){toast('Merge failed','d');}
 }
 
 async function rmDelLot(id){if(!confirm('Delete this lot?'))return;await fetch(window.location.origin+'/api/rm/lots/'+id,{method:'DELETE'});toast('Lot deleted','s');rmRenderRegister();}
