@@ -652,6 +652,8 @@ async function mktViewFeasibilityById(id){
           <input class="fc" id="fr-part" value="${esc(f.partName||'')}"></div>
         <div class="fg"><label class="lbl">Part Number</label>
           <input class="fc mono" id="fr-partno" value="${esc(f.partNumber||'')}"></div>
+        <div class="fg"><label class="lbl">Monthly Volume (pcs/month) *</label>
+          <input class="fc" id="fr-volume" type="number" min="1" step="1" value="${f.monthlyVolume||''}" placeholder="Required"></div>
         <div class="fg"><label class="lbl">Reviewed By</label>
           <input class="fc" id="fr-rev" value="${esc(f.reviewedBy||'Akshay Dake')}"></div>
         <div class="fg"><label class="lbl">Overall Result</label>
@@ -688,6 +690,10 @@ async function mktViewFeasibilityById(id){
 }
 
 async function mktSaveFeasibility(id){
+  // Monthly volume feeds the quotation's volume-basis note, so an FR
+  // cannot be saved without it.
+  const monthlyVolume=parseInt(document.getElementById('fr-volume').value,10)||0;
+  if(monthlyVolume<=0){ toast('Monthly Volume (pcs/month) is required','d'); document.getElementById('fr-volume').focus(); return; }
   const answers={};
   // Only read checked checkboxes — data-val has the Y/N/NA value
   document.querySelectorAll('.feas-yn:checked').forEach(chk=>{
@@ -710,6 +716,7 @@ async function mktSaveFeasibility(id){
     result:document.getElementById('fr-result').value,
     reference:document.getElementById('fr-ref').value.trim(),
     specialRemark:document.getElementById('fr-remark').value.trim(),
+    monthlyVolume,
     answers, updatedAt:new Date().toISOString()
   });
   toast('✅ Feasibility review saved');
@@ -1011,6 +1018,7 @@ async function mktPrintFeasibility(id){
     <div class="mc" style="grid-column:span 2"><div class="ml">Customer</div><div class="mv">M/s ${f.customerName}</div></div>
     <div class="mc"><div class="ml">Part Name</div><div class="mv">${f.partName}</div></div>
     <div class="mc"><div class="ml">Part Number</div><div class="mv">${f.partNumber||'—'}</div></div>
+    <div class="mc" style="grid-column:span 4"><div class="ml">Monthly Volume</div><div class="mv">${f.monthlyVolume?mktPcs(f.monthlyVolume)+' pcs/month':'—'}</div></div>
   </div>
 
   ${sections.map(s=>secBlock(s)).join('')}
@@ -1057,18 +1065,39 @@ function mktQuoteStatusBadge(s){
   const m={Draft:'bd',Submitted:'bp',Approved:'ba',Rejected:'br',Superseded:'bs'};
   return`<span class="badge ${m[s]||'bd'}">${s||'Draft'}</span>`;
 }
+function mktPcs(n){ return num(n).toLocaleString('en-IN'); }
+// Monthly volume lives on the quote once saved; until then fall back to the
+// linked enquiry's feasibility review, where it is mandatory.
+async function mktQuoteMonthlyVolume(q){
+  if(num(q.monthlyVolume)>0) return num(q.monthlyVolume);
+  const enq=q.enqId?await db.mktEnquiries.get(q.enqId).catch(()=>null):null;
+  const fr=enq?.feasibilityId?await db.mktFeasibility.get(enq.feasibilityId).catch(()=>null):null;
+  return num(fr?.monthlyVolume);
+}
 function mktQuoteEditable(status){ return status==='Draft'||status==='Rejected'; }
 
 function mktQuoteDefaultInputs(){
   return {
     shotWeight:0, netWeight:0, meltingLossPct:0, rawMaterialCostPerKg:0, inventoryCarryingPct:0,
     pdcTonnage:0, cavities:1, shotRate:0,
-    fettling:0, trimming:0, shotBlasting:0,
-    cncCycleTimeMin:0, cncCostPerHour:0, vmcCycleTimeMin:0, vmcCostPerHour:0,
+    fettling:0, trimming:0, shotBlastingPerKg:0,
+    cncCycleTimeSec:0, cncCostPerHour:0, vmcCycleTimeSec:0, vmcCostPerHour:0,
     drilling:0, leakTest:0, inspection:0,
     castingRejectionPct:0, packing:0, transportation:0,
     profitOverheadsPct:0.10, gstPct:0.18
   };
+}
+
+// ── Older quotes stored machining cycle time in minutes and shot blasting as
+//    a flat INR/part. Translate those into the current basis (seconds, INR/KG)
+//    so they still open, print and recalc to the same value. ──
+function mktQuoteDerivedRates(inp){
+  const netWeight=num(inp.netWeight);
+  const cncCycleTimeSec=inp.cncCycleTimeSec!==undefined?num(inp.cncCycleTimeSec):num(inp.cncCycleTimeMin)*60;
+  const vmcCycleTimeSec=inp.vmcCycleTimeSec!==undefined?num(inp.vmcCycleTimeSec):num(inp.vmcCycleTimeMin)*60;
+  const shotBlastingPerKg=inp.shotBlastingPerKg!==undefined?num(inp.shotBlastingPerKg)
+    :(netWeight>0?num(inp.shotBlasting)/netWeight:0);
+  return {cncCycleTimeSec,vmcCycleTimeSec,shotBlastingPerKg};
 }
 
 // ── COST ENGINE — mirrors the "Process Quote" Excel sheet formulas exactly ──
@@ -1086,9 +1115,13 @@ function mktCalcQuote(q){
   const shotRate=num(inp.shotRate);
   const actualShotRate=shotRate/cavities; // (B)
 
-  const cncCost=(num(inp.cncCostPerHour)/60)*num(inp.cncCycleTimeMin);
-  const vmcCost=(num(inp.vmcCostPerHour)/60)*num(inp.vmcCycleTimeMin);
-  const otherProcessCost=num(inp.fettling)+num(inp.trimming)+num(inp.shotBlasting)+cncCost+vmcCost+num(inp.drilling)+num(inp.leakTest)+num(inp.inspection); // (C)
+  // Machining is charged at machine hour rate (INR/hr) × cycle time in seconds.
+  const {cncCycleTimeSec,vmcCycleTimeSec,shotBlastingPerKg}=mktQuoteDerivedRates(inp);
+  const cncCost=(num(inp.cncCostPerHour)/3600)*cncCycleTimeSec;
+  const vmcCost=(num(inp.vmcCostPerHour)/3600)*vmcCycleTimeSec;
+  // Shot blasting is charged per KG of casting (net weight).
+  const shotBlastingCost=shotBlastingPerKg*netWeight;
+  const otherProcessCost=num(inp.fettling)+num(inp.trimming)+shotBlastingCost+cncCost+vmcCost+num(inp.drilling)+num(inp.leakTest)+num(inp.inspection); // (C)
 
   const totalProcessCost=actualShotRate+otherProcessCost; // B+C
   const castingRejectionAmt=actualShotRate*num(inp.castingRejectionPct);
@@ -1109,6 +1142,7 @@ function mktCalcQuote(q){
   }
 
   return {totalProductWeight,inventoryCarryingCost,totalRawMaterialCost,actualShotRate,cncCost,vmcCost,
+    cncCycleTimeSec,vmcCycleTimeSec,shotBlastingPerKg,shotBlastingCost,
     otherProcessCost,totalProcessCost,castingRejectionAmt,profitOverheadsAmt,finalCostPerPart,finalCostWithGst,
     toolingTotal,toolingPerPiece,finalWithTooling};
 }
@@ -1291,9 +1325,9 @@ function mktGatherQuoteInputs(){
     rawMaterialCostPerKg:num(gv('q-rawMaterialCostPerKg')),
     inventoryCarryingPct:num(gv('q-inventoryCarryingPct'))/100,
     pdcTonnage:num(gv('q-pdcTonnage')), cavities:num(gv('q-cavities'))||1, shotRate:num(gv('q-shotRate')),
-    fettling:num(gv('q-fettling')), trimming:num(gv('q-trimming')), shotBlasting:num(gv('q-shotBlasting')),
-    cncCycleTimeMin:num(gv('q-cncCycleTimeMin')), cncCostPerHour:num(gv('q-cncCostPerHour')),
-    vmcCycleTimeMin:num(gv('q-vmcCycleTimeMin')), vmcCostPerHour:num(gv('q-vmcCostPerHour')),
+    fettling:num(gv('q-fettling')), trimming:num(gv('q-trimming')), shotBlastingPerKg:num(gv('q-shotBlastingPerKg')),
+    cncCycleTimeSec:num(gv('q-cncCycleTimeSec')), cncCostPerHour:num(gv('q-cncCostPerHour')),
+    vmcCycleTimeSec:num(gv('q-vmcCycleTimeSec')), vmcCostPerHour:num(gv('q-vmcCostPerHour')),
     drilling:num(gv('q-drilling')), leakTest:num(gv('q-leakTest')), inspection:num(gv('q-inspection')),
     castingRejectionPct:num(gv('q-castingRejectionPct'))/100,
     packing:num(gv('q-packing')), transportation:num(gv('q-transportation')),
@@ -1312,6 +1346,7 @@ function mktRecalcQuoteForm(){
   setTxt('qc-invCarry', '₹'+mktINR(c.inventoryCarryingCost));
   setTxt('qc-rawMatTotal', '₹'+mktINR(c.totalRawMaterialCost));
   setTxt('qc-shotRatePc', '₹'+mktINR(c.actualShotRate));
+  setTxt('qc-shotBlastingCost', '₹'+mktINR(c.shotBlastingCost));
   setTxt('qc-cncCost', '₹'+mktINR(c.cncCost));
   setTxt('qc-vmcCost', '₹'+mktINR(c.vmcCost));
   setTxt('qc-otherProcess', '₹'+mktINR(c.otherProcessCost));
@@ -1335,6 +1370,8 @@ async function mktViewQuotation(id){
   const enq=q.enqId?await db.mktEnquiries.get(q.enqId).catch(()=>null):null;
   const siblings=await db.mktQuotations.where('quoteFamily').equals(q.quoteFamily).toArray().catch(()=>[]);
   const inp=q.inputs||mktQuoteDefaultInputs();
+  const rates=mktQuoteDerivedRates(inp);
+  const monthlyVolume=await mktQuoteMonthlyVolume(q);
   _mktToolingItems=JSON.parse(JSON.stringify(q.toolingItems||[]));
   _mktQuoteEditable=mktQuoteEditable(q.status);
   const editable=_mktQuoteEditable;
@@ -1373,6 +1410,7 @@ async function mktViewQuotation(id){
         <div class="fg"><label class="lbl">Part Name *</label><input class="fc" id="q-partName" value="${esc(q.partName||'')}" ${dis}></div>
         <div class="fg"><label class="lbl">Part Number</label><input class="fc mono" id="q-partNumber" value="${esc(q.partNumber||'')}" ${dis}></div>
         <div class="fg"><label class="lbl">Material Grade</label><input class="fc" id="q-materialGrade" value="${esc(q.materialGrade||'')}" placeholder="e.g. ADC12" ${dis}></div>
+        <div class="fg"><label class="lbl">Monthly Volume (pcs/month) *</label><input class="fc" id="q-monthlyVolume" type="number" min="1" step="1" value="${monthlyVolume||''}" placeholder="From feasibility review" ${dis}></div>
       </div>
     </div>
   </div>
@@ -1413,12 +1451,14 @@ async function mktViewQuotation(id){
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
         <div class="fg"><label class="lbl">Fettling (INR/part)</label><input class="fc" id="q-fettling" type="number" step="0.01" value="${inp.fettling||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
         <div class="fg"><label class="lbl">Trimming (INR/part)</label><input class="fc" id="q-trimming" type="number" step="0.01" value="${inp.trimming||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
-        <div class="fg"><label class="lbl">Shot Blasting (INR/part)</label><input class="fc" id="q-shotBlasting" type="number" step="0.01" value="${inp.shotBlasting||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
-        <div class="fg"><label class="lbl">CNC Cycle Time (minutes)</label><input class="fc" id="q-cncCycleTimeMin" type="number" step="0.01" value="${inp.cncCycleTimeMin||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
-        <div class="fg"><label class="lbl">CNC Cost (INR/hour)</label><input class="fc" id="q-cncCostPerHour" type="number" step="0.01" value="${inp.cncCostPerHour||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">Shot Blasting Rate (INR/KG)</label><input class="fc" id="q-shotBlastingPerKg" type="number" step="0.01" value="${+rates.shotBlastingPerKg.toFixed(4)}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">Shot Blasting (INR/part = rate × net wt.)</label><div class="mono" id="qc-shotBlastingCost">₹0.00</div></div>
+        <div class="fg"></div>
+        <div class="fg"><label class="lbl">CNC Cycle Time (seconds)</label><input class="fc" id="q-cncCycleTimeSec" type="number" step="1" value="${+rates.cncCycleTimeSec.toFixed(2)}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">CNC Machine Hour Rate (INR/hour)</label><input class="fc" id="q-cncCostPerHour" type="number" step="0.01" value="${inp.cncCostPerHour||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
         <div class="fg"><label class="lbl">CNC Cost (INR/part)</label><div class="mono" id="qc-cncCost">₹0.00</div></div>
-        <div class="fg"><label class="lbl">VMC Cycle Time (minutes)</label><input class="fc" id="q-vmcCycleTimeMin" type="number" step="0.01" value="${inp.vmcCycleTimeMin||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
-        <div class="fg"><label class="lbl">VMC Cost (INR/hour)</label><input class="fc" id="q-vmcCostPerHour" type="number" step="0.01" value="${inp.vmcCostPerHour||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">VMC Cycle Time (seconds)</label><input class="fc" id="q-vmcCycleTimeSec" type="number" step="1" value="${+rates.vmcCycleTimeSec.toFixed(2)}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">VMC Machine Hour Rate (INR/hour)</label><input class="fc" id="q-vmcCostPerHour" type="number" step="0.01" value="${inp.vmcCostPerHour||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
         <div class="fg"><label class="lbl">VMC Cost (INR/part)</label><div class="mono" id="qc-vmcCost">₹0.00</div></div>
         <div class="fg"><label class="lbl">Drilling &amp; Counter Sunk (INR/part)</label><input class="fc" id="q-drilling" type="number" step="0.01" value="${inp.drilling||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
         <div class="fg"><label class="lbl">Leak Test (INR/part)</label><input class="fc" id="q-leakTest" type="number" step="0.01" value="${inp.leakTest||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
@@ -1527,6 +1567,7 @@ async function mktSaveQuotation(id, silent){
     date:gv('q-date'), customerName, partName,
     partNumber:gv('q-partNumber').trim(),
     materialGrade:gv('q-materialGrade').trim(),
+    monthlyVolume:parseInt(gv('q-monthlyVolume'),10)||0,
     inputs, toolingItems:_mktToolingItems, amortizeEnabled, amortizeQty,
     notes:gv('q-notes').trim(),
     updatedAt:new Date().toISOString()
@@ -1539,6 +1580,7 @@ async function mktSubmitQuotation(id){
   const q=await db.mktQuotations.get(id);
   if(!q) return;
   if(!['Draft','Rejected'].includes(q.status)){ toast('Only Draft or Rejected quotations can be submitted','d'); return; }
+  if(!(parseInt(gv('q-monthlyVolume'),10)>0)){ toast('Monthly Volume (pcs/month) is required before submitting','d'); return; }
   if(!confirm(`Submit ${q.quoteFamily} (Rev ${q.revision}) for approval?`)) return;
   const saved=await mktSaveQuotation(id, true);
   if(saved===false) return;
@@ -1595,6 +1637,7 @@ async function mktReviseQuotation(id){
     status:'Draft',
     date:new Date().toISOString().split('T')[0],
     customerName:q.customerName, partName:q.partName, partNumber:q.partNumber, materialGrade:q.materialGrade,
+    monthlyVolume:q.monthlyVolume||0,
     inputs:{...q.inputs}, toolingItems:JSON.parse(JSON.stringify(q.toolingItems||[])),
     amortizeEnabled:q.amortizeEnabled, amortizeQty:q.amortizeQty,
     createdBy:user?.name||'', createdByUsername:user?.username||'', createdAt:new Date().toISOString(),
@@ -1662,6 +1705,23 @@ async function mktPrintQuotation(id){
   const inp=q.inputs||{};
   const c=mktCalcQuote(q);
   const today=new Date().toLocaleDateString('en-IN');
+  const monthlyVolume=await mktQuoteMonthlyVolume(q);
+  const hasTooling=(q.toolingItems||[]).length>0;
+  const gst=(num(inp.gstPct)*100).toFixed(0);
+  const notes=[
+    `Raw material cost is as per market rate, linked to the monthly average ${esc(q.materialGrade||'alloy')} rate. If that rate moves by more than ±5%, the part price will be revised.`,
+    `Prices are ${num(inp.transportation)>0?"FOR customer's plant (transportation included)":'Ex-Works Ichalkaranji'}, based on a volume of ${monthlyVolume?mktPcs(monthlyVolume):'___'} pcs/month. Any change in volume may require a re-quote.`,
+    `${gst}% GST and other taxes extra, as applicable at the time of supply. Payment: 30 days from invoice date. Quotation valid for 30 days from the date above.`,
+    ...(hasTooling?[
+      'Tooling: 70% advance with PO and 30% on part approval. T1 samples within 8 weeks from PO and tooling advance, followed by PPAP / FAIR after approval.',
+      'The die belongs to the customer once paid for in full. Die life is 1,00,000 shots, and die maintenance up to that life is our responsibility.',
+    ]:[]),
+    ...(q.notes?[esc(q.notes)]:[]),
+    'Subject to Ichalkaranji jurisdiction.',
+  ];
+  const cav=num(inp.cavities)||1;
+  const pct=v=>+(num(v)*100).toFixed(2);
+  const secNum=v=>+num(v).toFixed(1);
   const toolingRows=(q.toolingItems||[]).map(t=>`<tr><td>${esc(t.category)}</td><td>${esc(t.description||'')}</td><td style="text-align:right">₹${mktINR(t.cost)}</td></tr>`).join('');
 
   const statusColor={Draft:'#6b7280',Submitted:'#a06a12',Approved:'#15803d',Rejected:'#b91c1c',Superseded:'#6b46c1'}[q.status]||'#6b7280';
@@ -1686,23 +1746,26 @@ async function mktPrintQuotation(id){
     <tbody>
       <tr><td>Shot Weight</td><td>KG</td><td style="text-align:right">${num(inp.shotWeight).toFixed(3)}</td></tr>
       <tr><td>Net Weight</td><td>KG</td><td style="text-align:right">${num(inp.netWeight).toFixed(3)}</td></tr>
-      <tr><td>Total Product Weight (incl. melting loss ${(num(inp.meltingLossPct)*100).toFixed(1)}%)</td><td>KG</td><td style="text-align:right">${c.totalProductWeight.toFixed(3)}</td></tr>
+      <tr><td>Total Product Weight (incl. melting loss ${pct(inp.meltingLossPct)}%)</td><td>KG</td><td style="text-align:right">${c.totalProductWeight.toFixed(3)}</td></tr>
       <tr><td>Total Raw Material Cost (A)</td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.totalRawMaterialCost)}</td></tr>
-      <tr><td>Actual Shot Rate / Part (B)</td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.actualShotRate)}</td></tr>
+      <tr><td>PDC Machine Tonnage</td><td>TON</td><td style="text-align:right">${num(inp.pdcTonnage)||'—'}</td></tr>
+      <tr><td>Shot Rate</td><td>INR/SHOT</td><td style="text-align:right">₹${mktINR(inp.shotRate)}</td></tr>
+      <tr><td>No. of Cavities</td><td>NOS</td><td style="text-align:right">${cav}</td></tr>
+      <tr><td>Actual Shot Rate / Part (B) <span style="color:#666;font-size:7pt">— Shot rate ÷ No. of cavities</span></td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.actualShotRate)}</td></tr>
       <tr><td>Fettling</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.fettling)}</td></tr>
       <tr><td>Trimming</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.trimming)}</td></tr>
-      <tr><td>Shot Blasting</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.shotBlasting)}</td></tr>
-      <tr><td>CNC</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.cncCost)}</td></tr>
-      <tr><td>VMC</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.vmcCost)}</td></tr>
+      <tr><td>Shot Blasting <span style="color:#666;font-size:7pt">— ₹${mktINR(c.shotBlastingPerKg)}/KG</span></td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.shotBlastingCost)}</td></tr>
+      <tr><td>CNC <span style="color:#666;font-size:7pt">— MHR ₹${mktINR(inp.cncCostPerHour)}/hr · Cycle time ${secNum(c.cncCycleTimeSec)} sec</span></td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.cncCost)}</td></tr>
+      <tr><td>VMC <span style="color:#666;font-size:7pt">— MHR ₹${mktINR(inp.vmcCostPerHour)}/hr · Cycle time ${secNum(c.vmcCycleTimeSec)} sec</span></td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.vmcCost)}</td></tr>
       <tr><td>Drilling &amp; Counter Sunk</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.drilling)}</td></tr>
       <tr><td>Leak Test</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.leakTest)}</td></tr>
       <tr><td>Inspection</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.inspection)}</td></tr>
       <tr><td>Total Other Process Cost (C)</td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.otherProcessCost)}</td></tr>
       <tr><td>Total Process Cost (B+C)</td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.totalProcessCost)}</td></tr>
-      <tr><td>Casting Rejection (${(num(inp.castingRejectionPct)*100).toFixed(1)}%)</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.castingRejectionAmt)}</td></tr>
+      <tr><td>Casting Rejection (${pct(inp.castingRejectionPct)}%)</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.castingRejectionAmt)}</td></tr>
       <tr><td>Packing</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.packing)}</td></tr>
       <tr><td>Transportation</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.transportation)}</td></tr>
-      <tr><td>Profit &amp; Overheads (${(num(inp.profitOverheadsPct)*100).toFixed(1)}%)</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.profitOverheadsAmt)}</td></tr>
+      <tr><td>Profit &amp; Overheads (${pct(inp.profitOverheadsPct)}%)</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.profitOverheadsAmt)}</td></tr>
     </tbody>
   </table>
 
@@ -1726,9 +1789,7 @@ async function mktPrintQuotation(id){
 
   <div class="sec-bar">NOTES</div>
   <table class="dt" style="margin-bottom:8px"><tbody>
-    <tr><td>1. Raw material cost will vary and considered as per market rate at the time of production.</td></tr>
-    <tr><td>2. ${(num(inp.gstPct)*100).toFixed(0)}% GST applicable extra on final cost/part.</td></tr>
-    ${q.notes?`<tr><td>3. ${esc(q.notes)}</td></tr>`:''}
+    ${notes.map((n,i)=>`<tr><td>${i+1}. ${n}</td></tr>`).join('')}
   </tbody></table>
 
   <div class="pg-ftr"><span>${q.quoteFamily} &middot; Rev ${q.revision} &nbsp;|&nbsp; V R Alucast — Confidential</span><span>Generated ${today}</span></div>
