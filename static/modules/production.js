@@ -2042,6 +2042,41 @@ const PROD_STOCK_PERIODS = {
   'all':        ['All time',       ()=>['',prodToday()]],
 };
 
+// ── Raw material ledger ───────────────────────────────
+// Walks every raw material movement per grade in date order. "On paper" consumption is the net metal in the
+// castings (no assumed melting loss). A physical count (stock at the END of its date) resets the balance to the
+// counted kg; the gap between paper and counted stock is the actual melting loss.
+const PROD_COUNT='Physical Count';
+function prodRmLedger(ctx,{lots,adj,shiftRows,from='',to,skipCountOn=null}){
+  const name=k=>ctx.grades.find(m=>gradeKey(m)===k);
+  const ev=[], names={};
+  const push=(gName,date,type,qty,extra={})=>{ const k=gradeKey(gName)||'—'; if(!(date&&date<=to)&&date) return;
+    names[k]=names[k]||name(k)||gName||'—'; ev.push({k,date:date||'',type,qty,...extra}); };
+  lots.forEach(l=>prodN(l.weightKg)&&push(l.grade,l.date,'recv',prodN(l.weightKg)));
+  adj.filter(a=>a.kind==='rm').forEach(a=>{
+    if(a.reason===PROD_COUNT){ if(a.date!==skipCountOn) push(a.grade,a.date,'count',prodN(a.counted),{rec:a}); }
+    else push(a.grade,a.date,a.reason==='Opening Stock'?'open':'adj',prodN(a.qty)); });
+  shiftRows.forEach(r=>Object.entries(r.c.byGrade).forEach(([g,v])=>v.netKg&&push(g,r.s.date,'used',v.netKg)));
+  ev.sort((a,b)=>a.date.localeCompare(b.date)||(a.type==='count')-(b.type==='count')||(a.rec?.id||0)-(b.rec?.id||0));
+
+  const rows={}, counts=[];
+  const R=k=>rows[k]||(rows[k]={key:k,name:names[k],open:0,recv:0,adj:0,used:0,loss:0,bal:0,since:0});
+  for(const e of ev){
+    const x=R(e.k), inPeriod=!from||e.date>=from;
+    if(e.type==='count'){
+      counts.push({...e.rec, key:e.k, name:x.name, book:x.bal, counted:e.qty, diff:e.qty-x.bal, usedSince:x.since});
+      if(inPeriod) x.loss+=x.bal-e.qty;
+      x.bal=e.qty; x.since=0;
+    } else {
+      const q=e.type==='used'?-e.qty:e.qty;
+      x.bal+=q; if(e.type==='used') x.since+=e.qty;
+      if(inPeriod) x[e.type==='open'?'open':e.type]+=e.qty;
+    }
+    if(!inPeriod) x.open=x.bal;
+  }
+  return {rows, counts};
+}
+
 // Stock statement for a period: Opening (everything before From) + movements in the period = Closing (as on To)
 async function prodRenderStock(f={}){
   const ctx=await prodCtx();
@@ -2061,16 +2096,10 @@ async function prodRenderStock(f={}){
   const aggPer=prodAgg(shiftRows.filter(r=>inP(r.s.date)).map(r=>r.c));
   const lots=ctx.lots.filter(l=>(l.date||'')<=to);
   const noWt=lots.filter(l=>!prodN(l.weightKg));
-  // An "Opening Stock" adjustment dated inside the period is shown as opening, not as a movement
   const isOpening=a=>before(a.date)||(inP(a.date)&&a.reason==='Opening Stock');
   const isMove=a=>inP(a.date)&&a.reason!=='Opening Stock';
-
-  const rm={};
-  const g=k=>rm[k]||(rm[k]={open:0,recv:0,adj:0,used:0});
-  lots.forEach(l=>{ const x=g(l.grade||'—'); if(before(l.date)) x.open+=prodN(l.weightKg); else x.recv+=prodN(l.weightKg); });
-  adj.filter(a=>a.kind==='rm').forEach(a=>{ const x=g(a.grade||'—'); if(isOpening(a)) x.open+=prodN(a.qty); else if(isMove(a)) x.adj+=prodN(a.qty); });
-  Object.entries(aggOpen.byGrade).forEach(([k,v])=>g(k).open-=v.totalKg);
-  Object.entries(aggPer.byGrade).forEach(([k,v])=>g(k).used+=v.totalKg);
+  const {rows:rm,counts}=prodRmLedger(ctx,{lots,adj,shiftRows,from,to});
+  const countList=counts.filter(c=>inP(c.date)).reverse();
 
   const pt={};
   const p=k=>pt[k]||(pt[k]={open:0,adj:0,made:0,disp:0,fetRej:0,made2date:0,fet2date:0});
@@ -2089,16 +2118,17 @@ async function prodRenderStock(f={}){
   const bal=(v,unit,dp)=>`<td class="mono" style="text-align:right;font-weight:700;color:${v<0?'#dc2626':'#0d2f6e'}">${prodFmt(v,dp)}${unit}</td>`;
   const fmtD=d=>d?new Date(d+'T00:00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}):'start';
   const periodLbl=`${from?fmtD(from):'Start'} → ${fmtD(to)}`;
-  const rmRows=Object.entries(rm).sort(), ptRows=Object.entries(pt).map(([k,v])=>({part:ctx.partById[k],v}))
+  const rmRows=Object.values(rm).map(v=>[v.name,v]).sort((a,b)=>String(a[0]).localeCompare(String(b[0]))), ptRows=Object.entries(pt).map(([k,v])=>({part:ctx.partById[k],v}))
     .sort((a,b)=>String(a.part?.partNumber).localeCompare(String(b.part?.partNumber)));
-  const rmTot=rmRows.reduce((t,[,v])=>{ for(const k in v) t[k]=(t[k]||0)+v[k]; return t; },{});
-  const adjList=adj.filter(a=>inP(a.date)).sort((a,b)=>String(b.date).localeCompare(String(a.date)));
+  const rmTot=rmRows.reduce((t,[,v])=>{ for(const k of ['open','recv','adj','used','loss']) t[k]=(t[k]||0)+v[k]; return t; },{});
+  const adjList=adj.filter(a=>inP(a.date)&&a.reason!==PROD_COUNT).sort((a,b)=>String(b.date).localeCompare(String(a.date)));
 
   setC(`
   <div class="ph"><h2>📦 Stock Statement — Raw Material &amp; Parts</h2>
     <div style="display:flex;gap:8px">
+      <button class="btn btn-p" onclick="prodOpenCount()">📋 Physical Stock Count</button>
       <button class="btn btn-o" onclick="prodOpenAdj()">± Stock adjustment</button>
-      <button class="btn btn-p" onclick="nav('prod-dispatch')">🚚 Dispatch</button>
+      <button class="btn btn-o" onclick="nav('prod-dispatch')">🚚 Dispatch</button>
     </div></div>
   <div class="card"><div class="cb" style="display:flex;gap:10px;flex-wrap:wrap;align-items:end;padding:11px 15px">
     <div class="fg" style="margin:0"><label class="lbl">Period</label><select class="fc" id="pst-period" onchange="prodRenderStock({period:this.value})">
@@ -2110,11 +2140,20 @@ async function prodRenderStock(f={}){
   </div></div>
   ${noWt.length?`<div class="alert al-w"><span>⚠️ ${noWt.length} raw material lot${noWt.length>1?'s have':' has'} no weight and ${noWt.length>1?'are':'is'} not counted as received: ${noWt.slice(0,8).map(l=>esc(l.lotNumber)).join(', ')}${noWt.length>8?'…':''}. Add the weight in the <a href="#" onclick="event.preventDefault();nav('rm-register')">Lot Register</a>.</span></div>`:''}
   <div class="card"><div class="ch"><h5>Raw material stock by grade (kg) — ${periodLbl}</h5></div><div class="tw"><table>
-    <thead><tr><th>Grade</th><th style="text-align:right">Opening</th><th style="text-align:right">+ Received (lots)</th><th style="text-align:right">± Adjustments</th><th style="text-align:right">− Consumed</th><th style="text-align:right">= Closing</th></tr></thead>
+    <thead><tr><th>Grade</th><th style="text-align:right">Opening</th><th style="text-align:right">+ Received (lots)</th><th style="text-align:right">± Adjustments</th><th style="text-align:right" title="Net weight of castings poured, no melting loss">− Consumed (paper)</th><th style="text-align:right" title="Paper stock minus physically counted stock, at each count">− Melting loss (counts)</th><th style="text-align:right">= Closing</th></tr></thead>
     <tbody>${rmRows.map(([k,v])=>`<tr><td><span class="badge" style="background:#FAEEDA;color:#BA7517">${esc(k)}</span></td>
-      ${bal(v.open,'',1)}${num(v.recv,1)}${num(v.adj,1)}${num(v.used,1)}${bal(v.open+v.recv+v.adj-v.used,' kg',1)}</tr>`).join('')||prodEmpty(6,'No raw material data yet.')}
-    ${rmRows.length>1?`<tr style="background:#f9fafb;font-weight:700"><td>Total</td>${num(rmTot.open,1)}${num(rmTot.recv,1)}${num(rmTot.adj,1)}${num(rmTot.used,1)}${bal(rmTot.open+rmTot.recv+rmTot.adj-rmTot.used,' kg',1)}</tr>`:''}</tbody>
-  </table><div style="font-size:11px;color:#6b7280;padding:6px 12px">Opening = balance at the start of the period (all movements before From, plus any "Opening Stock" adjustment dated in the period). Consumed = metal used per shift entries (net weight + ${prodFmt(ctx.cfg.meltLossPct,1)}% melting loss).</div></div></div>
+      ${bal(v.open,'',1)}${num(v.recv,1)}${num(v.adj,1)}${num(v.used,1)}${num(v.loss,1)}${bal(v.open+v.recv+v.adj-v.used-v.loss,' kg',1)}</tr>`).join('')||prodEmpty(7,'No raw material data yet.')}
+    ${rmRows.length>1?`<tr style="background:#f9fafb;font-weight:700"><td>Total</td>${num(rmTot.open,1)}${num(rmTot.recv,1)}${num(rmTot.adj,1)}${num(rmTot.used,1)}${num(rmTot.loss,1)}${bal(rmTot.open+rmTot.recv+rmTot.adj-rmTot.used-rmTot.loss,' kg',1)}</tr>`:''}</tbody>
+  </table><div style="font-size:11px;color:#6b7280;padding:6px 12px">Opening = balance at the start of the period. Consumed (paper) = net weight of castings from shift entries, with no melting loss added. At each physical count the stock is reset to the counted kg, and the difference is shown as melting loss.</div></div></div>
+  <div class="card"><div class="ch"><h5>📋 Physical stock counts — actual vs paper</h5></div><div class="tw"><table>
+    <thead><tr><th>Count date (end of day)</th><th>Grade</th><th style="text-align:right">On paper (kg)</th><th style="text-align:right">Actual (kg)</th><th style="text-align:right">Melting loss (kg)</th><th style="text-align:right" title="Melting loss ÷ metal consumed since the previous count">Loss % of metal used</th><th>By</th><th></th></tr></thead>
+    <tbody>${countList.map(c=>{ const loss=-c.diff, pct=c.usedSince>0?loss/c.usedSince*100:null;
+      return `<tr><td class="mono">${esc(c.date)}</td><td><span class="badge" style="background:#FAEEDA;color:#BA7517">${esc(c.name)}</span></td>
+      ${num(c.book,1)}<td class="mono" style="text-align:right;font-weight:700">${prodFmt(c.counted,1)}</td>
+      <td class="mono" style="text-align:right;font-weight:700;color:${loss<0?'#16a34a':'#b45309'}">${prodFmt(loss,1)}${loss<0?' (gain)':''}</td>
+      <td class="mono" style="text-align:right">${pct===null?'—':prodFmt(pct,1)+'%'}</td>
+      <td style="font-size:12px">${esc(c.createdBy||'')}</td><td><button class="btn btn-r btn-xs" onclick="prodDelAdj(${c.id})">🗑️</button></td></tr>`; }).join('')||prodEmpty(8,'No physical counts in this period. Use 📋 Physical Stock Count to enter one.')}</tbody>
+  </table><div style="font-size:11px;color:#6b7280;padding:6px 12px">Set melting loss in Machines &amp; Settings: ${prodFmt(ctx.cfg.meltLossPct,1)}%. The first count of a grade also absorbs any old data errors, so its loss % may not be meaningful.</div></div></div>
   <div class="card"><div class="ch"><h5>Part stock (castings, pcs) — ${periodLbl}</h5></div><div class="tw"><table>
     <thead><tr><th>Part</th><th>Grade</th><th style="text-align:right">Opening</th><th style="text-align:right">+ OK produced</th><th style="text-align:right">± Adjustments</th><th style="text-align:right">− Fettling rejected</th><th style="text-align:right">− Dispatched</th><th style="text-align:right">= Closing</th><th style="text-align:right" title="OK castings produced but not yet fettled, as on To date">of which not fettled</th></tr></thead>
     <tbody>${ptRows.map(({part,v})=>`<tr>
@@ -2132,6 +2171,64 @@ async function prodRenderStock(f={}){
       <td><button class="btn btn-r btn-xs" onclick="prodDelAdj(${a.id})">🗑️</button></td></tr>`).join('')||prodEmpty(8,'No adjustments in this period.')}</tbody>
   </table></div></div>`);
 }
+// ── Physical stock count ──────────────────────────────
+async function prodOpenCount(){
+  const ctx=await prodCtx();
+  const ov=document.createElement('div'); ov.className='overlay'; ov.id='pcn-ov';
+  ov.innerHTML=`<div class="modal" style="width:620px;max-width:95vw">
+    <h3>📋 Physical Stock Count — Raw Material</h3>
+    <div style="font-size:12px;color:#6b7280;margin-bottom:10px">Enter the weighed stock at the <b>end of the count date</b>. Leave a grade blank to skip it. The stock is reset to your figure and the difference from paper is recorded as melting loss.</div>
+    <div class="fg" style="max-width:220px"><label class="lbl">Count date</label><input class="fc" type="date" id="pcn-date" value="${prodToday()}" max="${prodToday()}" onchange="prodCountRefresh()"></div>
+    <div class="tw" style="max-height:50vh;overflow:auto"><table>
+      <thead><tr><th>Grade</th><th style="text-align:right">On paper (kg)</th><th style="text-align:right;width:150px">Actual (kg)</th><th style="text-align:right">Melting loss (kg)</th></tr></thead>
+      <tbody id="pcn-body"><tr><td colspan="4" style="text-align:center;color:#9ca3af;padding:16px">Loading…</td></tr></tbody>
+    </table></div>
+    <div class="fg" style="margin-top:10px"><label class="lbl">Remark</label><input class="fc" id="pcn-remark" placeholder="e.g. Month-end stock-take"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-o" onclick="prodClose('pcn-ov')">Cancel</button><button class="btn btn-p" onclick="prodSaveCount()">💾 Save count</button></div>
+  </div>`;
+  document.body.appendChild(ov);
+  prodCountRefresh();
+}
+async function prodCountRefresh(){
+  const ctx=await prodCtx(), date=document.getElementById('pcn-date')?.value||prodToday();
+  const [shiftRows,adj]=await Promise.all([prodLoadShifts(ctx,{to:date}), db.prodStockAdj.toArray().catch(()=>[])]);
+  // Paper stock at end of the count date, ignoring any count already saved for that date (it will be replaced)
+  const {rows}=prodRmLedger(ctx,{lots:ctx.lots,adj,shiftRows,to:date,skipCountOn:date});
+  const prev=Object.fromEntries(adj.filter(a=>a.kind==='rm'&&a.reason===PROD_COUNT&&a.date===date).map(a=>[gradeKey(a.grade),a.counted]));
+  const list=[...ctx.grades.map(g=>({key:gradeKey(g),name:g})),
+    ...Object.values(rows).filter(r=>!ctx.grades.some(g=>gradeKey(g)===r.key)).map(r=>({key:r.key,name:r.name}))];
+  window._pcn={date,list:list.map(x=>({...x,book:rows[x.key]?.bal||0}))};
+  document.getElementById('pcn-body').innerHTML=window._pcn.list.map((x,i)=>`<tr>
+    <td><span class="badge" style="background:#FAEEDA;color:#BA7517">${esc(x.name)}</span>${ctx.grades.some(g=>gradeKey(g)===x.key)?'':' <span style="font-size:11px;color:#d97706">not in Grade Master</span>'}</td>
+    <td class="mono" style="text-align:right">${prodFmt(x.book,1)}</td>
+    <td><input class="fc mono" style="text-align:right" type="number" min="0" step="0.1" id="pcn-q-${i}" value="${prev[x.key]??''}" oninput="prodCountDiff(${i})"></td>
+    <td class="mono" style="text-align:right" id="pcn-d-${i}"></td></tr>`).join('')||prodEmpty(4,'No grades in the Grade Master.');
+  window._pcn.list.forEach((x,i)=>prodCountDiff(i));
+}
+function prodCountDiff(i){
+  const x=window._pcn.list[i], v=document.getElementById('pcn-q-'+i)?.value, el=document.getElementById('pcn-d-'+i);
+  if(!el) return;
+  if(v===''||v==null){ el.textContent=''; return; }
+  const loss=x.book-prodN(v);
+  el.innerHTML=`<span style="font-weight:700;color:${loss<0?'#16a34a':'#b45309'}">${prodFmt(loss,1)}${loss<0?' (gain)':''}</span>`;
+}
+async function prodSaveCount(){
+  const {date,list}=window._pcn||{}; if(!date) return;
+  if(date>prodToday()){ toast('Count date cannot be in the future','d'); return; }
+  const entered=list.map((x,i)=>({...x,v:document.getElementById('pcn-q-'+i)?.value})).filter(x=>x.v!==''&&x.v!=null);
+  if(!entered.length){ toast('Enter the actual stock for at least one grade','d'); return; }
+  if(entered.some(x=>!(prodN(x.v)>=0))){ toast('Actual stock cannot be negative','d'); return; }
+  const remark=document.getElementById('pcn-remark').value.trim();
+  const adj=await db.prodStockAdj.toArray().catch(()=>[]);
+  for(const x of entered){
+    // One count per grade per date: replace an earlier entry for the same day
+    for(const old of adj.filter(a=>a.kind==='rm'&&a.reason===PROD_COUNT&&a.date===date&&gradeKey(a.grade)===x.key)) await db.prodStockAdj.delete(old.id);
+    if(!await db.prodStockAdj.add({kind:'rm',reason:PROD_COUNT,date,grade:x.name,counted:prodN(x.v),qty:0,remark,createdBy:Auth.user?.name||''})){ toast('Save failed','d'); return; }
+  }
+  prodClose('pcn-ov'); toast(`✅ Physical count saved for ${entered.length} grade${entered.length>1?'s':''}`);
+  prodRenderStock(window._pst||{});
+}
+
 async function prodOpenAdj(){
   const ctx=await prodCtx();
   const ov=document.createElement('div'); ov.className='overlay'; ov.id='pad-ov';
