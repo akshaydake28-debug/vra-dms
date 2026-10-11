@@ -8,7 +8,7 @@ const RM_DEFAULTS={grades:['ADC12','ADC10','A380','LM24'],approvers:['Manish Yad
 function rmGetList(k){try{return JSON.parse(localStorage.getItem('vra_rm_'+k))||RM_DEFAULTS[k];}catch(e){return RM_DEFAULTS[k];}}
 function rmSaveList(k,a){try{localStorage.setItem('vra_rm_'+k,JSON.stringify(a));}catch(e){}}
 // Alloy grades come only from the shared Grade Master, so everyone picks the same spelling
-async function rmGetGrades(){try{const r=await fetch(window.location.origin+'/api/qms2/pq_grades');const g=(await r.json()).sort((a,b)=>(a.order??a.id)-(b.order??b.id)).map(x=>x.grade).filter(Boolean);return g.length?g:RM_DEFAULTS.grades;}catch(e){return RM_DEFAULTS.grades;}}
+async function rmGetGrades(){try{const r=await fetch(window.location.origin+'/api/qms2/pq_grades');const g=(await r.json()).sort((a,b)=>(a.order??a.id)-(b.order??b.id)).map(x=>x.grade).filter(Boolean);return g;}catch(e){return[];}}
 async function rmGetLots(){try{const r=await fetch(window.location.origin+'/api/rm/lots');const lots=await r.json();return lots;}catch(e){return[];}}
 function rmDateStr(d){if(!d)return'';const dt=new Date(d+'T00:00:00');return String(dt.getDate()).padStart(2,'0')+String(dt.getMonth()+1).padStart(2,'0')+String(dt.getFullYear()).slice(-2);}
 function rmFmtDate(d){if(!d)return'—';const dt=new Date(d+'T00:00:00');return dt.toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'});}
@@ -84,7 +84,7 @@ function rmRenderLabels(){
       <div class="rm-fg3">
         <div class="rm-fg-item"><label>Lot Number (auto)</label><input type="text" id="rm-lot" style="background:#EAF3DE;color:#27500A;font-weight:700;border-color:#97C459" readonly value="${lotNum}"></div>
         <div class="rm-fg-item"><label>Received Date</label><input type="date" id="rm-date" value="${today}" onchange="rmRefLot()"></div>
-        <div class="rm-fg-item"><label>Alloy Grade</label><div class="rm-ew"><select id="rm-grade">${grades.map(g=>`<option>${esc(g)}</option>`).join('')}</select><button class="rm-ab" title="Add or edit grades in the Grade Master" onclick="nav('pq-grades')">⚙</button></div></div>
+        <div class="rm-fg-item"><label>Alloy Grade</label><div class="rm-ew"><select id="rm-grade">${grades.length?grades.map(g=>`<option>${esc(g)}</option>`).join(''):'<option value="">No grades — add in Grade Master</option>'}</select><button class="rm-ab" title="Add or edit grades in the Grade Master" onclick="nav('pq-grades')">⚙</button></div></div>
       </div>
     </div>
     <div class="rm-card">
@@ -146,7 +146,7 @@ function rmRefLot(){const d=document.getElementById('rm-date')?.value;if(!d)retu
 function rmChgQty(d){window._rmQty=Math.max(1,Math.min(20,(window._rmQty||4)+d));const e=document.getElementById('rm-qty');if(e)e.textContent=window._rmQty;}
 
 function rmVal(){
-  const fields=[{id:'rm-sup',label:'Supplier Name'},{id:'rm-inv',label:'Invoice Number'},{id:'rm-wt',label:'Net Weight Received (kg)'},{id:'rm-appr',label:'Approved By'},{id:'rm-date',label:'Received Date'}];
+  const fields=[{id:'rm-sup',label:'Supplier Name'},{id:'rm-inv',label:'Invoice Number'},{id:'rm-wt',label:'Net Weight Received (kg)'},{id:'rm-appr',label:'Approved By'},{id:'rm-date',label:'Received Date'},{id:'rm-grade',label:'Alloy Grade (add it in Grade Master)'}];
   for(const f of fields){if(!document.getElementById(f.id)?.value?.trim()){const m=document.getElementById('rm-msg');if(m){m.textContent='⚠ Please fill in: '+f.label;m.style.display='block';m.style.color='#dc2626';}return false;}}
   const m=document.getElementById('rm-msg');if(m)m.style.display='none';return true;
 }
@@ -156,7 +156,8 @@ function rmCollect(){return{lotNumber:document.getElementById('rm-lot').value,da
 async function rmSave(){
   if(!rmVal())return;
   const lot=rmCollect();
-  try{await fetch(window.location.origin+'/api/rm/lots',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(lot)});
+  try{const r=await fetch(window.location.origin+'/api/rm/lots',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(lot)});
+  if(!r.ok){const e=await r.json().catch(()=>({}));toast(e.error||'Save failed','d');return;}
   const m=document.getElementById('rm-msg');if(m){m.textContent='✓ Saved.';m.style.display='block';m.style.color='#15803d';}setTimeout(()=>{const m=document.getElementById('rm-msg');if(m)m.style.display='none';rmRefLot();},2000);}catch(e){toast('Save failed','d');}
 }
 
@@ -273,14 +274,14 @@ function rmClose(id){document.getElementById(id)?.remove();}
 
 async function rmOpenEdit(id){
   const [lots,master]=await Promise.all([rmGetLots(),rmGetGrades()]),l=lots.find(x=>x.id===id);if(!l)return;
-  const grades=[...new Set([...master,l.grade].filter(Boolean))],appr=[...new Set([...rmGetList('approvers'),l.approvedBy].filter(Boolean))];
+  const appr=[...new Set([...rmGetList('approvers'),l.approvedBy].filter(Boolean))];
   const opt=(arr,cur)=>arr.map(o=>`<option${o===cur?' selected':''}>${esc(o)}</option>`).join('');
   const ov=document.createElement('div');ov.className='overlay';ov.id='rme-ov';
   ov.innerHTML=`<div class="modal" style="width:520px">
     <h3>Edit Lot — <span style="font-family:monospace;color:#27500A">${esc(l.lotNumber)}</span></h3>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
       <div class="fg"><label class="lbl">Received Date</label><input class="fc" type="date" id="rme-date" value="${esc(l.date)}"></div>
-      <div class="fg"><label class="lbl">Alloy Grade</label><select class="fc" id="rme-grade">${opt(grades,l.grade)}</select></div>
+      <div class="fg"><label class="lbl">Alloy Grade</label><select class="fc" id="rme-grade">${opt(master,l.grade)}${l.grade&&!master.includes(l.grade)?`<option selected>${esc(l.grade)}</option>`:''}</select>${l.grade&&!master.includes(l.grade)?`<div style="font-size:11px;color:#d97706;margin-top:3px">"${esc(l.grade)}" is not in the Grade Master — pick the correct grade.</div>`:''}</div>
       <div class="fg"><label class="lbl">Supplier</label><input class="fc" id="rme-sup" value="${esc(l.supplier)}"></div>
       <div class="fg"><label class="lbl">Invoice No.</label><input class="fc" id="rme-inv" value="${esc(l.invoice)}"></div>
       <div class="fg"><label class="lbl">Net Weight (kg)</label><input class="fc" type="number" min="0" step="0.1" id="rme-wt" value="${+l.weightKg||''}"></div>
@@ -301,7 +302,7 @@ async function rmSaveEdit(id){
   if(wt!==''&&!(body.weightKg>=0)){toast('Enter a valid weight','d');return;}
   try{
     const r=await fetch(window.location.origin+'/api/rm/lots/'+id,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    if(!r.ok)throw new Error(r.status);
+    if(!r.ok){const e=await r.json().catch(()=>({}));toast(e.error||'Save failed','d');return;}
     rmClose('rme-ov');toast('✅ Lot updated');rmRenderRegister();
   }catch(e){toast('Save failed','d');}
 }
@@ -328,7 +329,7 @@ async function rmSaveMerge(){
   if(!confirm(`Change grade "${from||'(blank)'}" to "${to}" on all its lots?`))return;
   try{
     const r=await fetch(window.location.origin+'/api/rm/lots/rename-grade',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({from,to})});
-    if(!r.ok)throw new Error(r.status);const d=await r.json();
+    const d=await r.json().catch(()=>({}));if(!r.ok){toast(d.error||'Merge failed','d');return;}
     rmClose('rmm-ov');toast(`✅ ${d.updated} lot${d.updated===1?'':'s'} moved to ${to}`);rmRenderRegister();
   }catch(e){toast('Merge failed','d');}
 }
