@@ -106,7 +106,6 @@ async function prodCtx(){
   const lotList=Array.isArray(lots)?lots:[];
   const grades=new Set();
   (Array.isArray(pqGrades)?pqGrades:[]).forEach(g=>g.grade&&grades.add(g.grade));
-  if(typeof rmGetList==='function') (rmGetList('grades')||[]).forEach(g=>g&&grades.add(g));
   parts.forEach(p=>p.grade&&grades.add(p.grade));
   lotList.forEach(l=>l.grade&&grades.add(l.grade));
   return {machines, parts, defects, cfg, lots:lotList, grades:[...grades].sort(),

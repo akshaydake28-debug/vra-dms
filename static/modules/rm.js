@@ -7,6 +7,8 @@
 const RM_DEFAULTS={grades:['ADC12','ADC10','A380','LM24'],approvers:['Manish Yadav','Sagar Shirgure','Akshay Dake']};
 function rmGetList(k){try{return JSON.parse(localStorage.getItem('vra_rm_'+k))||RM_DEFAULTS[k];}catch(e){return RM_DEFAULTS[k];}}
 function rmSaveList(k,a){try{localStorage.setItem('vra_rm_'+k,JSON.stringify(a));}catch(e){}}
+// Alloy grades come only from the shared Grade Master, so everyone picks the same spelling
+async function rmGetGrades(){try{const r=await fetch(window.location.origin+'/api/qms2/pq_grades');const g=(await r.json()).sort((a,b)=>(a.order??a.id)-(b.order??b.id)).map(x=>x.grade).filter(Boolean);return g.length?g:RM_DEFAULTS.grades;}catch(e){return RM_DEFAULTS.grades;}}
 async function rmGetLots(){try{const r=await fetch(window.location.origin+'/api/rm/lots');const lots=await r.json();return lots;}catch(e){return[];}}
 function rmDateStr(d){if(!d)return'';const dt=new Date(d+'T00:00:00');return String(dt.getDate()).padStart(2,'0')+String(dt.getMonth()+1).padStart(2,'0')+String(dt.getFullYear()).slice(-2);}
 function rmFmtDate(d){if(!d)return'—';const dt=new Date(d+'T00:00:00');return dt.toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'});}
@@ -15,8 +17,8 @@ async function rmNextLotNum(ds){const lots=await rmGetLots();const seq=lots.filt
 function rmRenderLabels(){
   const today=new Date().toISOString().split('T')[0];
   const ds=rmDateStr(today);
-  rmNextLotNum(ds).then(lotNum=>{
-    const grades=rmGetList('grades'),approvers=rmGetList('approvers');
+  Promise.all([rmNextLotNum(ds),rmGetGrades()]).then(([lotNum,grades])=>{
+    const approvers=rmGetList('approvers');
     setC(`<style>
       .rm-card{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:18px 22px;margin-bottom:14px}
       .rm-ct{font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.8px;margin-bottom:14px;display:flex;align-items:center;gap:7px}
@@ -82,7 +84,7 @@ function rmRenderLabels(){
       <div class="rm-fg3">
         <div class="rm-fg-item"><label>Lot Number (auto)</label><input type="text" id="rm-lot" style="background:#EAF3DE;color:#27500A;font-weight:700;border-color:#97C459" readonly value="${lotNum}"></div>
         <div class="rm-fg-item"><label>Received Date</label><input type="date" id="rm-date" value="${today}" onchange="rmRefLot()"></div>
-        <div class="rm-fg-item"><label>Alloy Grade</label><div class="rm-ew"><select id="rm-grade">${grades.map(g=>`<option>${g}</option>`).join('')}</select><button class="rm-ab" onclick="rmOpenAdd('grades')">＋</button></div></div>
+        <div class="rm-fg-item"><label>Alloy Grade</label><div class="rm-ew"><select id="rm-grade">${grades.map(g=>`<option>${esc(g)}</option>`).join('')}</select><button class="rm-ab" title="Add or edit grades in the Grade Master" onclick="nav('pq-grades')">⚙</button></div></div>
       </div>
     </div>
     <div class="rm-card">
@@ -267,13 +269,11 @@ async function rmEditWeight(id,cur){
   rmRenderRegister();
 }
 
-// All grades known: the managed list plus any grade already used on a lot
-function rmAllGrades(lots){return[...new Set([...rmGetList('grades'),...lots.map(l=>l.grade).filter(Boolean)])];}
 function rmClose(id){document.getElementById(id)?.remove();}
 
 async function rmOpenEdit(id){
-  const lots=await rmGetLots(),l=lots.find(x=>x.id===id);if(!l)return;
-  const grades=rmAllGrades(lots),appr=[...new Set([...rmGetList('approvers'),l.approvedBy].filter(Boolean))];
+  const [lots,master]=await Promise.all([rmGetLots(),rmGetGrades()]),l=lots.find(x=>x.id===id);if(!l)return;
+  const grades=[...new Set([...master,l.grade].filter(Boolean))],appr=[...new Set([...rmGetList('approvers'),l.approvedBy].filter(Boolean))];
   const opt=(arr,cur)=>arr.map(o=>`<option${o===cur?' selected':''}>${esc(o)}</option>`).join('');
   const ov=document.createElement('div');ov.className='overlay';ov.id='rme-ov';
   ov.innerHTML=`<div class="modal" style="width:520px">
@@ -308,15 +308,15 @@ async function rmSaveEdit(id){
 
 // Merge a misspelled / duplicate grade into the correct one on every lot
 async function rmOpenMerge(){
-  const lots=await rmGetLots(),cnt={};lots.forEach(l=>{const g=l.grade||'';cnt[g]=(cnt[g]||0)+1;});
-  const used=Object.keys(cnt).sort(),all=rmAllGrades(lots);
+  const [lots,master]=await Promise.all([rmGetLots(),rmGetGrades()]),cnt={};lots.forEach(l=>{const g=l.grade||'';cnt[g]=(cnt[g]||0)+1;});
+  const used=Object.keys(cnt).sort();
   if(!used.length){toast('No lots yet','d');return;}
   const ov=document.createElement('div');ov.className='overlay';ov.id='rmm-ov';
   ov.innerHTML=`<div class="modal" style="width:440px">
     <h3>🔀 Merge Grades</h3>
     <div style="font-size:12px;color:#6b7280;margin-bottom:10px">Moves every lot with the wrong grade to the correct grade, so stock shows as one entry.</div>
     <div class="fg"><label class="lbl">Wrong / duplicate grade</label><select class="fc" id="rmm-from">${used.map(g=>`<option value="${esc(g)}">${esc(g||'(blank)')} — ${cnt[g]} lot${cnt[g]>1?'s':''}</option>`).join('')}</select></div>
-    <div class="fg"><label class="lbl">Correct grade</label><input class="fc" id="rmm-to" list="rmm-list" placeholder="Pick or type the correct grade"><datalist id="rmm-list">${all.map(g=>`<option value="${esc(g)}">`).join('')}</datalist></div>
+    <div class="fg"><label class="lbl">Correct grade</label><select class="fc" id="rmm-to">${master.map(g=>`<option>${esc(g)}</option>`).join('')}</select><div style="font-size:11px;color:#6b7280;margin-top:4px">Grade missing? Add it in the <a href="#" onclick="event.preventDefault();rmClose('rmm-ov');nav('pq-grades')">Grade Master</a> first.</div></div>
     <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-o" onclick="rmClose('rmm-ov')">Cancel</button><button class="btn btn-p" onclick="rmSaveMerge()">Merge</button></div>
   </div>`;
   document.body.appendChild(ov);
@@ -329,8 +329,6 @@ async function rmSaveMerge(){
   try{
     const r=await fetch(window.location.origin+'/api/rm/lots/rename-grade',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({from,to})});
     if(!r.ok)throw new Error(r.status);const d=await r.json();
-    // Keep the managed grade list clean: add the correct grade, drop the wrong one
-    const gl=rmGetList('grades').filter(g=>g!==from);if(!gl.includes(to))gl.push(to);rmSaveList('grades',gl);
     rmClose('rmm-ov');toast(`✅ ${d.updated} lot${d.updated===1?'':'s'} moved to ${to}`);rmRenderRegister();
   }catch(e){toast('Merge failed','d');}
 }

@@ -5,6 +5,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime, timedelta
 import os
 import json
+import re
 import secrets
 
 app = Flask(__name__, static_folder='static')
@@ -81,6 +82,22 @@ class RMLot(db.Model):
             'grade':self.grade,'supplier':self.supplier,'invoice':self.invoice,
             'approvedBy':self.approved_by,'spectro':self.spectro,'bundles':self.bundles,
             'weightKg':self.weight_kg}
+
+def _grade_key(g):
+    # "ADC 12", "adc-12" and "ADC12" all compare equal
+    return re.sub(r'[^A-Z0-9]', '', str(g or '').upper())
+
+def _canonical_grade(g):
+    # Snap a typed grade to its Grade Master spelling, so variants never create a separate stock row
+    g = str(g or '').strip()
+    k = _grade_key(g)
+    if not k:
+        return g
+    for r in GenericRecord.query.filter_by(module='pq_grades').all():
+        name = safe_json_loads(r.data, {}).get('grade')
+        if name and _grade_key(name) == k:
+            return name
+    return g
 
 def _to_float(v):
     try:
@@ -455,7 +472,7 @@ def save_rm_lot():
         return jsonify({'id': existing.id})
     lot = RMLot(
         lot_number=d.get('lotNumber'), date=d.get('date',''),
-        grade=d.get('grade',''), supplier=d.get('supplier',''),
+        grade=_canonical_grade(d.get('grade','')), supplier=d.get('supplier',''),
         invoice=d.get('invoice',''), approved_by=d.get('approvedBy',''),
         spectro=d.get('spectro',''), bundles=d.get('bundles',1),
         weight_kg=_to_float(d.get('weightKg'))
@@ -476,6 +493,8 @@ def update_rm_lot(lid):
     for k, col in fields.items():
         if k in d:
             setattr(l, col, str(d.get(k) or '').strip())
+    if 'grade' in d:
+        l.grade = _canonical_grade(l.grade)
     if 'bundles' in d:
         try:
             l.bundles = max(1, int(d.get('bundles')))
@@ -490,7 +509,7 @@ def update_rm_lot(lid):
 def rename_rm_grade():
     # Merge a misspelled / duplicate grade into the correct one across all lots.
     d = request.get_json(silent=True) or {}
-    old, new = str(d.get('from') or ''), str(d.get('to') or '').strip()
+    old, new = str(d.get('from') or ''), _canonical_grade(d.get('to'))
     if not new:
         return jsonify({'error': 'New grade required'}), 400
     n = RMLot.query.filter(RMLot.grade == old).update({'grade': new})

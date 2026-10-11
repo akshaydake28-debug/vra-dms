@@ -982,6 +982,8 @@ function sBadge(s){
 function tPill(code){const t=ALL_TYPES[code];return`<span class="tp" style="background:${t?.color||TYPE_COLORS[code]||'#888'}">${code}</span>`}
 function fmtD(iso){return iso?(iso.includes('T')?iso.split('T')[0]:iso):''}
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+// Grade names compared ignoring case, spaces and punctuation: "ADC 12" = "adc-12" = "ADC12"
+function gradeKey(g){return String(g||'').toUpperCase().replace(/[^A-Z0-9]/g,'');}
 
 </script>
 

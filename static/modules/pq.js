@@ -1908,6 +1908,9 @@ const PQ = (() => {
     };
 
     const allGrades = await getAll('pq_grades');
+    // Block near-duplicates ("ADC 12" vs "ADC12") — they would split raw material stock into two rows
+    const dup = allGrades.find(g => g.id != id && gradeKey(g.grade) === gradeKey(gradeName));
+    if (dup) { toast(`"${dup.grade}" already exists — use that grade instead`, 'e'); return; }
     if (id) {
       // POST replaces the record wholesale — preserve order (and anything
       // else not on this form) instead of dropping it.
