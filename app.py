@@ -231,8 +231,13 @@ def get_users_with_passwords():
 def create_user():
     err = require_admin()
     if err: return err
-    d = request.json
-    u = User(username=d['username'], password=generate_password_hash(d['password']), role=d['role'], name=d['name'])
+    d = request.json or {}
+    username, password, role, name = d.get('username'), d.get('password'), d.get('role'), d.get('name')
+    if not username or not password or not role or not name:
+        return jsonify({'error': 'Missing fields'}), 400
+    if User.query.filter_by(username=username).first():
+        return jsonify({'error': 'Username already exists'}), 400
+    u = User(username=username, password=generate_password_hash(password), role=role, name=name)
     db.session.add(u)
     db.session.commit()
     return jsonify({'id': u.id})
