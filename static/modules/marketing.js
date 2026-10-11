@@ -1685,9 +1685,7 @@ async function mktPrintQuotation(id){
   const today=new Date().toLocaleDateString('en-IN');
   const cav=num(inp.cavities)||1;
   const pct=v=>+(num(v)*100).toFixed(2);
-  const wt=v=>num(v).toFixed(3);
   const secNum=v=>+num(v).toFixed(1);
-  const secTxt=v=>num(v)?`${secNum(v)} sec`:'—';
   const toolingRows=(q.toolingItems||[]).map(t=>`<tr><td>${esc(t.category)}</td><td>${esc(t.description||'')}</td><td style="text-align:right">₹${mktINR(t.cost)}</td></tr>`).join('');
 
   const statusColor={Draft:'#6b7280',Submitted:'#a06a12',Approved:'#15803d',Rejected:'#b91c1c',Superseded:'#6b46c1'}[q.status]||'#6b7280';
@@ -1706,46 +1704,29 @@ async function mktPrintQuotation(id){
     <div class="mc" style="grid-column:span 3"><div class="ml">Reference</div><div class="mv" style="font-family:'IBM Plex Mono',monospace;font-size:7.8pt">${esc(q.quoteFamily)} &middot; Rev ${q.revision}</div></div>
   </div>
 
-  <div class="sec-bar">KEY PROCESS PARAMETERS CONSIDERED</div>
-  <div class="meta-grid" style="margin-bottom:7px">
-    <div class="mc"><div class="ml">PDC Machine Tonnage</div><div class="mv">${num(inp.pdcTonnage)?num(inp.pdcTonnage)+' Ton':'—'}</div></div>
-    <div class="mc"><div class="ml">No. of Cavities</div><div class="mv">${cav}</div></div>
-    <div class="mc"><div class="ml">Shot Rate</div><div class="mv">₹${mktINR(inp.shotRate)} / shot</div></div>
-    <div class="mc"><div class="ml">Shot Blasting Rate</div><div class="mv">₹${mktINR(c.shotBlastingPerKg)} / KG</div></div>
-  </div>
-  <div class="meta-grid" style="margin-bottom:7px">
-    <div class="mc"><div class="ml">CNC Machine Hour Rate</div><div class="mv">₹${mktINR(inp.cncCostPerHour)} / hr</div></div>
-    <div class="mc"><div class="ml">CNC Machining Time</div><div class="mv">${secTxt(c.cncCycleTimeSec)}</div></div>
-    <div class="mc"><div class="ml">VMC Machine Hour Rate</div><div class="mv">₹${mktINR(inp.vmcCostPerHour)} / hr</div></div>
-    <div class="mc"><div class="ml">VMC Machining Time</div><div class="mv">${secTxt(c.vmcCycleTimeSec)}</div></div>
-  </div>
-
   <div class="sec-bar">PROCESS COST BREAKDOWN</div>
   <table class="dt" style="margin-bottom:8px">
-    <thead><tr><th>Description</th><th>Basis of Calculation</th><th style="width:70px">Unit</th><th style="width:85px;text-align:right">Value</th></tr></thead>
+    <thead><tr><th>Description</th><th style="width:80px">Unit</th><th style="width:90px;text-align:right">Cost</th></tr></thead>
     <tbody>
-      <tr><td>Shot Weight</td><td>Casting + runner &amp; overflow, per shot</td><td>KG</td><td style="text-align:right">${num(inp.shotWeight).toFixed(3)}</td></tr>
-      <tr><td>Net Weight</td><td>Finished casting weight</td><td>KG</td><td style="text-align:right">${num(inp.netWeight).toFixed(3)}</td></tr>
-      <tr><td>Total Product Weight</td><td>Net wt. ${wt(inp.netWeight)} KG + melting loss ${pct(inp.meltingLossPct)}%</td><td>KG</td><td style="text-align:right">${c.totalProductWeight.toFixed(3)}</td></tr>
-      <tr><td>Raw Material Cost</td><td>₹${mktINR(inp.rawMaterialCostPerKg)}/KG × ${c.totalProductWeight.toFixed(3)} KG</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(num(inp.rawMaterialCostPerKg)*c.totalProductWeight)}</td></tr>
-      <tr><td>Inventory Carrying Cost</td><td>${pct(inp.inventoryCarryingPct)}% of raw material cost</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.inventoryCarryingCost)}</td></tr>
-      <tr><td><strong>Total Raw Material Cost (A)</strong></td><td></td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.totalRawMaterialCost)}</td></tr>
-      <tr><td><strong>PDC Shot Cost / Part (B)</strong></td><td>${num(inp.pdcTonnage)?num(inp.pdcTonnage)+' Ton PDC machine · ':''}₹${mktINR(inp.shotRate)}/shot ÷ ${cav} cavit${cav===1?'y':'ies'}</td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.actualShotRate)}</td></tr>
-      <tr><td>Fettling</td><td>Per part</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.fettling)}</td></tr>
-      <tr><td>Trimming</td><td>Per part</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.trimming)}</td></tr>
-      <tr><td>Shot Blasting</td><td>₹${mktINR(c.shotBlastingPerKg)}/KG × ${wt(inp.netWeight)} KG net wt.</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.shotBlastingCost)}</td></tr>
-      <tr><td>CNC Machining</td><td>₹${mktINR(inp.cncCostPerHour)}/hr × ${secNum(c.cncCycleTimeSec)} sec ÷ 3600</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.cncCost)}</td></tr>
-      <tr><td>VMC Machining</td><td>₹${mktINR(inp.vmcCostPerHour)}/hr × ${secNum(c.vmcCycleTimeSec)} sec ÷ 3600</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.vmcCost)}</td></tr>
-      <tr><td>Drilling &amp; Counter Sunk</td><td>Per part</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.drilling)}</td></tr>
-      <tr><td>Leak Test</td><td>Per part</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.leakTest)}</td></tr>
-      <tr><td>Inspection</td><td>Per part</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.inspection)}</td></tr>
-      <tr><td><strong>Total Other Process Cost (C)</strong></td><td>Sum of the above operations</td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.otherProcessCost)}</td></tr>
-      <tr><td><strong>Total Process Cost (B+C)</strong></td><td>₹${mktINR(c.actualShotRate)} + ₹${mktINR(c.otherProcessCost)}</td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.totalProcessCost)}</td></tr>
-      <tr><td>Casting Rejection</td><td>${pct(inp.castingRejectionPct)}% of PDC shot cost (B)</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.castingRejectionAmt)}</td></tr>
-      <tr><td>Packing</td><td>Per part</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.packing)}</td></tr>
-      <tr><td>Transportation</td><td>Per part</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.transportation)}</td></tr>
-      <tr><td>Profit &amp; Overheads</td><td>${pct(inp.profitOverheadsPct)}% of total process cost (B+C)</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.profitOverheadsAmt)}</td></tr>
-      <tr><td><strong>Final Process Cost / Part</strong></td><td>A + (B+C) + rejection + packing + transport + profit</td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.finalCostPerPart)}</td></tr>
+      <tr><td>Shot Weight</td><td>KG</td><td style="text-align:right">${num(inp.shotWeight).toFixed(3)}</td></tr>
+      <tr><td>Net Weight</td><td>KG</td><td style="text-align:right">${num(inp.netWeight).toFixed(3)}</td></tr>
+      <tr><td>Total Product Weight (incl. melting loss ${pct(inp.meltingLossPct)}%)</td><td>KG</td><td style="text-align:right">${c.totalProductWeight.toFixed(3)}</td></tr>
+      <tr><td>Total Raw Material Cost (A)</td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.totalRawMaterialCost)}</td></tr>
+      <tr><td>Actual Shot Rate / Part (B) <span style="color:#666;font-size:7pt">— ${num(inp.pdcTonnage)?num(inp.pdcTonnage)+' Ton machine · ':''}Shot rate ₹${mktINR(inp.shotRate)} · ${cav} cavit${cav===1?'y':'ies'}</span></td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.actualShotRate)}</td></tr>
+      <tr><td>Fettling</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.fettling)}</td></tr>
+      <tr><td>Trimming</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.trimming)}</td></tr>
+      <tr><td>Shot Blasting <span style="color:#666;font-size:7pt">— ₹${mktINR(c.shotBlastingPerKg)}/KG</span></td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.shotBlastingCost)}</td></tr>
+      <tr><td>CNC <span style="color:#666;font-size:7pt">— MHR ₹${mktINR(inp.cncCostPerHour)}/hr · Cycle time ${secNum(c.cncCycleTimeSec)} sec</span></td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.cncCost)}</td></tr>
+      <tr><td>VMC <span style="color:#666;font-size:7pt">— MHR ₹${mktINR(inp.vmcCostPerHour)}/hr · Cycle time ${secNum(c.vmcCycleTimeSec)} sec</span></td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.vmcCost)}</td></tr>
+      <tr><td>Drilling &amp; Counter Sunk</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.drilling)}</td></tr>
+      <tr><td>Leak Test</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.leakTest)}</td></tr>
+      <tr><td>Inspection</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.inspection)}</td></tr>
+      <tr><td>Total Other Process Cost (C)</td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.otherProcessCost)}</td></tr>
+      <tr><td>Total Process Cost (B+C)</td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.totalProcessCost)}</td></tr>
+      <tr><td>Casting Rejection (${pct(inp.castingRejectionPct)}%)</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.castingRejectionAmt)}</td></tr>
+      <tr><td>Packing</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.packing)}</td></tr>
+      <tr><td>Transportation</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.transportation)}</td></tr>
+      <tr><td>Profit &amp; Overheads (${pct(inp.profitOverheadsPct)}%)</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.profitOverheadsAmt)}</td></tr>
     </tbody>
   </table>
 
