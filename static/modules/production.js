@@ -2028,62 +2028,108 @@ async function prodDeleteFettling(id){
 //  RM:    opening / adjustments + lots received (kg) − metal consumed
 //  Parts: opening / adjustments + OK parts produced − dispatched
 // ══════════════════════════════════════════════════════
+// Period presets for the stock statement. Dates are local YYYY-MM-DD.
+function prodMonthStart(back=0){ const d=new Date(); d.setDate(1); d.setMonth(d.getMonth()-back); return prodDate(d); }
+function prodMonthEnd(back=0){ const d=new Date(); d.setDate(1); d.setMonth(d.getMonth()-back+1); d.setDate(0); return prodDate(d); }
+function prodFyStart(){ const d=new Date(), y=d.getMonth()>=3?d.getFullYear():d.getFullYear()-1; return `${y}-04-01`; }
+const PROD_STOCK_PERIODS = {
+  'this-month': ['This month',     ()=>[prodMonthStart(0),prodToday()]],
+  'last-month': ['Last month',     ()=>[prodMonthStart(1),prodMonthEnd(1)]],
+  'last-2':     ['Last 2 months',  ()=>[prodMonthStart(1),prodToday()]],
+  'last-3':     ['Last 3 months',  ()=>[prodMonthStart(2),prodToday()]],
+  'last-6':     ['Last 6 months',  ()=>[prodMonthStart(5),prodToday()]],
+  'fy':         ['This financial year', ()=>[prodFyStart(),prodToday()]],
+  'all':        ['All time',       ()=>['',prodToday()]],
+};
+
+// Stock statement for a period: Opening (everything before From) + movements in the period = Closing (as on To)
 async function prodRenderStock(f={}){
   const ctx=await prodCtx();
-  const asOn=f.asOn||prodToday();
+  let period=f.period||(f.from!==undefined||f.to!==undefined?'custom':'this-month');
+  let from=f.from, to=f.to;
+  if(period==='custom'&&from===undefined&&to===undefined){ ({from,to}=window._pst||{}); }   // switched to custom: keep current dates
+  if(period!=='custom'){ [from,to]=(PROD_STOCK_PERIODS[period]||PROD_STOCK_PERIODS['this-month'])[1](); }
+  to=to||prodToday(); from=from||'';
+  if(from&&from>to){ toast('From date is after To date','d'); [from,to]=[to,from]; }
+  window._pst={period,from,to};
+  const inP=d=>(d||'')>=from&&(d||'')<=to, before=d=>!!from&&(d||'')<from;
+
   const [shiftRows,disp,adj,fet]=await Promise.all([
-    prodLoadShifts(ctx,{to:asOn}), db.prodDispatch.toArray().catch(()=>[]), db.prodStockAdj.toArray().catch(()=>[]),
+    prodLoadShifts(ctx,{to}), db.prodDispatch.toArray().catch(()=>[]), db.prodStockAdj.toArray().catch(()=>[]),
     db.prodFettling.toArray().catch(()=>[])]);
-  const agg=prodAgg(shiftRows.map(r=>r.c));
-  const lots=ctx.lots.filter(l=>(l.date||'')<=asOn);
+  const aggOpen=prodAgg(shiftRows.filter(r=>before(r.s.date)).map(r=>r.c));
+  const aggPer=prodAgg(shiftRows.filter(r=>inP(r.s.date)).map(r=>r.c));
+  const lots=ctx.lots.filter(l=>(l.date||'')<=to);
   const noWt=lots.filter(l=>!prodN(l.weightKg));
-  const adjIn=adj.filter(a=>(a.date||'')<=asOn);
+  // An "Opening Stock" adjustment dated inside the period is shown as opening, not as a movement
+  const isOpening=a=>before(a.date)||(inP(a.date)&&a.reason==='Opening Stock');
+  const isMove=a=>inP(a.date)&&a.reason!=='Opening Stock';
 
   const rm={};
-  const g=k=>rm[k]||(rm[k]={adj:0,recv:0,used:0});
-  lots.forEach(l=>g(l.grade||'—').recv+=prodN(l.weightKg));
-  adjIn.filter(a=>a.kind==='rm').forEach(a=>g(a.grade||'—').adj+=prodN(a.qty));
-  Object.entries(agg.byGrade).forEach(([k,v])=>g(k).used+=v.totalKg);
+  const g=k=>rm[k]||(rm[k]={open:0,recv:0,adj:0,used:0});
+  lots.forEach(l=>{ const x=g(l.grade||'—'); if(before(l.date)) x.open+=prodN(l.weightKg); else x.recv+=prodN(l.weightKg); });
+  adj.filter(a=>a.kind==='rm').forEach(a=>{ const x=g(a.grade||'—'); if(isOpening(a)) x.open+=prodN(a.qty); else if(isMove(a)) x.adj+=prodN(a.qty); });
+  Object.entries(aggOpen.byGrade).forEach(([k,v])=>g(k).open-=v.totalKg);
+  Object.entries(aggPer.byGrade).forEach(([k,v])=>g(k).used+=v.totalKg);
 
   const pt={};
-  const p=k=>pt[k]||(pt[k]={adj:0,made:0,disp:0,fet:0,fetRej:0});
-  Object.entries(agg.byPart).forEach(([k,v])=>p(k).made+=v.okPcs);
-  disp.filter(d=>(d.date||'')<=asOn).forEach(d=>p(d.partId).disp+=prodN(d.qty));
-  adjIn.filter(a=>a.kind==='part').forEach(a=>p(a.partId).adj+=prodN(a.qty));
-  fet.filter(e=>(e.date||'')<=asOn).forEach(e=>(e.rows||[]).forEach(r=>{ const x=p(r.partId); x.fet+=prodN(r.qty); x.fetRej+=Math.min(prodN(r.rej),prodN(r.qty)); }));
+  const p=k=>pt[k]||(pt[k]={open:0,adj:0,made:0,disp:0,fetRej:0,made2date:0,fet2date:0});
+  Object.entries(aggOpen.byPart).forEach(([k,v])=>{ const x=p(k); x.open+=v.okPcs; x.made2date+=v.okPcs; });
+  Object.entries(aggPer.byPart).forEach(([k,v])=>{ const x=p(k); x.made+=v.okPcs; x.made2date+=v.okPcs; });
+  disp.forEach(d=>{ if(before(d.date)) p(d.partId).open-=prodN(d.qty); else if(inP(d.date)) p(d.partId).disp+=prodN(d.qty); });
+  adj.filter(a=>a.kind==='part').forEach(a=>{ const x=p(a.partId); if(isOpening(a)) x.open+=prodN(a.qty); else if(isMove(a)) x.adj+=prodN(a.qty); });
+  fet.forEach(e=>(e.rows||[]).forEach(r=>{
+    if((e.date||'')>to) return;
+    const x=p(r.partId), rej=Math.min(prodN(r.rej),prodN(r.qty));
+    x.fet2date+=prodN(r.qty);
+    if(before(e.date)) x.open-=rej; else x.fetRej+=rej;
+  }));
 
+  const num=(v,dp=0)=>`<td class="mono" style="text-align:right">${prodFmt(v,dp)}</td>`;
   const bal=(v,unit,dp)=>`<td class="mono" style="text-align:right;font-weight:700;color:${v<0?'#dc2626':'#0d2f6e'}">${prodFmt(v,dp)}${unit}</td>`;
+  const fmtD=d=>d?new Date(d+'T00:00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}):'start';
+  const periodLbl=`${from?fmtD(from):'Start'} → ${fmtD(to)}`;
+  const rmRows=Object.entries(rm).sort(), ptRows=Object.entries(pt).map(([k,v])=>({part:ctx.partById[k],v}))
+    .sort((a,b)=>String(a.part?.partNumber).localeCompare(String(b.part?.partNumber)));
+  const rmTot=rmRows.reduce((t,[,v])=>{ for(const k in v) t[k]=(t[k]||0)+v[k]; return t; },{});
+  const adjList=adj.filter(a=>inP(a.date)).sort((a,b)=>String(b.date).localeCompare(String(a.date)));
+
   setC(`
-  <div class="ph"><h2>📦 Stock — Raw Material &amp; Parts</h2>
-    <div style="display:flex;gap:8px;align-items:end">
-      <div class="fg" style="margin:0"><label class="lbl">As on</label><input class="fc" type="date" id="pst-ason" value="${asOn}" onchange="prodRenderStock({asOn:this.value})"></div>
+  <div class="ph"><h2>📦 Stock Statement — Raw Material &amp; Parts</h2>
+    <div style="display:flex;gap:8px">
       <button class="btn btn-o" onclick="prodOpenAdj()">± Stock adjustment</button>
       <button class="btn btn-p" onclick="nav('prod-dispatch')">🚚 Dispatch</button>
     </div></div>
+  <div class="card"><div class="cb" style="display:flex;gap:10px;flex-wrap:wrap;align-items:end;padding:11px 15px">
+    <div class="fg" style="margin:0"><label class="lbl">Period</label><select class="fc" id="pst-period" onchange="prodRenderStock({period:this.value})">
+      ${Object.entries(PROD_STOCK_PERIODS).map(([k,[l]])=>`<option value="${k}" ${k===period?'selected':''}>${l}</option>`).join('')}
+      <option value="custom" ${period==='custom'?'selected':''}>Custom dates</option></select></div>
+    <div class="fg" style="margin:0"><label class="lbl">From</label><input class="fc" type="date" id="pst-from" value="${from}" onchange="prodRenderStock({from:this.value,to:document.getElementById('pst-to').value})"></div>
+    <div class="fg" style="margin:0"><label class="lbl">To</label><input class="fc" type="date" id="pst-to" value="${to}" onchange="prodRenderStock({from:document.getElementById('pst-from').value,to:this.value})"></div>
+    <div style="font-size:12px;color:#6b7280;padding-bottom:9px">Showing <b>${periodLbl}</b></div>
+  </div></div>
   ${noWt.length?`<div class="alert al-w"><span>⚠️ ${noWt.length} raw material lot${noWt.length>1?'s have':' has'} no weight and ${noWt.length>1?'are':'is'} not counted as received: ${noWt.slice(0,8).map(l=>esc(l.lotNumber)).join(', ')}${noWt.length>8?'…':''}. Add the weight in the <a href="#" onclick="event.preventDefault();nav('rm-register')">Lot Register</a>.</span></div>`:''}
-  <div class="card"><div class="ch"><h5>Raw material stock by grade (kg)</h5></div><div class="tw"><table>
-    <thead><tr><th>Grade</th><th style="text-align:right">Opening / adj.</th><th style="text-align:right">+ Received (lots)</th><th style="text-align:right">− Consumed</th><th style="text-align:right">= Balance</th></tr></thead>
-    <tbody>${Object.entries(rm).sort().map(([k,v])=>`<tr><td><span class="badge" style="background:#FAEEDA;color:#BA7517">${esc(k)}</span></td>
-      <td class="mono" style="text-align:right">${prodFmt(v.adj,1)}</td><td class="mono" style="text-align:right">${prodFmt(v.recv,1)}</td>
-      <td class="mono" style="text-align:right">${prodFmt(v.used,1)}</td>${bal(v.adj+v.recv-v.used,' kg',1)}</tr>`).join('')||prodEmpty(5,'No raw material data yet.')}</tbody>
-  </table><div style="font-size:11px;color:#6b7280;padding:6px 12px">Consumed = metal used per shift entries (net weight + ${prodFmt(ctx.cfg.meltLossPct,1)}% melting loss). Start with an "Opening Stock" adjustment per grade from your last physical count.</div></div></div>
-  <div class="card"><div class="ch"><h5>Part stock (castings, pcs)</h5></div><div class="tw"><table>
-    <thead><tr><th>Part</th><th>Grade</th><th style="text-align:right">Opening / adj.</th><th style="text-align:right">+ OK produced</th><th style="text-align:right">− Fettling rejected</th><th style="text-align:right">− Dispatched</th><th style="text-align:right">= Balance</th><th style="text-align:right" title="OK castings produced but not yet fettled">of which not fettled</th></tr></thead>
-    <tbody>${Object.entries(pt).map(([k,v])=>({part:ctx.partById[k],v})).sort((a,b)=>String(a.part?.partNumber).localeCompare(String(b.part?.partNumber))).map(({part,v})=>`<tr>
+  <div class="card"><div class="ch"><h5>Raw material stock by grade (kg) — ${periodLbl}</h5></div><div class="tw"><table>
+    <thead><tr><th>Grade</th><th style="text-align:right">Opening</th><th style="text-align:right">+ Received (lots)</th><th style="text-align:right">± Adjustments</th><th style="text-align:right">− Consumed</th><th style="text-align:right">= Closing</th></tr></thead>
+    <tbody>${rmRows.map(([k,v])=>`<tr><td><span class="badge" style="background:#FAEEDA;color:#BA7517">${esc(k)}</span></td>
+      ${bal(v.open,'',1)}${num(v.recv,1)}${num(v.adj,1)}${num(v.used,1)}${bal(v.open+v.recv+v.adj-v.used,' kg',1)}</tr>`).join('')||prodEmpty(6,'No raw material data yet.')}
+    ${rmRows.length>1?`<tr style="background:#f9fafb;font-weight:700"><td>Total</td>${num(rmTot.open,1)}${num(rmTot.recv,1)}${num(rmTot.adj,1)}${num(rmTot.used,1)}${bal(rmTot.open+rmTot.recv+rmTot.adj-rmTot.used,' kg',1)}</tr>`:''}</tbody>
+  </table><div style="font-size:11px;color:#6b7280;padding:6px 12px">Opening = balance at the start of the period (all movements before From, plus any "Opening Stock" adjustment dated in the period). Consumed = metal used per shift entries (net weight + ${prodFmt(ctx.cfg.meltLossPct,1)}% melting loss).</div></div></div>
+  <div class="card"><div class="ch"><h5>Part stock (castings, pcs) — ${periodLbl}</h5></div><div class="tw"><table>
+    <thead><tr><th>Part</th><th>Grade</th><th style="text-align:right">Opening</th><th style="text-align:right">+ OK produced</th><th style="text-align:right">± Adjustments</th><th style="text-align:right">− Fettling rejected</th><th style="text-align:right">− Dispatched</th><th style="text-align:right">= Closing</th><th style="text-align:right" title="OK castings produced but not yet fettled, as on To date">of which not fettled</th></tr></thead>
+    <tbody>${ptRows.map(({part,v})=>`<tr>
       <td>${esc(prodPartLabel(part))}</td><td>${esc(part?.grade||'')}</td>
-      <td class="mono" style="text-align:right">${prodFmt(v.adj)}</td><td class="mono" style="text-align:right">${prodFmt(v.made)}</td>
-      <td class="mono" style="text-align:right">${prodFmt(v.fetRej)}</td>
-      <td class="mono" style="text-align:right">${prodFmt(v.disp)}</td>${bal(v.adj+v.made-v.fetRej-v.disp,'',0)}
-      <td class="mono" style="text-align:right;color:#6b7280">${prodFmt(Math.max(0,v.made-v.fet))}</td></tr>`).join('')||prodEmpty(8,'No part movements yet.')}</tbody>
+      ${bal(v.open,'',0)}${num(v.made)}${num(v.adj)}${num(v.fetRej)}${num(v.disp)}${bal(v.open+v.made+v.adj-v.fetRej-v.disp,'',0)}
+      <td class="mono" style="text-align:right;color:#6b7280">${prodFmt(Math.max(0,v.made2date-v.fet2date))}</td></tr>`).join('')||prodEmpty(9,'No part movements yet.')}</tbody>
   </table></div></div>
-  <div class="card"><div class="ch"><h5>Stock adjustments</h5></div><div class="tw"><table>
+  <div class="card"><div class="ch"><h5>Stock adjustments in this period</h5></div><div class="tw"><table>
     <thead><tr><th>Date</th><th>Type</th><th>Item</th><th style="text-align:right">Qty</th><th>Reason</th><th>Remark</th><th>By</th><th></th></tr></thead>
-    <tbody>${adj.sort((a,b)=>String(b.date).localeCompare(String(a.date))).map(a=>`<tr><td class="mono">${esc(a.date)}</td>
+    <tbody>${adjList.map(a=>`<tr><td class="mono">${esc(a.date)}</td>
       <td>${a.kind==='rm'?'Raw material':'Part'}</td>
       <td>${esc(a.kind==='rm'?a.grade:prodPartLabel(ctx.partById[a.partId]))}</td>
       <td class="mono" style="text-align:right;color:${prodN(a.qty)<0?'#dc2626':'#16a34a'}">${prodN(a.qty)>0?'+':''}${prodFmt(prodN(a.qty),a.kind==='rm'?1:0)}${a.kind==='rm'?' kg':''}</td>
       <td>${esc(a.reason||'')}</td><td style="font-size:12px">${esc(a.remark||'')}</td><td style="font-size:12px">${esc(a.createdBy||'')}</td>
-      <td><button class="btn btn-r btn-xs" onclick="prodDelAdj(${a.id})">🗑️</button></td></tr>`).join('')||prodEmpty(8,'No adjustments.')}</tbody>
+      <td><button class="btn btn-r btn-xs" onclick="prodDelAdj(${a.id})">🗑️</button></td></tr>`).join('')||prodEmpty(8,'No adjustments in this period.')}</tbody>
   </table></div></div>`);
 }
 async function prodOpenAdj(){
@@ -2114,11 +2160,11 @@ async function prodSaveAdj(){
   else { rec.partId=+v('pad-part'); if(!rec.partId){ toast('Select a part','d'); return; } }
   if(!await db.prodStockAdj.add(rec)){ toast('Save failed','d'); return; }
   prodClose('pad-ov'); toast('✅ Adjustment saved');
-  prodRenderStock({asOn:document.getElementById('pst-ason')?.value});
+  prodRenderStock(window._pst||{});
 }
 async function prodDelAdj(id){
   if(!confirm('Delete this stock adjustment?')) return;
-  await db.prodStockAdj.delete(id); prodRenderStock({asOn:document.getElementById('pst-ason')?.value});
+  await db.prodStockAdj.delete(id); prodRenderStock(window._pst||{});
 }
 
 // ══════════════════════════════════════════════════════
