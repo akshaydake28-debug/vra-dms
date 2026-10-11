@@ -2065,8 +2065,11 @@ async function prodRenderStock(f={}){
   const isOpening=a=>before(a.date)||(inP(a.date)&&a.reason==='Opening Stock');
   const isMove=a=>inP(a.date)&&a.reason!=='Opening Stock';
 
+  // Group by grade ignoring case/spaces/dashes, so "LM 6" lots and an "LM6" adjustment land on one row,
+  // shown with the Grade Master spelling
   const rm={};
-  const g=k=>rm[k]||(rm[k]={open:0,recv:0,adj:0,used:0});
+  const g=name=>{ const k=gradeKey(name)||'—';
+    return rm[k]||(rm[k]={name:ctx.grades.find(m=>gradeKey(m)===k)||name||'—',open:0,recv:0,adj:0,used:0}); };
   lots.forEach(l=>{ const x=g(l.grade||'—'); if(before(l.date)) x.open+=prodN(l.weightKg); else x.recv+=prodN(l.weightKg); });
   adj.filter(a=>a.kind==='rm').forEach(a=>{ const x=g(a.grade||'—'); if(isOpening(a)) x.open+=prodN(a.qty); else if(isMove(a)) x.adj+=prodN(a.qty); });
   Object.entries(aggOpen.byGrade).forEach(([k,v])=>g(k).open-=v.totalKg);
@@ -2089,9 +2092,9 @@ async function prodRenderStock(f={}){
   const bal=(v,unit,dp)=>`<td class="mono" style="text-align:right;font-weight:700;color:${v<0?'#dc2626':'#0d2f6e'}">${prodFmt(v,dp)}${unit}</td>`;
   const fmtD=d=>d?new Date(d+'T00:00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}):'start';
   const periodLbl=`${from?fmtD(from):'Start'} → ${fmtD(to)}`;
-  const rmRows=Object.entries(rm).sort(), ptRows=Object.entries(pt).map(([k,v])=>({part:ctx.partById[k],v}))
+  const rmRows=Object.values(rm).map(v=>[v.name,v]).sort((a,b)=>String(a[0]).localeCompare(String(b[0]))), ptRows=Object.entries(pt).map(([k,v])=>({part:ctx.partById[k],v}))
     .sort((a,b)=>String(a.part?.partNumber).localeCompare(String(b.part?.partNumber)));
-  const rmTot=rmRows.reduce((t,[,v])=>{ for(const k in v) t[k]=(t[k]||0)+v[k]; return t; },{});
+  const rmTot=rmRows.reduce((t,[,v])=>{ for(const k of ['open','recv','adj','used']) t[k]=(t[k]||0)+v[k]; return t; },{});
   const adjList=adj.filter(a=>inP(a.date)).sort((a,b)=>String(b.date).localeCompare(String(a.date)));
 
   setC(`
