@@ -1063,12 +1063,24 @@ function mktQuoteDefaultInputs(){
   return {
     shotWeight:0, netWeight:0, meltingLossPct:0, rawMaterialCostPerKg:0, inventoryCarryingPct:0,
     pdcTonnage:0, cavities:1, shotRate:0,
-    fettling:0, trimming:0, shotBlasting:0,
-    cncCycleTimeMin:0, cncCostPerHour:0, vmcCycleTimeMin:0, vmcCostPerHour:0,
+    fettling:0, trimming:0, shotBlastingPerKg:0,
+    cncCycleTimeSec:0, cncCostPerHour:0, vmcCycleTimeSec:0, vmcCostPerHour:0,
     drilling:0, leakTest:0, inspection:0,
     castingRejectionPct:0, packing:0, transportation:0,
     profitOverheadsPct:0.10, gstPct:0.18
   };
+}
+
+// ── Older quotes stored machining cycle time in minutes and shot blasting as
+//    a flat INR/part. Translate those into the current basis (seconds, INR/KG)
+//    so they still open, print and recalc to the same value. ──
+function mktQuoteDerivedRates(inp){
+  const netWeight=num(inp.netWeight);
+  const cncCycleTimeSec=inp.cncCycleTimeSec!==undefined?num(inp.cncCycleTimeSec):num(inp.cncCycleTimeMin)*60;
+  const vmcCycleTimeSec=inp.vmcCycleTimeSec!==undefined?num(inp.vmcCycleTimeSec):num(inp.vmcCycleTimeMin)*60;
+  const shotBlastingPerKg=inp.shotBlastingPerKg!==undefined?num(inp.shotBlastingPerKg)
+    :(netWeight>0?num(inp.shotBlasting)/netWeight:0);
+  return {cncCycleTimeSec,vmcCycleTimeSec,shotBlastingPerKg};
 }
 
 // ── COST ENGINE — mirrors the "Process Quote" Excel sheet formulas exactly ──
@@ -1086,9 +1098,13 @@ function mktCalcQuote(q){
   const shotRate=num(inp.shotRate);
   const actualShotRate=shotRate/cavities; // (B)
 
-  const cncCost=(num(inp.cncCostPerHour)/60)*num(inp.cncCycleTimeMin);
-  const vmcCost=(num(inp.vmcCostPerHour)/60)*num(inp.vmcCycleTimeMin);
-  const otherProcessCost=num(inp.fettling)+num(inp.trimming)+num(inp.shotBlasting)+cncCost+vmcCost+num(inp.drilling)+num(inp.leakTest)+num(inp.inspection); // (C)
+  // Machining is charged at machine hour rate (INR/hr) × cycle time in seconds.
+  const {cncCycleTimeSec,vmcCycleTimeSec,shotBlastingPerKg}=mktQuoteDerivedRates(inp);
+  const cncCost=(num(inp.cncCostPerHour)/3600)*cncCycleTimeSec;
+  const vmcCost=(num(inp.vmcCostPerHour)/3600)*vmcCycleTimeSec;
+  // Shot blasting is charged per KG of casting (net weight).
+  const shotBlastingCost=shotBlastingPerKg*netWeight;
+  const otherProcessCost=num(inp.fettling)+num(inp.trimming)+shotBlastingCost+cncCost+vmcCost+num(inp.drilling)+num(inp.leakTest)+num(inp.inspection); // (C)
 
   const totalProcessCost=actualShotRate+otherProcessCost; // B+C
   const castingRejectionAmt=actualShotRate*num(inp.castingRejectionPct);
@@ -1109,6 +1125,7 @@ function mktCalcQuote(q){
   }
 
   return {totalProductWeight,inventoryCarryingCost,totalRawMaterialCost,actualShotRate,cncCost,vmcCost,
+    cncCycleTimeSec,vmcCycleTimeSec,shotBlastingPerKg,shotBlastingCost,
     otherProcessCost,totalProcessCost,castingRejectionAmt,profitOverheadsAmt,finalCostPerPart,finalCostWithGst,
     toolingTotal,toolingPerPiece,finalWithTooling};
 }
@@ -1291,9 +1308,9 @@ function mktGatherQuoteInputs(){
     rawMaterialCostPerKg:num(gv('q-rawMaterialCostPerKg')),
     inventoryCarryingPct:num(gv('q-inventoryCarryingPct'))/100,
     pdcTonnage:num(gv('q-pdcTonnage')), cavities:num(gv('q-cavities'))||1, shotRate:num(gv('q-shotRate')),
-    fettling:num(gv('q-fettling')), trimming:num(gv('q-trimming')), shotBlasting:num(gv('q-shotBlasting')),
-    cncCycleTimeMin:num(gv('q-cncCycleTimeMin')), cncCostPerHour:num(gv('q-cncCostPerHour')),
-    vmcCycleTimeMin:num(gv('q-vmcCycleTimeMin')), vmcCostPerHour:num(gv('q-vmcCostPerHour')),
+    fettling:num(gv('q-fettling')), trimming:num(gv('q-trimming')), shotBlastingPerKg:num(gv('q-shotBlastingPerKg')),
+    cncCycleTimeSec:num(gv('q-cncCycleTimeSec')), cncCostPerHour:num(gv('q-cncCostPerHour')),
+    vmcCycleTimeSec:num(gv('q-vmcCycleTimeSec')), vmcCostPerHour:num(gv('q-vmcCostPerHour')),
     drilling:num(gv('q-drilling')), leakTest:num(gv('q-leakTest')), inspection:num(gv('q-inspection')),
     castingRejectionPct:num(gv('q-castingRejectionPct'))/100,
     packing:num(gv('q-packing')), transportation:num(gv('q-transportation')),
@@ -1312,6 +1329,7 @@ function mktRecalcQuoteForm(){
   setTxt('qc-invCarry', '₹'+mktINR(c.inventoryCarryingCost));
   setTxt('qc-rawMatTotal', '₹'+mktINR(c.totalRawMaterialCost));
   setTxt('qc-shotRatePc', '₹'+mktINR(c.actualShotRate));
+  setTxt('qc-shotBlastingCost', '₹'+mktINR(c.shotBlastingCost));
   setTxt('qc-cncCost', '₹'+mktINR(c.cncCost));
   setTxt('qc-vmcCost', '₹'+mktINR(c.vmcCost));
   setTxt('qc-otherProcess', '₹'+mktINR(c.otherProcessCost));
@@ -1335,6 +1353,7 @@ async function mktViewQuotation(id){
   const enq=q.enqId?await db.mktEnquiries.get(q.enqId).catch(()=>null):null;
   const siblings=await db.mktQuotations.where('quoteFamily').equals(q.quoteFamily).toArray().catch(()=>[]);
   const inp=q.inputs||mktQuoteDefaultInputs();
+  const rates=mktQuoteDerivedRates(inp);
   _mktToolingItems=JSON.parse(JSON.stringify(q.toolingItems||[]));
   _mktQuoteEditable=mktQuoteEditable(q.status);
   const editable=_mktQuoteEditable;
@@ -1413,12 +1432,14 @@ async function mktViewQuotation(id){
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
         <div class="fg"><label class="lbl">Fettling (INR/part)</label><input class="fc" id="q-fettling" type="number" step="0.01" value="${inp.fettling||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
         <div class="fg"><label class="lbl">Trimming (INR/part)</label><input class="fc" id="q-trimming" type="number" step="0.01" value="${inp.trimming||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
-        <div class="fg"><label class="lbl">Shot Blasting (INR/part)</label><input class="fc" id="q-shotBlasting" type="number" step="0.01" value="${inp.shotBlasting||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
-        <div class="fg"><label class="lbl">CNC Cycle Time (minutes)</label><input class="fc" id="q-cncCycleTimeMin" type="number" step="0.01" value="${inp.cncCycleTimeMin||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
-        <div class="fg"><label class="lbl">CNC Cost (INR/hour)</label><input class="fc" id="q-cncCostPerHour" type="number" step="0.01" value="${inp.cncCostPerHour||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">Shot Blasting Rate (INR/KG)</label><input class="fc" id="q-shotBlastingPerKg" type="number" step="0.01" value="${+rates.shotBlastingPerKg.toFixed(4)}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">Shot Blasting (INR/part = rate × net wt.)</label><div class="mono" id="qc-shotBlastingCost">₹0.00</div></div>
+        <div class="fg"></div>
+        <div class="fg"><label class="lbl">CNC Cycle Time (seconds)</label><input class="fc" id="q-cncCycleTimeSec" type="number" step="1" value="${+rates.cncCycleTimeSec.toFixed(2)}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">CNC Machine Hour Rate (INR/hour)</label><input class="fc" id="q-cncCostPerHour" type="number" step="0.01" value="${inp.cncCostPerHour||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
         <div class="fg"><label class="lbl">CNC Cost (INR/part)</label><div class="mono" id="qc-cncCost">₹0.00</div></div>
-        <div class="fg"><label class="lbl">VMC Cycle Time (minutes)</label><input class="fc" id="q-vmcCycleTimeMin" type="number" step="0.01" value="${inp.vmcCycleTimeMin||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
-        <div class="fg"><label class="lbl">VMC Cost (INR/hour)</label><input class="fc" id="q-vmcCostPerHour" type="number" step="0.01" value="${inp.vmcCostPerHour||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">VMC Cycle Time (seconds)</label><input class="fc" id="q-vmcCycleTimeSec" type="number" step="1" value="${+rates.vmcCycleTimeSec.toFixed(2)}" oninput="mktRecalcQuoteForm()" ${dis}></div>
+        <div class="fg"><label class="lbl">VMC Machine Hour Rate (INR/hour)</label><input class="fc" id="q-vmcCostPerHour" type="number" step="0.01" value="${inp.vmcCostPerHour||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
         <div class="fg"><label class="lbl">VMC Cost (INR/part)</label><div class="mono" id="qc-vmcCost">₹0.00</div></div>
         <div class="fg"><label class="lbl">Drilling &amp; Counter Sunk (INR/part)</label><input class="fc" id="q-drilling" type="number" step="0.01" value="${inp.drilling||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
         <div class="fg"><label class="lbl">Leak Test (INR/part)</label><input class="fc" id="q-leakTest" type="number" step="0.01" value="${inp.leakTest||0}" oninput="mktRecalcQuoteForm()" ${dis}></div>
@@ -1662,6 +1683,11 @@ async function mktPrintQuotation(id){
   const inp=q.inputs||{};
   const c=mktCalcQuote(q);
   const today=new Date().toLocaleDateString('en-IN');
+  const cav=num(inp.cavities)||1;
+  const pct=v=>+(num(v)*100).toFixed(2);
+  const wt=v=>num(v).toFixed(3);
+  const secNum=v=>+num(v).toFixed(1);
+  const secTxt=v=>num(v)?`${secNum(v)} sec`:'—';
   const toolingRows=(q.toolingItems||[]).map(t=>`<tr><td>${esc(t.category)}</td><td>${esc(t.description||'')}</td><td style="text-align:right">₹${mktINR(t.cost)}</td></tr>`).join('');
 
   const statusColor={Draft:'#6b7280',Submitted:'#a06a12',Approved:'#15803d',Rejected:'#b91c1c',Superseded:'#6b46c1'}[q.status]||'#6b7280';
@@ -1680,29 +1706,46 @@ async function mktPrintQuotation(id){
     <div class="mc" style="grid-column:span 3"><div class="ml">Reference</div><div class="mv" style="font-family:'IBM Plex Mono',monospace;font-size:7.8pt">${esc(q.quoteFamily)} &middot; Rev ${q.revision}</div></div>
   </div>
 
+  <div class="sec-bar">KEY PROCESS PARAMETERS CONSIDERED</div>
+  <div class="meta-grid" style="margin-bottom:7px">
+    <div class="mc"><div class="ml">PDC Machine Tonnage</div><div class="mv">${num(inp.pdcTonnage)?num(inp.pdcTonnage)+' Ton':'—'}</div></div>
+    <div class="mc"><div class="ml">No. of Cavities</div><div class="mv">${cav}</div></div>
+    <div class="mc"><div class="ml">Shot Rate</div><div class="mv">₹${mktINR(inp.shotRate)} / shot</div></div>
+    <div class="mc"><div class="ml">Shot Blasting Rate</div><div class="mv">₹${mktINR(c.shotBlastingPerKg)} / KG</div></div>
+  </div>
+  <div class="meta-grid" style="margin-bottom:7px">
+    <div class="mc"><div class="ml">CNC Machine Hour Rate</div><div class="mv">₹${mktINR(inp.cncCostPerHour)} / hr</div></div>
+    <div class="mc"><div class="ml">CNC Machining Time</div><div class="mv">${secTxt(c.cncCycleTimeSec)}</div></div>
+    <div class="mc"><div class="ml">VMC Machine Hour Rate</div><div class="mv">₹${mktINR(inp.vmcCostPerHour)} / hr</div></div>
+    <div class="mc"><div class="ml">VMC Machining Time</div><div class="mv">${secTxt(c.vmcCycleTimeSec)}</div></div>
+  </div>
+
   <div class="sec-bar">PROCESS COST BREAKDOWN</div>
   <table class="dt" style="margin-bottom:8px">
-    <thead><tr><th>Description</th><th style="width:80px">Unit</th><th style="width:90px;text-align:right">Cost</th></tr></thead>
+    <thead><tr><th>Description</th><th>Basis of Calculation</th><th style="width:70px">Unit</th><th style="width:85px;text-align:right">Value</th></tr></thead>
     <tbody>
-      <tr><td>Shot Weight</td><td>KG</td><td style="text-align:right">${num(inp.shotWeight).toFixed(3)}</td></tr>
-      <tr><td>Net Weight</td><td>KG</td><td style="text-align:right">${num(inp.netWeight).toFixed(3)}</td></tr>
-      <tr><td>Total Product Weight (incl. melting loss ${(num(inp.meltingLossPct)*100).toFixed(1)}%)</td><td>KG</td><td style="text-align:right">${c.totalProductWeight.toFixed(3)}</td></tr>
-      <tr><td>Total Raw Material Cost (A)</td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.totalRawMaterialCost)}</td></tr>
-      <tr><td>Actual Shot Rate / Part (B)</td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.actualShotRate)}</td></tr>
-      <tr><td>Fettling</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.fettling)}</td></tr>
-      <tr><td>Trimming</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.trimming)}</td></tr>
-      <tr><td>Shot Blasting</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.shotBlasting)}</td></tr>
-      <tr><td>CNC</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.cncCost)}</td></tr>
-      <tr><td>VMC</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.vmcCost)}</td></tr>
-      <tr><td>Drilling &amp; Counter Sunk</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.drilling)}</td></tr>
-      <tr><td>Leak Test</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.leakTest)}</td></tr>
-      <tr><td>Inspection</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.inspection)}</td></tr>
-      <tr><td>Total Other Process Cost (C)</td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.otherProcessCost)}</td></tr>
-      <tr><td>Total Process Cost (B+C)</td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.totalProcessCost)}</td></tr>
-      <tr><td>Casting Rejection (${(num(inp.castingRejectionPct)*100).toFixed(1)}%)</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.castingRejectionAmt)}</td></tr>
-      <tr><td>Packing</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.packing)}</td></tr>
-      <tr><td>Transportation</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.transportation)}</td></tr>
-      <tr><td>Profit &amp; Overheads (${(num(inp.profitOverheadsPct)*100).toFixed(1)}%)</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.profitOverheadsAmt)}</td></tr>
+      <tr><td>Shot Weight</td><td>Casting + runner &amp; overflow, per shot</td><td>KG</td><td style="text-align:right">${num(inp.shotWeight).toFixed(3)}</td></tr>
+      <tr><td>Net Weight</td><td>Finished casting weight</td><td>KG</td><td style="text-align:right">${num(inp.netWeight).toFixed(3)}</td></tr>
+      <tr><td>Total Product Weight</td><td>Net wt. ${wt(inp.netWeight)} KG + melting loss ${pct(inp.meltingLossPct)}%</td><td>KG</td><td style="text-align:right">${c.totalProductWeight.toFixed(3)}</td></tr>
+      <tr><td>Raw Material Cost</td><td>₹${mktINR(inp.rawMaterialCostPerKg)}/KG × ${c.totalProductWeight.toFixed(3)} KG</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(num(inp.rawMaterialCostPerKg)*c.totalProductWeight)}</td></tr>
+      <tr><td>Inventory Carrying Cost</td><td>${pct(inp.inventoryCarryingPct)}% of raw material cost</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.inventoryCarryingCost)}</td></tr>
+      <tr><td><strong>Total Raw Material Cost (A)</strong></td><td></td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.totalRawMaterialCost)}</td></tr>
+      <tr><td><strong>PDC Shot Cost / Part (B)</strong></td><td>${num(inp.pdcTonnage)?num(inp.pdcTonnage)+' Ton PDC machine · ':''}₹${mktINR(inp.shotRate)}/shot ÷ ${cav} cavit${cav===1?'y':'ies'}</td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.actualShotRate)}</td></tr>
+      <tr><td>Fettling</td><td>Per part</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.fettling)}</td></tr>
+      <tr><td>Trimming</td><td>Per part</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.trimming)}</td></tr>
+      <tr><td>Shot Blasting</td><td>₹${mktINR(c.shotBlastingPerKg)}/KG × ${wt(inp.netWeight)} KG net wt.</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.shotBlastingCost)}</td></tr>
+      <tr><td>CNC Machining</td><td>₹${mktINR(inp.cncCostPerHour)}/hr × ${secNum(c.cncCycleTimeSec)} sec ÷ 3600</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.cncCost)}</td></tr>
+      <tr><td>VMC Machining</td><td>₹${mktINR(inp.vmcCostPerHour)}/hr × ${secNum(c.vmcCycleTimeSec)} sec ÷ 3600</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.vmcCost)}</td></tr>
+      <tr><td>Drilling &amp; Counter Sunk</td><td>Per part</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.drilling)}</td></tr>
+      <tr><td>Leak Test</td><td>Per part</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.leakTest)}</td></tr>
+      <tr><td>Inspection</td><td>Per part</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.inspection)}</td></tr>
+      <tr><td><strong>Total Other Process Cost (C)</strong></td><td>Sum of the above operations</td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.otherProcessCost)}</td></tr>
+      <tr><td><strong>Total Process Cost (B+C)</strong></td><td>₹${mktINR(c.actualShotRate)} + ₹${mktINR(c.otherProcessCost)}</td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.totalProcessCost)}</td></tr>
+      <tr><td>Casting Rejection</td><td>${pct(inp.castingRejectionPct)}% of PDC shot cost (B)</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.castingRejectionAmt)}</td></tr>
+      <tr><td>Packing</td><td>Per part</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.packing)}</td></tr>
+      <tr><td>Transportation</td><td>Per part</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.transportation)}</td></tr>
+      <tr><td>Profit &amp; Overheads</td><td>${pct(inp.profitOverheadsPct)}% of total process cost (B+C)</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.profitOverheadsAmt)}</td></tr>
+      <tr><td><strong>Final Process Cost / Part</strong></td><td>A + (B+C) + rejection + packing + transport + profit</td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.finalCostPerPart)}</td></tr>
     </tbody>
   </table>
 
