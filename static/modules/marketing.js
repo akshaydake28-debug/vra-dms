@@ -1712,7 +1712,9 @@ async function mktPrintQuotation(id){
       <tr><td>Net Weight</td><td>KG</td><td style="text-align:right">${num(inp.netWeight).toFixed(3)}</td></tr>
       <tr><td>Total Product Weight (incl. melting loss ${pct(inp.meltingLossPct)}%)</td><td>KG</td><td style="text-align:right">${c.totalProductWeight.toFixed(3)}</td></tr>
       <tr><td>Total Raw Material Cost (A)</td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.totalRawMaterialCost)}</td></tr>
-      <tr><td>Actual Shot Rate / Part (B) <span style="color:#666;font-size:7pt">— ${num(inp.pdcTonnage)?num(inp.pdcTonnage)+' Ton machine · ':''}Shot rate ₹${mktINR(inp.shotRate)} · ${cav} cavit${cav===1?'y':'ies'}</span></td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.actualShotRate)}</td></tr>
+      <tr><td>PDC Machine Tonnage</td><td>TON</td><td style="text-align:right">${num(inp.pdcTonnage)||'—'}</td></tr>
+      <tr><td>No. of Cavities</td><td>NOS</td><td style="text-align:right">${cav}</td></tr>
+      <tr><td>Actual Shot Rate / Part (B) <span style="color:#666;font-size:7pt">— Shot rate ₹${mktINR(inp.shotRate)}/shot</span></td><td>INR/PART</td><td style="text-align:right;font-weight:bold">₹${mktINR(c.actualShotRate)}</td></tr>
       <tr><td>Fettling</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.fettling)}</td></tr>
       <tr><td>Trimming</td><td>INR/PART</td><td style="text-align:right">₹${mktINR(inp.trimming)}</td></tr>
       <tr><td>Shot Blasting <span style="color:#666;font-size:7pt">— ₹${mktINR(c.shotBlastingPerKg)}/KG</span></td><td>INR/PART</td><td style="text-align:right">₹${mktINR(c.shotBlastingCost)}</td></tr>
