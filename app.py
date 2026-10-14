@@ -574,6 +574,10 @@ def backup():
     # All generic modules
     modules = {}
     for r in GenericRecord.query.all():
+        # Earlier restores left a stale generic 'rm_lots' copy behind; the real
+        # lots are exported above from their own table, so never let it override them.
+        if r.module == 'rm_lots':
+            continue
         try:
             parsed = json.loads(r.data)
         except (TypeError, ValueError):
@@ -653,8 +657,10 @@ def restore():
             db.session.add(GenericRecord(module='setting_'+key, data=json.dumps(value)))
 
     # All array-type module data
+    # 'rm_lots' is restored into its own table below — it must not also be
+    # copied into GenericRecord, or later backups pick up that stale copy.
     skip_keys = {'exportedAt','exportedBy','appVersion','company','documents',
-                 'audit','users','customDocTypes','settings','records','backupErrors'}
+                 'audit','users','customDocTypes','settings','records','backupErrors','rm_lots'}
     module_count = 0
     for key, value in data.items():
         if key in skip_keys: continue
