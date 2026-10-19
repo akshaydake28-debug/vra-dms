@@ -614,9 +614,11 @@ def restore():
         return jsonify({'error':'Invalid backup: "settings" must be an object'}), 400
     if isinstance(data.get('audit'), list) and not all(isinstance(x, dict) for x in data['audit']):
         return jsonify({'error':'Invalid backup: "audit" must be a list of objects'}), 400
+    if data.get('rm_lots') is not None and (not isinstance(data['rm_lots'], list) or not all(isinstance(x, dict) for x in data['rm_lots'])):
+        return jsonify({'error':'Invalid backup: "rm_lots" must be a list of objects'}), 400
     for key, value in data.items():
         if key in ('exportedAt','exportedBy','appVersion','company','documents',
-                   'users','customDocTypes','settings','records','backupErrors'):
+                   'users','customDocTypes','settings','records','backupErrors','rm_lots'):
             continue
         if isinstance(value, list) and not all(isinstance(x, dict) for x in value):
             return jsonify({'error':f'Invalid backup: "{key}" must be a list of objects'}), 400
@@ -654,7 +656,7 @@ def restore():
 
     # All array-type module data
     skip_keys = {'exportedAt','exportedBy','appVersion','company','documents',
-                 'audit','users','customDocTypes','settings','records','backupErrors'}
+                 'audit','users','customDocTypes','settings','records','backupErrors','rm_lots'}
     module_count = 0
     for key, value in data.items():
         if key in skip_keys: continue
