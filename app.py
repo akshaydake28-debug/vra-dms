@@ -573,7 +573,12 @@ def backup():
     data['rm_lots'] = [{k:v for k,v in l.to_dict().items() if k != 'id'} for l in RMLot.query.all()]
     # All generic modules
     modules = {}
+    # Sections built from their own tables above; a stray generic record using
+    # one of these names (e.g. left by an older restore) must not replace them.
+    reserved = {'documents','audit','users','rm_lots'}
     for r in GenericRecord.query.all():
+        if r.module in reserved:
+            continue
         try:
             parsed = json.loads(r.data)
         except (TypeError, ValueError):
@@ -654,7 +659,8 @@ def restore():
 
     # All array-type module data
     skip_keys = {'exportedAt','exportedBy','appVersion','company','documents',
-                 'audit','users','customDocTypes','settings','records','backupErrors'}
+                 'audit','users','customDocTypes','settings','records','backupErrors',
+                 'rm_lots'}  # rm_lots has its own table, restored below
     module_count = 0
     for key, value in data.items():
         if key in skip_keys: continue
@@ -988,7 +994,11 @@ def dedup_module(module):
         'qmsCsMaster': ['step','checkItem'],
         'mktFeasQns': ['section','question'],
     }
-    fields = key_fields.get(module, ['id'])
+    fields = key_fields.get(module)
+    if not fields:
+        # No duplicate key defined: every record would look identical and all
+        # but one would be deleted.
+        return jsonify({'error': 'Dedup is not supported for this module'}), 400
     for r in records:
         try:
             d = json.loads(r.data)
