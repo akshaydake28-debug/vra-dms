@@ -988,7 +988,11 @@ def dedup_module(module):
         'qmsCsMaster': ['step','checkItem'],
         'mktFeasQns': ['section','question'],
     }
-    fields = key_fields.get(module, ['id'])
+    fields = key_fields.get(module)
+    if not fields:
+        # No duplicate key defined: every record would look identical and all
+        # but one would be deleted.
+        return jsonify({'error': 'Dedup is not supported for this module'}), 400
     for r in records:
         try:
             d = json.loads(r.data)
