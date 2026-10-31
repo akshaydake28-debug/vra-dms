@@ -281,8 +281,65 @@ async function viewComplaint(id){
 //  QUALITY ALERT
 // ══════════════════════════════════════════════════════
 
-// Active annotators (up to 3 images)
+// Active annotators — slots 0,1 = GOOD, slots 2,3 = BAD (max 2 each)
 let _annotators = [];
+const QA_IMG_KINDS={
+  good:{label:'✅ GOOD — What to look for',short:'Good',tag:'✓ GOOD',hint:'acceptable part / correct condition',color:'#15803d',bg:'#f0fdf4',border:'#bbf7d0',slots:[0,1]},
+  bad:{label:'❌ BAD — What to avoid',short:'Bad',tag:'✗ BAD',hint:'defect / not acceptable',color:'#b91c1c',bg:'#fef2f2',border:'#fecaca',slots:[2,3]},
+};
+const annSlotKind=idx=>QA_IMG_KINDS.good.slots.includes(idx)?'good':'bad';
+
+function annSlotHTML(i,title){
+  return`<div>
+    <div style="font-size:12px;font-weight:600;color:#0d2f6e;margin-bottom:6px">${title}</div>
+    <div id="ann-wrap-${i}" style="border:2px dashed #d4daf0;border-radius:8px;aspect-ratio:1/1;display:flex;align-items:center;justify-content:center;background:#f8f9fc;overflow:hidden;position:relative;cursor:pointer" onclick="if(!_annotators[${i}])document.getElementById('img-input-${i}').click()">
+      <div id="ann-placeholder-${i}" style="text-align:center;padding:16px;color:#9ca3af">
+        <div style="font-size:22px;margin-bottom:4px">📷</div>
+        <div style="font-size:11.5px">Click to upload</div>
+      </div>
+    </div>
+    <input type="file" id="img-input-${i}" accept="image/*" style="display:none" onchange="loadAnnotatorImage(${i},this)">
+    <div style="display:none;gap:5px;margin-top:6px;flex-wrap:wrap" id="ann-toolbar-${i}">
+      <button class="btn btn-xs btn-o" onclick="setAnnTool(${i},'circle')" id="t-circle-${i}" title="Draw circle around feature">○ Circle</button>
+      <button class="btn btn-xs btn-o" onclick="setAnnTool(${i},'highlight')" id="t-highlight-${i}" title="Highlight area">▭ Highlight</button>
+      <button class="btn btn-xs btn-o" onclick="setAnnTool(${i},'arrow')" id="t-arrow-${i}" title="Draw an arrow pointing to a feature">↗ Arrow</button>
+      <button class="btn btn-xs btn-o" onclick="setAnnTool(${i},'text')" id="t-text-${i}" title="Add text label">T Text</button>
+      <button class="btn btn-xs btn-o" onclick="undoAnn(${i})" title="Undo last">↩</button>
+      <button class="btn btn-xs" onclick="clearAnn(${i})" style="color:#dc3545;background:#fee2e2;border:none" title="Clear markings">✕</button>
+      <button class="btn btn-xs btn-o" onclick="document.getElementById('img-input-${i}').click()" title="Replace image">🔄</button>
+      <button class="btn btn-xs" onclick="removeAnnImage(${i})" style="color:#dc3545;background:#fee2e2;border:none" title="Remove photo">🗑</button>
+    </div>
+    <button class="btn btn-xs btn-o" style="width:100%;margin-top:5px" id="upload-btn-${i}" onclick="document.getElementById('img-input-${i}').click()">📷 Upload Image</button>
+  </div>`;
+}
+function removeAnnImage(idx){
+  _annotators[idx]=null;
+  const slot=document.getElementById(`ann-wrap-${idx}`)?.parentElement; if(!slot) return;
+  const title=slot.firstElementChild.textContent;
+  slot.outerHTML=annSlotHTML(idx,title);
+}
+
+// Normalise stored images: new alerts have goodImages/badImages; older ones a plain images[] list
+function alertImageSets(a){
+  return{good:a.goodImages||[],bad:a.badImages||[],legacy:a.images||[]};
+}
+// Good / Bad image block for the on-screen view and the prints. Every tile is square and the
+// same size (4 columns: 2 good + 2 bad) so the alert always fits on one page.
+function alertImagesHTML(a,{px=false,labelSize='11px'}={}){
+  const{good,bad,legacy}=alertImageSets(a);
+  if(!good.length&&!bad.length&&!legacy.length) return '';
+  const tile=(img,cap,color)=>`<div>
+    <div style="font-size:${labelSize};color:${color};font-weight:700;margin-bottom:3px">${cap}</div>
+    <img src="${img}" style="width:100%;aspect-ratio:1/1;object-fit:cover;border:2px solid ${color};border-radius:6px;${px?'':'cursor:pointer'}" ${px?'':`onclick="showImgFull(this.src)"`}>
+  </div>`;
+  const group=(kind,list)=>{const k=QA_IMG_KINDS[kind];return list.length?`<div style="grid-column:span 2;display:grid;grid-template-columns:repeat(2,1fr);gap:8px">
+    ${list.map((img,i)=>tile(img,`${k.tag}${list.length>1?' '+(i+1):''}`,k.color)).join('')}
+  </div>`:'';};
+  return`<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+    ${group('good',good)}${group('bad',bad)}
+    ${legacy.map((img,i)=>tile(img,`Image ${i+1}`,'#9ca3af')).join('')}
+  </div>`;
+}
 
 async function renderQualAlerts(){
   const all=(await db.qualAlerts.toArray().catch(()=>[])).sort((a,b)=>b.id-a.id);
@@ -344,35 +401,20 @@ async function renderNewAlert(complaintId){
     </div>
   </div>
 
-  <!-- Evidence images -->
+  <!-- Evidence images: GOOD (what to look for) vs BAD (what to avoid) -->
   <div class="card" style="margin-bottom:14px">
-    <div class="ch"><h5>Evidence Images (up to 3)</h5></div>
+    <div class="ch"><h5>Reference Images — Good vs Bad</h5></div>
     <div class="cb">
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px">
-        ${[0,1,2].map(i=>`
-        <div>
-          <div style="font-size:12px;font-weight:600;color:#0d2f6e;margin-bottom:6px">Image ${i+1}</div>
-          <div id="ann-wrap-${i}" style="border:2px dashed #d4daf0;border-radius:8px;min-height:120px;display:flex;align-items:center;justify-content:center;background:#f8f9fc;overflow:hidden;position:relative">
-            <div id="ann-placeholder-${i}" style="text-align:center;padding:16px;color:#9ca3af">
-              <div style="font-size:22px;margin-bottom:4px">📷</div>
-              <div style="font-size:11.5px">Click to upload</div>
-            </div>
-          </div>
-          <input type="file" id="img-input-${i}" accept="image/*" style="display:none" onchange="loadAnnotatorImage(${i},this)">
-          <div style="display:flex;gap:5px;margin-top:6px;flex-wrap:wrap" id="ann-toolbar-${i}" style="display:none">
-            <button class="btn btn-xs btn-o" onclick="setAnnTool(${i},'circle')" id="t-circle-${i}" title="Draw circle around issue">○ Circle</button>
-            <button class="btn btn-xs btn-o" onclick="setAnnTool(${i},'highlight')" id="t-highlight-${i}" title="Highlight area">▭ Highlight</button>
-            <button class="btn btn-xs btn-o" onclick="setAnnTool(${i},'arrow')" id="t-arrow-${i}" title="Draw an arrow pointing to a feature">↗ Arrow</button>
-            <button class="btn btn-xs btn-o" onclick="setAnnTool(${i},'text')" id="t-text-${i}" title="Add text label">T Text</button>
-            <button class="btn btn-xs btn-o" onclick="undoAnn(${i})" title="Undo last">↩</button>
-            <button class="btn btn-xs" onclick="clearAnn(${i})" style="color:#dc3545;background:#fee2e2;border:none" title="Clear all">✕</button>
-            <button class="btn btn-xs btn-o" onclick="document.getElementById('img-input-${i}').click()" title="Replace image">🔄</button>
-          </div>
-          <button class="btn btn-xs btn-o" style="width:100%;margin-top:5px" id="upload-btn-${i}" onclick="document.getElementById('img-input-${i}').click()">📷 Upload Image</button>
-        </div>`).join('')}
-      </div>
-      <div class="alert al-w" style="margin-top:10px;font-size:12px">
-        💡 Upload images → drag with Circle / Highlight / Arrow to mark the defect (you'll see it grow live as you drag) → use Text to add notes → drag any shape to reposition it.
+      <div style="font-size:12px;color:#6b7280;margin-bottom:10px">Upload at least 1 and at most 2 photos for each. Photos are cropped square so the printed alert fits on one page.</div>
+      ${['good','bad'].map(kind=>{const k=QA_IMG_KINDS[kind];return`
+      <div style="border:1px solid ${k.border};background:${k.bg};border-radius:8px;padding:10px;margin-bottom:10px">
+        <div style="font-size:12.5px;font-weight:700;color:${k.color};margin-bottom:8px">${k.label} <span style="font-weight:500;color:#6b7280">— ${k.hint}</span></div>
+        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px">
+          ${k.slots.map((idx,n)=>annSlotHTML(idx,`${k.short} ${n+1}`)).join('')}
+        </div>
+      </div>`;}).join('')}
+      <div class="alert al-w" style="margin-top:4px;font-size:12px">
+        💡 Upload images → drag with Circle / Highlight / Arrow to mark the feature (you'll see it grow live as you drag) → use Text to add notes → drag any shape to reposition it. The GOOD / BAD tag is stamped on each photo automatically.
       </div>
     </div>
   </div>
@@ -439,19 +481,19 @@ function loadAnnotatorImage(idx, input){
     const canvas=document.createElement('canvas');
     canvas.style.cssText='max-width:100%;cursor:crosshair;display:block;border-radius:6px';
     canvas.id=`ann-canvas-${idx}`;
-    wrap.innerHTML=''; wrap.style.border='1px solid #d4daf0';
+    wrap.innerHTML=''; wrap.style.border=`2px solid ${QA_IMG_KINDS[annSlotKind(idx)].color}`; wrap.style.cursor='';
     wrap.appendChild(canvas);
 
-    const ann={canvas,ctx:canvas.getContext('2d'),img:new Image(),annotations:[],tool:'circle',
+    const ann={canvas,ctx:canvas.getContext('2d'),img:new Image(),annotations:[],tool:'circle',kind:annSlotKind(idx),
       action:null,sx:0,sy:0,dragIdx:-1,dragOrig:null};
     _annotators[idx]=ann;
 
     ann.img.onload=()=>{
-      const maxW=wrap.clientWidth||300;
-      const scale=Math.min(1,maxW/ann.img.naturalWidth);
-      canvas.width=ann.img.naturalWidth*scale;
-      canvas.height=ann.img.naturalHeight*scale;
-      ann.scale=scale;
+      // Square canvas; the photo is centre-cropped to a square in redrawCanvas
+      const side=wrap.clientWidth||300;
+      canvas.width=side; canvas.height=side;
+      const n=Math.min(ann.img.naturalWidth,ann.img.naturalHeight);
+      ann.crop={sx:(ann.img.naturalWidth-n)/2,sy:(ann.img.naturalHeight-n)/2,n};
       redrawCanvas(idx);
     };
     ann.img.src=ev.target.result;
@@ -596,7 +638,8 @@ function redrawCanvas(idx){
   const ann=_annotators[idx]; if(!ann) return;
   const{canvas,ctx,img,annotations}=ann;
   ctx.clearRect(0,0,canvas.width,canvas.height);
-  ctx.drawImage(img,0,0,canvas.width,canvas.height);
+  const c=ann.crop||{sx:0,sy:0,n:Math.min(img.naturalWidth,img.naturalHeight)};
+  ctx.drawImage(img,c.sx,c.sy,c.n,c.n,0,0,canvas.width,canvas.height);
   annotations.forEach(a=>{
     if(a.type==='circle'){
       ctx.beginPath();ctx.ellipse(a.cx,a.cy,a.rx,a.ry,0,0,Math.PI*2);
@@ -613,6 +656,16 @@ function redrawCanvas(idx){
       annDrawArrow(ctx,a.x1,a.y1,a.x2,a.y2,'#dc3545');
     }
   });
+  // GOOD / BAD tag stamped on the photo so it stays with the image everywhere it is shown
+  if(ann.kind){
+    const k=QA_IMG_KINDS[ann.kind];
+    ctx.save();
+    ctx.font='bold 18px Arial';
+    const tw=ctx.measureText(k.tag).width;
+    ctx.fillStyle=k.color;ctx.fillRect(0,0,tw+20,30);
+    ctx.fillStyle='#fff';ctx.fillText(k.tag,10,21);
+    ctx.restore();
+  }
 }
 
 function setAnnTool(idx,tool){
@@ -634,12 +687,12 @@ async function saveAlert(complaintId){
   if(!problem){toast('Problem statement required','d');return}
   if(!containment){toast('Containment action required','d');return}
 
-  // Collect annotated images as base64
-  const images=[];
-  for(let i=0;i<3;i++){
-    const ann=_annotators[i];
-    if(ann){images.push(ann.canvas.toDataURL('image/jpeg',0.82));}
-  }
+  // Collect annotated images as base64 — 1 to 2 GOOD and 1 to 2 BAD
+  const grab=kind=>QA_IMG_KINDS[kind].slots.map(i=>_annotators[i]).filter(Boolean)
+    .map(ann=>ann.canvas.toDataURL('image/jpeg',0.82));
+  const goodImages=grab('good'), badImages=grab('bad');
+  if(!goodImages.length){toast('Upload at least 1 GOOD image (what to look for)','d');return}
+  if(!badImages.length){toast('Upload at least 1 BAD image (what to avoid)','d');return}
 
   // Collect sign-off names (unlimited rows)
   const signoffs=[];
@@ -657,7 +710,7 @@ async function saveAlert(complaintId){
     partNumber:c?.partNumber||'',partName:c?.partName||'',
     problem,containment,
     instructions:document.getElementById('qa-instructions').value.trim(),
-    images, signoffs,
+    goodImages, badImages, signoffs,
     date:document.getElementById('qa-date').value,
     status:'ISSUED',createdAt:new Date().toISOString(),createdBy:Auth.user.name,
   });
@@ -715,16 +768,9 @@ async function viewAlert(id){
             :`<div style="font-size:13.5px;line-height:1.75;white-space:pre-wrap">${esc(a.problem)}</div>`}
         </div>
       </div>
-      ${a.images&&a.images.length?`<div class="card" style="margin-bottom:14px">
-        <div class="ch"><h5>Evidence Images</h5></div>
-        <div class="cb">
-          <div style="display:grid;grid-template-columns:repeat(${Math.min(a.images.length,3)},1fr);gap:10px">
-            ${a.images.map((img,i)=>`<div>
-              <div style="font-size:11px;color:#9ca3af;font-weight:600;margin-bottom:4px">Image ${i+1}</div>
-              <img src="${img}" style="width:100%;border-radius:7px;border:1px solid #e5e7eb;cursor:pointer" onclick="showImgFull('${img}')">
-            </div>`).join('')}
-          </div>
-        </div>
+      ${alertImagesHTML(a)?`<div class="card" style="margin-bottom:14px">
+        <div class="ch"><h5>Reference Images — Good vs Bad</h5></div>
+        <div class="cb">${alertImagesHTML(a)}</div>
       </div>`:''}
       <div class="card" style="margin-bottom:14px">
         <div class="ch"><h5>Containment Action</h5></div>
@@ -1328,8 +1374,7 @@ async function printAlert(alertId){
 .section{margin-bottom:14px}
 .section-title{font-size:9pt;font-weight:bold;text-transform:uppercase;color:#555;border-bottom:1px solid #ccc;padding-bottom:3px;margin-bottom:6px}
 .body-text{font-size:10.5pt;line-height:1.65;white-space:pre-wrap}
-.img-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px}
-.img-grid img{width:100%;border:1px solid #ccc;border-radius:4px}
+@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 .signoff-table{width:100%;border-collapse:collapse;margin-top:8px}
 .signoff-table th{background:#eee;border:1px solid #000;padding:6px;font-size:9pt}
 .signoff-table td{border:1px solid #000;padding:10px 8px;font-size:9pt}
@@ -1344,8 +1389,8 @@ async function printAlert(alertId){
 <div class="alert-banner">⚠️ QUALITY ALERT — ${a.qaNumber}</div>
 <div class="section"><div class="section-title">Problem Statement</div>
   <div class="body-text">${esc(a.problem)}</div></div>
-${a.images&&a.images.length?`<div class="section"><div class="section-title">Evidence Images</div>
-  <div class="img-grid">${a.images.map((img,i)=>`<div><div style="font-size:8pt;color:#555;margin-bottom:3px">Image ${i+1}</div><img src="${img}"></div>`).join('')}</div></div>`:''}
+${alertImagesHTML(a,{px:true,labelSize:'8.5pt'})?`<div class="section"><div class="section-title">Reference Images — Good (look for) vs Bad (avoid)</div>
+  ${alertImagesHTML(a,{px:true,labelSize:'8.5pt'})}</div>`:''}
 <div class="section"><div class="section-title">Containment Action</div>
   <div class="body-text">${esc(a.containment)}</div></div>
 ${a.instructions?`<div class="section"><div class="section-title">Instructions to Team</div>
@@ -1419,8 +1464,6 @@ table.dt td{border:1px solid #ccc;padding:3px 5px;vertical-align:top}
 .why-row{display:grid;grid-template-columns:70px 1fr;border:1px solid #ccc;margin-bottom:-1px}
 .why-lbl{background:#ececec;font-weight:bold;font-size:7.5pt;padding:3px 5px;border-right:1px solid #ccc;display:flex;align-items:center;justify-content:center;text-align:center}
 .why-val{padding:3px 6px;font-size:8.5pt}
-.img-row{display:grid;gap:6px;margin-bottom:4px}
-.img-row img{width:100%;border:1px solid #ccc;border-radius:2px}
 .dvd{border-top:1px solid #000;margin:7px 0}
 .sub-lbl{font-size:7pt;font-weight:bold;text-transform:uppercase;color:#555;margin-bottom:2px}
 @media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
@@ -1448,9 +1491,7 @@ ${alert?`
 <div class="dvd"></div>
 <div class="sec">
   <div class="sec-hdr">2. Quality Alert \u2014 ${alert.qaNumber} &nbsp;<span style="font-weight:normal;text-transform:none;font-size:7pt">Issued: ${fmtD(alert.date)} by ${esc(alert.createdBy||'')}</span></div>
-  ${alert.images&&alert.images.length?`<div class="img-row" style="grid-template-columns:repeat(${Math.min(alert.images.length,3)},1fr)">
-    ${alert.images.map((img,i)=>`<div><div style="font-size:6.5pt;color:#777;margin-bottom:2px">Evidence ${i+1}</div><img src="${img}"></div>`).join('')}
-  </div>`:''}
+  ${alertImagesHTML(alert,{px:true,labelSize:'6.5pt'})?`<div style="margin-bottom:4px">${alertImagesHTML(alert,{px:true,labelSize:'6.5pt'})}</div>`:''}
   <div class="sub-lbl">Containment Action</div>
   <div class="bt">${esc(alert.containment)}</div>
   ${alert.instructions?`<div class="sub-lbl">Instructions to Team</div><div class="bt">${esc(alert.instructions)}</div>`:''}
