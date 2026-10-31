@@ -289,6 +289,33 @@ const QA_IMG_KINDS={
 };
 const annSlotKind=idx=>QA_IMG_KINDS.good.slots.includes(idx)?'good':'bad';
 
+// GOOD / BAD badge laid over the top-left corner of a photo. It is HTML (not drawn into the
+// image) so it stays big and readable at any size, including the small printed tiles.
+function qaTagHTML(kind,size='12px'){
+  const k=QA_IMG_KINDS[kind];
+  return`<div style="position:absolute;top:0;left:0;background:${k.color};color:#fff;font-weight:800;font-size:${size};line-height:1;padding:.4em .6em;border-bottom-right-radius:6px;letter-spacing:.3px;pointer-events:none;-webkit-print-color-adjust:exact;print-color-adjust:exact">${k.tag}</div>`;
+}
+
+// The two Good / Bad boxes with 2 upload slots each (used for new alerts and when editing photos)
+function annEditorHTML(){
+  return`<div style="font-size:12px;color:#6b7280;margin-bottom:10px">Upload at least 1 and at most 2 photos for each. Photos are cropped square so the printed alert fits on one page.</div>
+    ${['good','bad'].map(kind=>{const k=QA_IMG_KINDS[kind];return`
+    <div style="border:1px solid ${k.border};background:${k.bg};border-radius:8px;padding:10px;margin-bottom:10px">
+      <div style="font-size:12.5px;font-weight:700;color:${k.color};margin-bottom:8px">${k.label} <span style="font-weight:500;color:#6b7280">— ${k.hint}</span></div>
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px">
+        ${k.slots.map((idx,n)=>annSlotHTML(idx,`${k.short} ${n+1}`)).join('')}
+      </div>
+    </div>`;}).join('')}
+    <div class="alert al-w" style="margin-top:4px;font-size:12px">
+      💡 Upload images → drag with Circle / Highlight / Arrow to mark the feature (you'll see it grow live as you drag) → use Text to add notes → drag any shape to reposition it. The GOOD / BAD tag is added to each photo automatically.
+    </div>`;
+}
+// Annotated photos of one kind as JPEG data URLs
+function annCollect(kind){
+  return QA_IMG_KINDS[kind].slots.map(i=>_annotators[i]).filter(Boolean)
+    .map(ann=>ann.canvas.toDataURL('image/jpeg',0.82));
+}
+
 function annSlotHTML(i,title){
   return`<div>
     <div style="font-size:12px;font-weight:600;color:#0d2f6e;margin-bottom:6px">${title}</div>
@@ -325,15 +352,18 @@ function alertImageSets(a){
 }
 // Good / Bad image block for the on-screen view and the prints. Every tile is square and the
 // same size (4 columns: 2 good + 2 bad) so the alert always fits on one page.
-function alertImagesHTML(a,{px=false,labelSize='11px'}={}){
+function alertImagesHTML(a,{px=false,labelSize='11px',tagSize='12px'}={}){
   const{good,bad,legacy}=alertImageSets(a);
   if(!good.length&&!bad.length&&!legacy.length) return '';
-  const tile=(img,cap,color)=>`<div>
+  const tile=(img,cap,color,kind)=>`<div>
     <div style="font-size:${labelSize};color:${color};font-weight:700;margin-bottom:3px">${cap}</div>
-    <img src="${img}" style="width:100%;aspect-ratio:1/1;object-fit:cover;border:2px solid ${color};border-radius:6px;${px?'':'cursor:pointer'}" ${px?'':`onclick="showImgFull(this.src)"`}>
+    <div style="position:relative;border:2px solid ${color};border-radius:6px;overflow:hidden;aspect-ratio:1/1">
+      <img src="${img}" style="display:block;width:100%;height:100%;object-fit:cover;${px?'':'cursor:pointer'}" ${px?'':`onclick="showImgFull(this.src)"`}>
+      ${kind?qaTagHTML(kind,tagSize):''}
+    </div>
   </div>`;
   const group=(kind,list)=>{const k=QA_IMG_KINDS[kind];return list.length?`<div style="grid-column:span 2;display:grid;grid-template-columns:repeat(2,1fr);gap:8px">
-    ${list.map((img,i)=>tile(img,`${k.tag}${list.length>1?' '+(i+1):''}`,k.color)).join('')}
+    ${list.map((img,i)=>tile(img,`${k.short.toUpperCase()}${list.length>1?' '+(i+1):''}`,k.color,kind)).join('')}
   </div>`:'';};
   return`<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
     ${group('good',good)}${group('bad',bad)}
@@ -404,19 +434,7 @@ async function renderNewAlert(complaintId){
   <!-- Evidence images: GOOD (what to look for) vs BAD (what to avoid) -->
   <div class="card" style="margin-bottom:14px">
     <div class="ch"><h5>Reference Images — Good vs Bad</h5></div>
-    <div class="cb">
-      <div style="font-size:12px;color:#6b7280;margin-bottom:10px">Upload at least 1 and at most 2 photos for each. Photos are cropped square so the printed alert fits on one page.</div>
-      ${['good','bad'].map(kind=>{const k=QA_IMG_KINDS[kind];return`
-      <div style="border:1px solid ${k.border};background:${k.bg};border-radius:8px;padding:10px;margin-bottom:10px">
-        <div style="font-size:12.5px;font-weight:700;color:${k.color};margin-bottom:8px">${k.label} <span style="font-weight:500;color:#6b7280">— ${k.hint}</span></div>
-        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px">
-          ${k.slots.map((idx,n)=>annSlotHTML(idx,`${k.short} ${n+1}`)).join('')}
-        </div>
-      </div>`;}).join('')}
-      <div class="alert al-w" style="margin-top:4px;font-size:12px">
-        💡 Upload images → drag with Circle / Highlight / Arrow to mark the feature (you'll see it grow live as you drag) → use Text to add notes → drag any shape to reposition it. The GOOD / BAD tag is stamped on each photo automatically.
-      </div>
-    </div>
+    <div class="cb">${annEditorHTML()}</div>
   </div>
 
   <div class="card" style="margin-bottom:14px">
@@ -468,49 +486,52 @@ function addSignoffRow(){
 function loadAnnotatorImage(idx, input){
   const file=input.files[0]; if(!file) return;
   const reader=new FileReader();
-  reader.onload=ev=>{
-    const wrap=document.getElementById(`ann-wrap-${idx}`);
-    const ph=document.getElementById(`ann-placeholder-${idx}`);
-    const tb=document.getElementById(`ann-toolbar-${idx}`);
-    const btn=document.getElementById(`upload-btn-${idx}`);
-    if(ph) ph.style.display='none';
-    if(tb) tb.style.display='flex';
-    if(btn) btn.style.display='none';
-
-    // Create canvas
-    const canvas=document.createElement('canvas');
-    canvas.style.cssText='max-width:100%;cursor:crosshair;display:block;border-radius:6px';
-    canvas.id=`ann-canvas-${idx}`;
-    wrap.innerHTML=''; wrap.style.border=`2px solid ${QA_IMG_KINDS[annSlotKind(idx)].color}`; wrap.style.cursor='';
-    wrap.appendChild(canvas);
-
-    const ann={canvas,ctx:canvas.getContext('2d'),img:new Image(),annotations:[],tool:'circle',kind:annSlotKind(idx),
-      action:null,sx:0,sy:0,dragIdx:-1,dragOrig:null};
-    _annotators[idx]=ann;
-
-    ann.img.onload=()=>{
-      // Square canvas; the photo is centre-cropped to a square in redrawCanvas
-      const side=wrap.clientWidth||300;
-      canvas.width=side; canvas.height=side;
-      const n=Math.min(ann.img.naturalWidth,ann.img.naturalHeight);
-      ann.crop={sx:(ann.img.naturalWidth-n)/2,sy:(ann.img.naturalHeight-n)/2,n};
-      redrawCanvas(idx);
-    };
-    ann.img.src=ev.target.result;
-
-    const pos=e=>{const r=canvas.getBoundingClientRect();return{x:e.clientX-r.left,y:e.clientY-r.top};};
-
-    canvas.addEventListener('mousedown',e=>{annPointerDown(idx,pos(e).x,pos(e).y);});
-    canvas.addEventListener('mousemove',e=>{annPointerMove(idx,pos(e).x,pos(e).y);});
-    canvas.addEventListener('mouseup',e=>{annPointerUp(idx,pos(e).x,pos(e).y);});
-    canvas.addEventListener('mouseleave',()=>{annPointerCancel(idx);});
-
-    // Touch support
-    canvas.addEventListener('touchstart',e=>{e.preventDefault();const t=e.touches[0];const r=canvas.getBoundingClientRect();annPointerDown(idx,t.clientX-r.left,t.clientY-r.top);},{passive:false});
-    canvas.addEventListener('touchmove',e=>{e.preventDefault();const t=e.touches[0];const r=canvas.getBoundingClientRect();annPointerMove(idx,t.clientX-r.left,t.clientY-r.top);},{passive:false});
-    canvas.addEventListener('touchend',e=>{e.preventDefault();const t=e.changedTouches[0];const r=canvas.getBoundingClientRect();annPointerUp(idx,t.clientX-r.left,t.clientY-r.top);},{passive:false});
-  };
+  reader.onload=ev=>loadAnnotatorSrc(idx,ev.target.result);
   reader.readAsDataURL(file);
+}
+// Put a photo (data URL) into slot idx — from a new upload or an alert's existing photo
+function loadAnnotatorSrc(idx, src){
+  const wrap=document.getElementById(`ann-wrap-${idx}`);
+  const ph=document.getElementById(`ann-placeholder-${idx}`);
+  const tb=document.getElementById(`ann-toolbar-${idx}`);
+  const btn=document.getElementById(`upload-btn-${idx}`);
+  if(ph) ph.style.display='none';
+  if(tb) tb.style.display='flex';
+  if(btn) btn.style.display='none';
+
+  // Create canvas
+  const canvas=document.createElement('canvas');
+  canvas.style.cssText='max-width:100%;cursor:crosshair;display:block;border-radius:6px';
+  canvas.id=`ann-canvas-${idx}`;
+  wrap.innerHTML=''; wrap.style.border=`2px solid ${QA_IMG_KINDS[annSlotKind(idx)].color}`; wrap.style.cursor='';
+  wrap.appendChild(canvas);
+  wrap.insertAdjacentHTML('beforeend',qaTagHTML(annSlotKind(idx),'16px'));
+
+  const ann={canvas,ctx:canvas.getContext('2d'),img:new Image(),annotations:[],tool:'circle',kind:annSlotKind(idx),
+    action:null,sx:0,sy:0,dragIdx:-1,dragOrig:null};
+  _annotators[idx]=ann;
+
+  ann.img.onload=()=>{
+    // Square canvas; the photo is centre-cropped to a square in redrawCanvas
+    const side=wrap.clientWidth||300;
+    canvas.width=side; canvas.height=side;
+    const n=Math.min(ann.img.naturalWidth,ann.img.naturalHeight);
+    ann.crop={sx:(ann.img.naturalWidth-n)/2,sy:(ann.img.naturalHeight-n)/2,n};
+    redrawCanvas(idx);
+  };
+  ann.img.src=src;
+
+  const pos=e=>{const r=canvas.getBoundingClientRect();return{x:e.clientX-r.left,y:e.clientY-r.top};};
+
+  canvas.addEventListener('mousedown',e=>{annPointerDown(idx,pos(e).x,pos(e).y);});
+  canvas.addEventListener('mousemove',e=>{annPointerMove(idx,pos(e).x,pos(e).y);});
+  canvas.addEventListener('mouseup',e=>{annPointerUp(idx,pos(e).x,pos(e).y);});
+  canvas.addEventListener('mouseleave',()=>{annPointerCancel(idx);});
+
+  // Touch support
+  canvas.addEventListener('touchstart',e=>{e.preventDefault();const t=e.touches[0];const r=canvas.getBoundingClientRect();annPointerDown(idx,t.clientX-r.left,t.clientY-r.top);},{passive:false});
+  canvas.addEventListener('touchmove',e=>{e.preventDefault();const t=e.touches[0];const r=canvas.getBoundingClientRect();annPointerMove(idx,t.clientX-r.left,t.clientY-r.top);},{passive:false});
+  canvas.addEventListener('touchend',e=>{e.preventDefault();const t=e.changedTouches[0];const r=canvas.getBoundingClientRect();annPointerUp(idx,t.clientX-r.left,t.clientY-r.top);},{passive:false});
 }
 
 // ── Pointer state machine: create OR drag-to-move an existing shape ──
@@ -656,16 +677,6 @@ function redrawCanvas(idx){
       annDrawArrow(ctx,a.x1,a.y1,a.x2,a.y2,'#dc3545');
     }
   });
-  // GOOD / BAD tag stamped on the photo so it stays with the image everywhere it is shown
-  if(ann.kind){
-    const k=QA_IMG_KINDS[ann.kind];
-    ctx.save();
-    ctx.font='bold 18px Arial';
-    const tw=ctx.measureText(k.tag).width;
-    ctx.fillStyle=k.color;ctx.fillRect(0,0,tw+20,30);
-    ctx.fillStyle='#fff';ctx.fillText(k.tag,10,21);
-    ctx.restore();
-  }
 }
 
 function setAnnTool(idx,tool){
@@ -688,9 +699,7 @@ async function saveAlert(complaintId){
   if(!containment){toast('Containment action required','d');return}
 
   // Collect annotated images as base64 — 1 to 2 GOOD and 1 to 2 BAD
-  const grab=kind=>QA_IMG_KINDS[kind].slots.map(i=>_annotators[i]).filter(Boolean)
-    .map(ann=>ann.canvas.toDataURL('image/jpeg',0.82));
-  const goodImages=grab('good'), badImages=grab('bad');
+  const goodImages=annCollect('good'), badImages=annCollect('bad');
   if(!goodImages.length){toast('Upload at least 1 GOOD image (what to look for)','d');return}
   if(!badImages.length){toast('Upload at least 1 BAD image (what to avoid)','d');return}
 
@@ -768,10 +777,12 @@ async function viewAlert(id){
             :`<div style="font-size:13.5px;line-height:1.75;white-space:pre-wrap">${esc(a.problem)}</div>`}
         </div>
       </div>
-      ${alertImagesHTML(a)?`<div class="card" style="margin-bottom:14px">
-        <div class="ch"><h5>Reference Images — Good vs Bad</h5></div>
-        <div class="cb">${alertImagesHTML(a)}</div>
-      </div>`:''}
+      <div class="card" style="margin-bottom:14px" id="al-images-card">
+        <div class="ch"><h5>Reference Images — Good vs Bad</h5>
+          <button class="btn btn-o btn-sm" onclick="editAlertImages(${id})">✏️ Edit Photos</button>
+        </div>
+        <div class="cb">${alertImagesHTML(a)||'<div class="muted" style="font-size:12px">No photos yet — click ✏️ Edit Photos to add GOOD and BAD reference photos.</div>'}</div>
+      </div>
       <div class="card" style="margin-bottom:14px">
         <div class="ch"><h5>Containment Action</h5></div>
         <div class="cb">
@@ -855,6 +866,63 @@ async function removeAlertSignoff(alertId,idx){
   const a=await DB.getAlert(alertId);
   const signoffs=(a.signoffs||[]).filter((_,i)=>i!==idx);
   await DB.updateAlert(alertId,{signoffs});
+  viewAlert(alertId);
+}
+
+// ── Edit photos of an existing alert (also converts older alerts to Good / Bad) ──
+let _editLegacy=[];
+async function editAlertImages(alertId){
+  const a=await DB.getAlert(alertId); if(!a) return;
+  const card=document.getElementById('al-images-card'); if(!card) return;
+  const{good,bad,legacy}=alertImageSets(a);
+  _annotators=[]; _editLegacy=[...legacy];
+  card.innerHTML=`<div class="ch"><h5>Edit Reference Images — Good vs Bad</h5></div>
+    <div class="cb">
+      <div id="al-legacy-imgs"></div>
+      ${annEditorHTML()}
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-o" onclick="viewAlert(${alertId})">Cancel</button>
+        <button class="btn btn-p" onclick="saveAlertImages(${alertId})">💾 Save Photos</button>
+      </div>
+    </div>`;
+  QA_IMG_KINDS.good.slots.forEach((idx,i)=>{if(good[i]) loadAnnotatorSrc(idx,good[i]);});
+  QA_IMG_KINDS.bad.slots.forEach((idx,i)=>{if(bad[i]) loadAnnotatorSrc(idx,bad[i]);});
+  renderLegacyImgs();
+}
+// Older alerts: photos not yet marked Good / Bad, each can be moved into a free slot
+function renderLegacyImgs(){
+  const el=document.getElementById('al-legacy-imgs'); if(!el) return;
+  el.innerHTML=_editLegacy.length?`<div style="border:1px solid #e5e7eb;background:#f9fafb;border-radius:8px;padding:10px;margin-bottom:10px">
+    <div style="font-size:12.5px;font-weight:700;color:#0d2f6e;margin-bottom:3px">Earlier photos — not yet marked Good / Bad</div>
+    <div style="font-size:11.5px;color:#6b7280;margin-bottom:8px">Move each photo to GOOD or BAD. Photos left here are removed when you save.</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
+      ${_editLegacy.map((img,i)=>`<div>
+        <img src="${img}" style="width:100%;aspect-ratio:1/1;object-fit:cover;border:1px solid #d4daf0;border-radius:6px;cursor:pointer" onclick="showImgFull(this.src)">
+        <div style="display:flex;gap:4px;margin-top:4px">
+          <button class="btn btn-xs" style="flex:1;background:${QA_IMG_KINDS.good.color};color:#fff;border:none" onclick="moveLegacyImg(${i},'good')">→ Good</button>
+          <button class="btn btn-xs" style="flex:1;background:${QA_IMG_KINDS.bad.color};color:#fff;border:none" onclick="moveLegacyImg(${i},'bad')">→ Bad</button>
+        </div>
+      </div>`).join('')}
+    </div>
+  </div>`:'';
+}
+function moveLegacyImg(i,kind){
+  const idx=QA_IMG_KINDS[kind].slots.find(s=>!_annotators[s]);
+  if(idx===undefined){toast(`Both ${kind.toUpperCase()} slots are full — remove one first (max 2)`,'w');return}
+  loadAnnotatorSrc(idx,_editLegacy[i]);
+  _editLegacy.splice(i,1);
+  renderLegacyImgs();
+}
+async function saveAlertImages(alertId){
+  const goodImages=annCollect('good'), badImages=annCollect('bad');
+  if(!goodImages.length){toast('Add at least 1 GOOD image (what to look for)','d');return}
+  if(!badImages.length){toast('Add at least 1 BAD image (what to avoid)','d');return}
+  if(_editLegacy.length&&!confirm(`${_editLegacy.length} earlier photo(s) not marked Good / Bad will be removed. Continue?`)) return;
+  const a=await DB.getAlert(alertId);
+  await DB.updateAlert(alertId,{goodImages,badImages,images:[],updatedAt:new Date().toISOString()});
+  await DB.log({docId:alertId,docNumber:a?.qaNumber||'',action:'QUALITY_ALERT_PHOTOS_UPDATED',user:Auth.user.name,notes:`${goodImages.length} good / ${badImages.length} bad`});
+  _annotators=[]; _editLegacy=[];
+  toast('✅ Photos updated');
   viewAlert(alertId);
 }
 
@@ -1389,8 +1457,8 @@ async function printAlert(alertId){
 <div class="alert-banner">⚠️ QUALITY ALERT — ${a.qaNumber}</div>
 <div class="section"><div class="section-title">Problem Statement</div>
   <div class="body-text">${esc(a.problem)}</div></div>
-${alertImagesHTML(a,{px:true,labelSize:'8.5pt'})?`<div class="section"><div class="section-title">Reference Images — Good (look for) vs Bad (avoid)</div>
-  ${alertImagesHTML(a,{px:true,labelSize:'8.5pt'})}</div>`:''}
+${alertImagesHTML(a,{px:true,labelSize:'8.5pt',tagSize:'13pt'})?`<div class="section"><div class="section-title">Reference Images — Good (look for) vs Bad (avoid)</div>
+  ${alertImagesHTML(a,{px:true,labelSize:'8.5pt',tagSize:'13pt'})}</div>`:''}
 <div class="section"><div class="section-title">Containment Action</div>
   <div class="body-text">${esc(a.containment)}</div></div>
 ${a.instructions?`<div class="section"><div class="section-title">Instructions to Team</div>
@@ -1491,7 +1559,7 @@ ${alert?`
 <div class="dvd"></div>
 <div class="sec">
   <div class="sec-hdr">2. Quality Alert \u2014 ${alert.qaNumber} &nbsp;<span style="font-weight:normal;text-transform:none;font-size:7pt">Issued: ${fmtD(alert.date)} by ${esc(alert.createdBy||'')}</span></div>
-  ${alertImagesHTML(alert,{px:true,labelSize:'6.5pt'})?`<div style="margin-bottom:4px">${alertImagesHTML(alert,{px:true,labelSize:'6.5pt'})}</div>`:''}
+  ${alertImagesHTML(alert,{px:true,labelSize:'6.5pt',tagSize:'11pt'})?`<div style="margin-bottom:4px">${alertImagesHTML(alert,{px:true,labelSize:'6.5pt',tagSize:'11pt'})}</div>`:''}
   <div class="sub-lbl">Containment Action</div>
   <div class="bt">${esc(alert.containment)}</div>
   ${alert.instructions?`<div class="sub-lbl">Instructions to Team</div><div class="bt">${esc(alert.instructions)}</div>`:''}
