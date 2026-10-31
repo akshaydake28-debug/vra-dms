@@ -574,6 +574,10 @@ def backup():
     # All generic modules
     modules = {}
     for r in GenericRecord.query.all():
+        # 'rm_lots' is exported from the real RMLot table above; a stray generic
+        # copy (left by older restores) must not overwrite it via data.update(modules)
+        if r.module == 'rm_lots':
+            continue
         try:
             parsed = json.loads(r.data)
         except (TypeError, ValueError):
@@ -654,7 +658,8 @@ def restore():
 
     # All array-type module data
     skip_keys = {'exportedAt','exportedBy','appVersion','company','documents',
-                 'audit','users','customDocTypes','settings','records','backupErrors'}
+                 'audit','users','customDocTypes','settings','records','backupErrors',
+                 'rm_lots'}  # rm_lots is restored into its own table below, not as generic records
     module_count = 0
     for key, value in data.items():
         if key in skip_keys: continue
