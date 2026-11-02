@@ -211,7 +211,14 @@ def require_login():
     if not path.startswith('/api/') or path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES):
         return None
     if 'user_id' in session:
-        return None
+        # The session cookie lasts 30 days, so confirm the account still exists
+        # (a deleted user must be locked out at once) and pick up role changes.
+        u = db.session.get(User, session.get('user_id'))
+        if u:
+            session['role'] = u.role
+            return None
+        session.clear()
+        return jsonify({'error': 'Not authenticated'}), 401
     # Dedicated token for the automated backup workflow only — lets the
     # nightly export run unattended without needing a real user's login.
     if path == '/api/backup' and BACKUP_API_TOKEN and request.headers.get('X-Backup-Token') == BACKUP_API_TOKEN:
