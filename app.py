@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_from_directory, session
+from flask import Flask, request, jsonify, send_from_directory, session, Response
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -7,6 +7,7 @@ import os
 import json
 import re
 import secrets
+import base64
 
 app = Flask(__name__, static_folder='static')
 CORS(app)
@@ -166,7 +167,7 @@ PUBLIC_PATHS = {'/api/auth/login'}
 # all — the unguessable token in the URL is what gates access, not a login
 # session. Everything under this prefix must independently validate its
 # own token and never expose data beyond that one record.
-PUBLIC_PREFIXES = ('/api/public/feedback/',)
+PUBLIC_PREFIXES = ('/api/public/feedback/', '/api/public/wi/', '/api/public/wi-photo/')
 BACKUP_API_TOKEN = os.environ.get('BACKUP_API_TOKEN')
 HASH_PREFIXES = ('pbkdf2:', 'scrypt:', 'argon2:')
 # APPROVER is this app's admin-equivalent role — it's what the frontend
@@ -350,6 +351,10 @@ def save_document():
     d = json_object_body()
     if d is None: return jsonify(BAD_BODY[0]), 400
     existing = Document.query.filter_by(doc_number=d.get('docNumber')).first()
+    if existing and d.get('isNew'):
+        # A brand-new document must never take over an existing number —
+        # this endpoint upserts by number, so it would overwrite that document.
+        return jsonify({'error': 'Document number already in use'}), 409
     if existing:
         existing.title = d.get('title',existing.title)
         existing.doc_type = d.get('docType',existing.doc_type)
@@ -733,6 +738,191 @@ def restore():
 
     db.session.commit()
     return jsonify({'ok':True,'documents':doc_count,'records':module_count,'audit':audit_count})
+
+
+# ══════════════════════════════════════════════════════
+#  WORK INSTRUCTIONS (step-by-step documents with photos)
+#  A WI/SOP made in the step builder is an ordinary Document (same number
+#  series, revisions and approval) whose extra.format is 'steps'; its steps
+#  live on the version record under 'wi'. Step photos are stored one per
+#  GenericRecord under module 'wiph_<token>' — the indexed module column
+#  makes the token lookup fast, and the normal backup/restore carries them
+#  with no extra code. The token is random and unguessable, so photos can
+#  be served without a login to the phone view opened from the printed QR.
+# ══════════════════════════════════════════════════════
+WI_PHOTO_PREFIX = 'wiph_'
+WI_PHOTO_TYPES = ('image/jpeg', 'image/png', 'image/webp')
+WI_PHOTO_MAX_BYTES = 4 * 1024 * 1024
+_WI_TOKEN_RE = re.compile(r'^[A-Za-z0-9_-]{16,40}$')
+
+def _wi_store_photo(raw_bytes, mime, created_by=''):
+    token = secrets.token_urlsafe(18)
+    db.session.add(GenericRecord(module=WI_PHOTO_PREFIX + token, data=json.dumps({
+        'mime': mime, 'b64': base64.b64encode(raw_bytes).decode('ascii'),
+        'createdBy': created_by, 'createdAt': datetime.utcnow().isoformat()})))
+    return token
+
+@app.route('/api/wi/photos', methods=['POST'])
+def wi_upload_photo():
+    d = body_or_empty()
+    m = re.match(r'^data:(image/[a-z]+);base64,(.+)$', str(d.get('dataUrl', '')), re.S)
+    if not m or m.group(1) not in WI_PHOTO_TYPES:
+        return jsonify({'error': 'Send a JPG, PNG or WEBP image'}), 400
+    try:
+        raw = base64.b64decode(m.group(2), validate=True)
+    except (ValueError, TypeError):
+        return jsonify({'error': 'The image data is damaged'}), 400
+    if not raw or len(raw) > WI_PHOTO_MAX_BYTES:
+        return jsonify({'error': 'Image is empty or larger than 4 MB'}), 400
+    token = _wi_store_photo(raw, m.group(1), _current_user_name() or '')
+    db.session.commit()
+    return jsonify({'token': token})
+
+@app.route('/api/public/wi-photo/<token>', methods=['GET'])
+def wi_get_photo(token):
+    if not _WI_TOKEN_RE.match(token or ''):
+        return jsonify({'error': 'Not found'}), 404
+    r = GenericRecord.query.filter_by(module=WI_PHOTO_PREFIX + token).first()
+    d = safe_json_loads(r.data, {}) if r else {}
+    if not d.get('b64'):
+        return jsonify({'error': 'Not found'}), 404
+    try:
+        raw = base64.b64decode(d['b64'])
+    except (ValueError, TypeError):
+        return jsonify({'error': 'Not found'}), 404
+    resp = Response(raw, mimetype=d.get('mime') if d.get('mime') in WI_PHOTO_TYPES else 'image/jpeg')
+    # A token always points at the same bytes (edits create a new photo).
+    resp.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+    return resp
+
+def _wi_active_version(doc_id):
+    best = None
+    for r in GenericRecord.query.filter_by(module='versions').order_by(GenericRecord.id.asc()).all():
+        v = safe_json_loads(r.data, {})
+        if v.get('docId') == doc_id and v.get('status') == 'ACTIVE':
+            best = v
+    return best
+
+@app.route('/api/public/wi/<doc_number>', methods=['GET'])
+def wi_public_doc(doc_number):
+    # Phone view opened from the QR on a printed WI. Only ever returns the
+    # current APPROVED revision of a step-format document — drafts, pending
+    # and rejected revisions are never shown here.
+    doc = Document.query.filter_by(doc_number=doc_number).first()
+    if not doc or safe_json_loads(doc.extra, {}).get('format') != 'steps':
+        return jsonify({'error': 'Not found'}), 404
+    v = _wi_active_version(doc.id)
+    if not v:
+        return jsonify({'error': 'This document has no approved revision yet'}), 404
+    wi = v.get('wi') or {}
+    return jsonify({
+        'docNumber': doc.doc_number, 'title': doc.title, 'docType': doc.doc_type,
+        'revision': v.get('revision'), 'approvedBy': v.get('approvedBy', ''),
+        'approvalDate': v.get('approvalDate', ''),
+        'revisionInProgress': doc.revision if doc.revision != v.get('revision') else None,
+        'wi': {k: wi.get(k) for k in ('photos', 'machineLabel', 'partLabel', 'area', 'instruments', 'ppe', 'steps')},
+    })
+
+@app.route('/wi/<doc_number>')
+def wi_phone_page(doc_number):
+    return send_from_directory('static', 'wi.html')
+
+# ── Demo work instructions (seeded once, removable from the app) ──
+WI_DEMO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'seed_data', 'wi_demo')
+
+def _wi_demo_html(wi):
+    rows = []
+    n = 0
+    for s in wi['steps']:
+        if s.get('kind') == 'section':
+            rows.append(f"<tr><th colspan=\"3\">{s.get('text','')}</th></tr>")
+            continue
+        n += 1
+        img = f"<img src=\"/api/public/wi-photo/{s['photo']}\" style=\"width:240px\">" if s.get('photo') else ''
+        extra = ''.join(f"<div><b>{lab}:</b> {s[k]}</div>" for k, lab in
+                        (('key', 'Key point'), ('check', 'Check'), ('avoid', 'Avoid')) if s.get(k))
+        rows.append(f"<tr><td>{n}</td><td>{img}</td><td><p>{s.get('text','')}</p>{extra}</td></tr>")
+    return '<table>' + ''.join(rows) + '</table>'
+
+def seed_wi_demo():
+    if GenericRecord.query.filter_by(module='setting_wiDemoSeeded').first():
+        return
+    if not os.path.isdir(WI_DEMO_DIR):
+        return
+    def photo(name):
+        with open(os.path.join(WI_DEMO_DIR, name), 'rb') as f:
+            return _wi_store_photo(f.read(), 'image/jpeg', 'Demo')
+    def recs(module):
+        out = []
+        for r in GenericRecord.query.filter_by(module=module).order_by(GenericRecord.id.asc()).all():
+            d = safe_json_loads(r.data, {}); d['id'] = r.id; out.append(d)
+        return out
+    gauges = [g for g in recs('calGauges') if (g.get('status') or 'Active') == 'Active']
+    vern = next((g for g in gauges if 'vernier' in str(g.get('name', '')).lower()), gauges[0] if gauges else None)
+    parts = recs('prodParts'); part = next((p for p in parts if not p.get('demo')), parts[0] if parts else None)
+    inst = [{'id': vern['id'], 'gaugeId': vern.get('gaugeId', ''), 'name': vern.get('name', '')}] if vern else []
+    tool = vern['id'] if vern else ''
+    def S(text, ph=None, **kw):
+        return {'kind': 'step', 'text': text, 'photo': photo(ph) if ph else '', 'photoBase': '', 'ann': [],
+                'key': kw.get('key', ''), 'check': kw.get('check', ''), 'avoid': kw.get('avoid', ''), 'tool': kw.get('tool', '')}
+    def H(text): return {'kind': 'section', 'text': text}
+    now = datetime.utcnow().isoformat()
+    demos = [
+        ('VRA-WI-DEMO-1', '[DEMO] How to measure with a vernier caliper', 'ACTIVE', {
+            'photos': True, 'area': 'Inspection room / any station', 'machineId': '', 'machineLabel': '',
+            'partId': '', 'partLabel': '', 'instruments': inst, 'ppe': ['Safety shoes', 'Cotton gloves'],
+            'steps': [
+                H('Before you start'),
+                S('Wipe both jaws and the part face with a clean, lint-free cloth.', 'v1_clean.jpg',
+                  check='No dust, oil or burr on the jaws.', avoid='Cleaning the jaws with emery paper or a file.'),
+                S('Check the calibration sticker on the caliper.', 'v2_sticker.jpg',
+                  check='Due date not crossed; gauge ID matches the gauge register.',
+                  avoid='Using a caliper with an expired or missing sticker. Hand it to Quality.', tool=tool),
+                S('Close the jaws fully and confirm the zero.', 'v3_zero.jpg',
+                  check='Digital display reads 0.00.', key='If it does not read 0.00, press ZERO. If it still drifts, report it.'),
+                H('Measuring'),
+                S('Place the part deep inside the outside jaws, square to the face, and close gently with the thumb roller.', 'v4_measure.jpg',
+                  key='Measure at the same marked point every time.', avoid='Forcing the jaws or measuring at the jaw tips.', tool=tool),
+                S('Read the main scale, then find the vernier line that lines up exactly.', 'v5_read.jpg',
+                  check='Reading = main scale + (vernier line x 0.02). Example: 12 + 0.24 = 12.24 mm.'),
+                H('After use'),
+                S('Clean the caliper, leave a small gap between the jaws and keep it in its box.', 'v6_store.jpg',
+                  avoid='Dropping it, keeping it in a pocket or leaving it on the machine.'),
+            ]}),
+        ('VRA-WI-DEMO-2', '[DEMO] How to read a Quality Alert', 'DRAFT', {
+            'photos': True, 'area': 'All production stations', 'machineId': '', 'machineLabel': '',
+            'partId': part['id'] if part else '', 'partLabel': (f"{part.get('partNumber','')} — {part.get('partName','')}" if part else ''),
+            'instruments': [], 'ppe': ['Safety shoes'],
+            'steps': [
+                S('Check the QA number, part number and date at the top of the alert.', 'q1_header.jpg',
+                  check='The part number matches the part you are running.'),
+                S('Look at the GOOD photo first. This is what an OK part looks like.', 'q2_good.jpg'),
+                S('Look at the BAD photo. The red circle shows where the defect is.', 'q3_bad.jpg',
+                  key='Check exactly that area on every part you make.'),
+                S('Read the action box: what to do if you find this defect.', 'q4_action.jpg',
+                  check='Red tag the part, put it in the quarantine bin, inform the supervisor.'),
+                S('Sign the alert at your station to confirm you have read it.', 'q5_sign.jpg',
+                  avoid='Starting work without reading and signing a new alert.'),
+            ]}),
+    ]
+    for number, title, status, wi in demos:
+        if Document.query.filter_by(doc_number=number).first():
+            continue
+        doc = Document(doc_number=number, title=title, doc_type='WI', revision='A', status=status,
+                       content='', created_by='Demo (sample data)', approved_by='Demo (sample data)' if status == 'ACTIVE' else '',
+                       created_date=now, approved_date=now if status == 'ACTIVE' else '',
+                       extra=json.dumps({'format': 'steps', 'demo': True}))
+        db.session.add(doc); db.session.flush()
+        ver = {'docId': doc.id, 'revision': 'A', 'content': _wi_demo_html(wi), 'wi': wi,
+               'changeSummary': 'Initial creation (sample data)', 'preparedBy': 'Demo (sample data)',
+               'preparedDate': now, 'status': status}
+        if status == 'ACTIVE':
+            ver.update({'approvedBy': 'Demo (sample data)', 'approvalDate': now, 'approvalNotes': ''})
+        db.session.add(GenericRecord(module='versions', data=json.dumps(ver)))
+        db.session.add(AuditLog(action='CREATED', module='documents', doc_id=doc.id, doc_number=number,
+                                user='Demo (sample data)', notes=f'"{title}" created as sample data'))
+    db.session.add(GenericRecord(module='setting_wiDemoSeeded', data=json.dumps(True)))
+    db.session.commit()
 
 
 # ══════════════════════════════════════════════════════
@@ -1864,6 +2054,11 @@ with app.app_context():
         # Note: seed_defaults() removed — default data comes from backup restore
     except Exception as e:
         print(f"Startup warning: {e}")
+    try:
+        seed_wi_demo()
+    except Exception as e:
+        db.session.rollback()
+        print(f"Startup warning (demo work instructions): {e}")
 
 if __name__ == '__main__':
     # Defaults to off so a stray `python app.py` never exposes the
