@@ -307,7 +307,7 @@ function annEditorHTML(){
       </div>
     </div>`;}).join('')}
     <div class="alert al-w" style="margin-top:4px;font-size:12px">
-      💡 Upload images → drag with Circle / Highlight / Arrow to mark the feature (you'll see it grow live as you drag) → use Text to add notes → drag any shape to reposition it. The GOOD / BAD tag is added to each photo automatically.
+      💡 Upload images → drag with Circle / Highlight / Arrow to mark the feature (you'll see it grow live as you drag) → use Text to add notes → grab any text or shape and drag it to move it. The GOOD / BAD tag is added to each photo automatically.
     </div>`;
 }
 // Annotated photos of one kind as JPEG data URLs
@@ -538,15 +538,14 @@ function loadAnnotatorSrc(idx, src){
 function annPointerDown(idx,x,y){
   const ann=_annotators[idx]; if(!ann) return;
   ann.sx=x; ann.sy=y;
-  if(ann.tool==='text'){
-    const txt=prompt('Enter label text:');
-    if(txt){ann.annotations.push({type:'text',x,y,text:txt});redrawCanvas(idx);}
-    return;
-  }
+  // Grabbing an existing shape or text label always moves it, whatever tool is selected
   const hitIdx=annHitTest(ann,x,y);
   if(hitIdx!==-1){
     ann.action='move'; ann.dragIdx=hitIdx; ann.dragOrig={...ann.annotations[hitIdx]};
     ann.canvas.style.cursor='grabbing';
+  } else if(ann.tool==='text'){
+    const txt=prompt('Enter label text:');
+    if(txt){ann.annotations.push({type:'text',x,y,text:txt});redrawCanvas(idx);}
   } else {
     ann.action='draw';
   }
