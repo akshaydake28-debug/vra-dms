@@ -350,23 +350,24 @@ function removeAnnImage(idx){
 function alertImageSets(a){
   return{good:a.goodImages||[],bad:a.badImages||[],legacy:a.images||[]};
 }
-// Good / Bad image block for the on-screen view and the prints. Every tile is square and the
-// same size (4 columns: 2 good + 2 bad) so the alert always fits on one page.
-function alertImagesHTML(a,{px=false,labelSize='11px',tagSize='12px'}={}){
+// Good / Bad image block for the on-screen view and the prints. 2 columns, each row a pair:
+// GOOD 1 | BAD 1, then GOOD 2 | BAD 2. Every tile is square and the same size; `width` caps
+// the whole block so the printed alert still fits on one page.
+function alertImagesHTML(a,{px=false,labelSize='11px',tagSize='12px',width='100%'}={}){
   const{good,bad,legacy}=alertImageSets(a);
   if(!good.length&&!bad.length&&!legacy.length) return '';
   const tile=(img,cap,color,kind)=>`<div>
-    <div style="font-size:${labelSize};color:${color};font-weight:700;margin-bottom:3px">${cap}</div>
+    ${cap?`<div style="font-size:${labelSize};color:${color};font-weight:700;margin-bottom:3px">${cap}</div>`:''}
     <div style="position:relative;border:2px solid ${color};border-radius:6px;overflow:hidden;aspect-ratio:1/1">
       <img src="${img}" style="display:block;width:100%;height:100%;object-fit:cover;${px?'':'cursor:pointer'}" ${px?'':`onclick="showImgFull(this.src)"`}>
       ${kind?qaTagHTML(kind,tagSize):''}
     </div>
   </div>`;
-  const group=(kind,list)=>{const k=QA_IMG_KINDS[kind];return list.length?`<div style="grid-column:span 2;display:grid;grid-template-columns:repeat(2,1fr);gap:8px">
-    ${list.map((img,i)=>tile(img,`${k.short.toUpperCase()}${list.length>1?' '+(i+1):''}`,k.color,kind)).join('')}
-  </div>`:'';};
-  return`<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
-    ${group('good',good)}${group('bad',bad)}
+  const cell=(kind,list,i)=>{const k=QA_IMG_KINDS[kind];
+    return list[i]?tile(list[i],'',k.color,kind):'<div></div>';};
+  const rows=Math.max(good.length,bad.length);
+  return`<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px 12px;width:${width};max-width:100%;margin:0 auto">
+    ${Array.from({length:rows},(_,i)=>cell('good',good,i)+cell('bad',bad,i)).join('')}
     ${legacy.map((img,i)=>tile(img,`Image ${i+1}`,'#9ca3af')).join('')}
   </div>`;
 }
@@ -780,7 +781,7 @@ async function viewAlert(id){
         <div class="ch"><h5>Reference Images — Good vs Bad</h5>
           <button class="btn btn-o btn-sm" onclick="editAlertImages(${id})">✏️ Edit Photos</button>
         </div>
-        <div class="cb">${alertImagesHTML(a)||'<div class="muted" style="font-size:12px">No photos yet — click ✏️ Edit Photos to add GOOD and BAD reference photos.</div>'}</div>
+        <div class="cb">${alertImagesHTML(a,{width:'480px',tagSize:'14px'})||'<div class="muted" style="font-size:12px">No photos yet — click ✏️ Edit Photos to add GOOD and BAD reference photos.</div>'}</div>
       </div>
       <div class="card" style="margin-bottom:14px">
         <div class="ch"><h5>Containment Action</h5></div>
@@ -1433,7 +1434,7 @@ async function printAlert(alertId){
   const w=window.open('','_blank','width=900,height=700');
   w.document.write(`<!DOCTYPE html><html><head><title>${a.qaNumber}</title>
 <style>
-*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:10pt;color:#000}
+*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:10pt;color:#000;width:180mm}
 @page{size:A4;margin:15mm}
 .hdr{border-bottom:2px solid #000;padding-bottom:8px;margin-bottom:14px}
 .hdr-grid{display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px}
@@ -1456,8 +1457,8 @@ async function printAlert(alertId){
 <div class="alert-banner">⚠️ QUALITY ALERT — ${a.qaNumber}</div>
 <div class="section"><div class="section-title">Problem Statement</div>
   <div class="body-text">${esc(a.problem)}</div></div>
-${alertImagesHTML(a,{px:true,labelSize:'8.5pt',tagSize:'13pt'})?`<div class="section"><div class="section-title">Reference Images — Good (look for) vs Bad (avoid)</div>
-  ${alertImagesHTML(a,{px:true,labelSize:'8.5pt',tagSize:'13pt'})}</div>`:''}
+${alertImagesHTML(a,{px:true,labelSize:'8.5pt',tagSize:'14pt'})?`<div class="section"><div class="section-title">Reference Images — Good (look for) vs Bad (avoid)</div>
+  <div id="qa-imgs">${alertImagesHTML(a,{px:true,labelSize:'8.5pt',tagSize:'14pt'})}</div></div>`:''}
 <div class="section"><div class="section-title">Containment Action</div>
   <div class="body-text">${esc(a.containment)}</div></div>
 ${a.instructions?`<div class="section"><div class="section-title">Instructions to Team</div>
@@ -1477,7 +1478,21 @@ ${a.signoffs&&a.signoffs.length?`<div class="section"><div class="section-title"
   <span>${a.qaNumber} | Issued by: ${esc(a.createdBy||'')} | ${fmtD(a.createdAt)}</span>
   <span>V R ALUCAST — CONFIDENTIAL</span>
 </div>
-<script>window.onload=()=>{window.print();setTimeout(()=>window.close(),1500)}<\/script>
+<script>
+// Make the photos as large as possible while the whole alert stays on one A4 page
+// (267mm usable height, 180mm width), never smaller than 35mm each.
+function fitImgs(){
+  var g=document.querySelector('#qa-imgs > div'); if(!g) return;
+  var mm=96/25.4, page=263*mm, gap=12, rows=Math.ceil(g.children.length/2);
+  for(var k=0;k<4;k++){
+    var over=document.documentElement.scrollHeight-page;
+    var tile=(g.offsetWidth-gap)/2;
+    var t=Math.max(35*mm,Math.min((180*mm-gap)/2,tile-over/rows));
+    g.style.width=(2*t+gap)+'px';
+  }
+}
+window.onload=()=>{fitImgs();window.print();setTimeout(()=>window.close(),1500)}
+<\/script>
 </body></html>`);
   w.document.close();
 }
@@ -1558,7 +1573,7 @@ ${alert?`
 <div class="dvd"></div>
 <div class="sec">
   <div class="sec-hdr">2. Quality Alert \u2014 ${alert.qaNumber} &nbsp;<span style="font-weight:normal;text-transform:none;font-size:7pt">Issued: ${fmtD(alert.date)} by ${esc(alert.createdBy||'')}</span></div>
-  ${alertImagesHTML(alert,{px:true,labelSize:'6.5pt',tagSize:'11pt'})?`<div style="margin-bottom:4px">${alertImagesHTML(alert,{px:true,labelSize:'6.5pt',tagSize:'11pt'})}</div>`:''}
+  ${alertImagesHTML(alert,{px:true,labelSize:'6.5pt',tagSize:'12pt',width:'calc(110mm + 12px)'})?`<div style="margin-bottom:4px">${alertImagesHTML(alert,{px:true,labelSize:'6.5pt',tagSize:'12pt',width:'calc(110mm + 12px)'})}</div>`:''}
   <div class="sub-lbl">Containment Action</div>
   <div class="bt">${esc(alert.containment)}</div>
   ${alert.instructions?`<div class="sub-lbl">Instructions to Team</div><div class="bt">${esc(alert.instructions)}</div>`:''}
