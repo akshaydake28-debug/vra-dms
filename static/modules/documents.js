@@ -773,6 +773,7 @@ function renderCreate(p={}){
           • Use toolbar for formatting<br>
           • ✨ AI can write it for you<br>
           • Tables and images supported<br>
+          • 📸 Step-by-step WI / SOP with photos? Use <a style="color:#0d2f6e;font-weight:600;text-decoration:underline" onclick="nav('wi')">Work Instructions</a><br>
           • Shift+Enter = new line
         </div>
       </div>
@@ -792,6 +793,7 @@ async function saveCreate(){
   const docNumber=await DB.nextNum(type);
   const docId=await DB.createDoc({docNumber,docType:type,title,revision:'A',status:'DRAFT',
     orientation:orient,createdBy:u.name,createdDate:new Date().toISOString()});
+  if(!docId){toast('⚠️ Could not save: that document number was just taken. Please click Save again.','d');return}
   await DB.createVer({docId,revision:'A',content,changeSummary:'Initial creation',
     preparedBy:u.name,preparedDate:new Date().toISOString(),status:'DRAFT'});
   await DB.log({docId,docNumber,action:'CREATED',user:u.name,notes:`"${title}" created`});
@@ -815,6 +817,7 @@ async function viewDoc(id){
   const canApprove=u.role==='APPROVER'&&doc.status==='PENDING_APPROVAL';
   const canNewRev=u.role==='APPROVER'&&doc.status==='ACTIVE';
   const canRename=u.role==='APPROVER';
+  const isSteps=doc.format==='steps';
 
   setC(`
   <div class="ph">
@@ -828,13 +831,15 @@ async function viewDoc(id){
     </div>
     <div style="display:flex;gap:6px;flex-wrap:wrap">
       ${canNewRev?`<button class="btn btn-o btn-sm" onclick="doNewRev(${id})">🔄 New Revision</button>`:''}
-      ${canEdit?`<button class="btn btn-o btn-sm" onclick="editDoc(${id})">✏️ Edit</button>`:''}
+      ${canEdit?`<button class="btn btn-o btn-sm" onclick="${isSteps?'wiEdit':'editDoc'}(${id})">✏️ Edit</button>`:''}
       ${canRename&&!canEdit?`<button class="btn btn-o btn-sm" onclick="renameDoc(${id})">✏️ Rename Title</button>`:''}
       ${canSubmit?`<button class="btn btn-w btn-sm" onclick="doSubmit(${id})">📤 Submit</button>`:''}
       ${canApprove?`<button class="btn btn-g btn-sm" onclick="showApproveM(${id})">✓ Approve</button>
         <button class="btn btn-r btn-sm" onclick="showRejectM(${id})">✗ Reject</button>`:''}
       <button class="btn btn-p btn-sm" onclick="printDoc(${id})">🖨 Print</button>
-      <button class="btn btn-sm" style="background:#f0fdf4;color:#166534;border:1px solid #86efac" onclick="showTranslatePicker(${id})">🌐 Translate</button>
+      ${isSteps?`<a class="btn btn-o btn-sm" href="/wi/${encodeURIComponent(doc.docNumber)}" target="_blank" rel="noopener" title="What operators see after scanning the QR code">📱 Phone view</a>
+      ${doc.demo&&u.role==='APPROVER'?`<button class="btn btn-r btn-sm" onclick="wiDeleteDemo(${id})">🗑 Delete sample</button>`:''}`
+      :`<button class="btn btn-sm" style="background:#f0fdf4;color:#166534;border:1px solid #86efac" onclick="showTranslatePicker(${id})">🌐 Translate</button>`}
     </div>
   </div>
 
@@ -867,7 +872,7 @@ async function viewDoc(id){
       <div class="card">
         <div class="cb" style="padding:0">
           <div style="padding:20px 24px;font-size:13.5px;line-height:1.7;min-height:200px">
-            ${ver?.content||'<p style="color:#9ca3af">No content yet.</p>'}
+            ${isSteps?wiBodyHTML(ver?.wi):(ver?.content||'<p style="color:#9ca3af">No content yet.</p>')}
           </div>
         </div>
       </div>
@@ -923,7 +928,7 @@ async function doNewRev(id){
   const cr=doc.revision;
   const nr=cr.length===1&&cr!=='Z'?String.fromCharCode(cr.charCodeAt(0)+1):(cr==='Z'?'AA':cr.slice(0,-1)+String.fromCharCode(cr.charCodeAt(cr.length-1)+1));
   const ov=await DB.getVer(id,cr);
-  await DB.createVer({docId:id,revision:nr,content:ov?.content||'',changeSummary:'New revision — in progress',preparedBy:Auth.user.name,preparedDate:new Date().toISOString(),status:'DRAFT'});
+  await DB.createVer({docId:id,revision:nr,content:ov?.content||'',...(ov?.wi?{wi:ov.wi}:{}),changeSummary:'New revision — in progress',preparedBy:Auth.user.name,preparedDate:new Date().toISOString(),status:'DRAFT'});
   await DB.updateDoc(id,{revision:nr,status:'DRAFT'});
   await DB.log({docId:id,docNumber:doc.docNumber,action:'NEW_REVISION_STARTED',user:Auth.user.name,notes:`Rev ${nr}`});
   toast(`Rev ${nr} created`,'s'); editDoc(id);
@@ -936,6 +941,7 @@ async function editDoc(id){
   document.querySelectorAll('.sl-item').forEach(el=>el.classList.remove('active'));
   document.getElementById('topbar-title').textContent='Edit Document';
   const doc=await DB.getDoc(id);
+  if(doc?.format==='steps') return wiEdit(id);
   const ver=await DB.getVer(id,doc.revision);
   setC(`
   <div class="ph">
@@ -1796,6 +1802,7 @@ hr{border:none;border-top:1px solid #ccc;margin:12px 0}
 async function printDoc(id){
   const doc = await DB.getDoc(id);
   if(!doc){ toast('Document not found','d'); return; }
+  if(doc.format==='steps') return wiPrint(id);
   const landscape = false;
   const ver = await DB.getVer(id, doc.revision);
   const allVers = await DB.getAllVers(id);
