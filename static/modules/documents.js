@@ -837,9 +837,9 @@ async function viewDoc(id){
       ${canApprove?`<button class="btn btn-g btn-sm" onclick="showApproveM(${id})">✓ Approve</button>
         <button class="btn btn-r btn-sm" onclick="showRejectM(${id})">✗ Reject</button>`:''}
       <button class="btn btn-p btn-sm" onclick="printDoc(${id})">🖨 Print</button>
+      <button class="btn btn-sm" style="background:#f0fdf4;color:#166534;border:1px solid #86efac" onclick="showTranslatePicker(${id})">🌐 Translate</button>
       ${isSteps?`<a class="btn btn-o btn-sm" href="/wi/${encodeURIComponent(doc.docNumber)}" target="_blank" rel="noopener" title="What operators see after scanning the QR code">📱 Phone view</a>
-      ${doc.demo&&u.role==='APPROVER'?`<button class="btn btn-r btn-sm" onclick="wiDeleteDemo(${id})">🗑 Delete sample</button>`:''}`
-      :`<button class="btn btn-sm" style="background:#f0fdf4;color:#166534;border:1px solid #86efac" onclick="showTranslatePicker(${id})">🌐 Translate</button>`}
+      ${doc.demo&&u.role==='APPROVER'?`<button class="btn btn-r btn-sm" onclick="wiDeleteDemo(${id})">🗑 Delete sample</button>`:''}`:''}
     </div>
   </div>
 
@@ -928,7 +928,7 @@ async function doNewRev(id){
   const cr=doc.revision;
   const nr=cr.length===1&&cr!=='Z'?String.fromCharCode(cr.charCodeAt(0)+1):(cr==='Z'?'AA':cr.slice(0,-1)+String.fromCharCode(cr.charCodeAt(cr.length-1)+1));
   const ov=await DB.getVer(id,cr);
-  await DB.createVer({docId:id,revision:nr,content:ov?.content||'',...(ov?.wi?{wi:ov.wi}:{}),changeSummary:'New revision — in progress',preparedBy:Auth.user.name,preparedDate:new Date().toISOString(),status:'DRAFT'});
+  await DB.createVer({docId:id,revision:nr,content:ov?.content||'',...(ov?.wi?{wi:ov.wi}:{}),...(ov?.wiTr?{wiTr:ov.wiTr}:{}),changeSummary:'New revision — in progress',preparedBy:Auth.user.name,preparedDate:new Date().toISOString(),status:'DRAFT'});
   await DB.updateDoc(id,{revision:nr,status:'DRAFT'});
   await DB.log({docId:id,docNumber:doc.docNumber,action:'NEW_REVISION_STARTED',user:Auth.user.name,notes:`Rev ${nr}`});
   toast(`Rev ${nr} created`,'s'); editDoc(id);
@@ -1549,6 +1549,23 @@ async function startTranslation(docId, langCode) {
 
   try {
     const doc = await DB.getDoc(docId);
+    if (doc?.format === 'steps') {
+      // Step documents: translate each step's text, keep the step layout
+      const progressEl = document.getElementById(`translate-progress-${docId}`);
+      const r = await wiTranslate(docId, langCode, (done, total) => {
+        progressEl.textContent = `Translating… ${done} of ${total} lines`;
+      });
+      _translatedCache[docId] = { wi: r.wi, title: r.title, langCode, langName: lang.name, langLabel: lang.label };
+      status.style.display = 'none';
+      content.innerHTML =
+        `<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:7px;padding:8px 12px;margin-bottom:14px;font-size:12px;color:#166534">
+          ✅ Translated to ${lang.name} (${lang.label}). The English is shown in grey under each line. Review technical terms before shop floor use.
+          ${r.failed ? `<br>⚠️ ${r.failed} line(s) could not be translated and are left in English. Try again in a minute.` : ''}
+        </div>
+        ${r.title && r.title !== doc.title ? `<div style="font-weight:700;font-size:15px;color:#0d2f6e;margin-bottom:10px">${esc(r.title)}</div>` : ''}
+        ${wiBodyHTML(r.wi, WI_LABELS[langCode])}`;
+      return;
+    }
     const ver = await DB.getVer(docId, doc.revision);
     const html = ver?.content || '';
 
@@ -1666,6 +1683,7 @@ async function _myMemoryCall(text, langCode) {
 async function printTranslated(docId) {
   const cached = _translatedCache[docId];
   if (!cached) { toast('No translated content — translate first','w'); return; }
+  if (cached.wi) return wiPrint(docId, cached);
 
   const doc = await DB.getDoc(docId);
   const ver = await DB.getVer(docId, doc.revision);

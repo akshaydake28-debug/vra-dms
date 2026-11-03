@@ -91,6 +91,7 @@ function wiCSS(){
 .wi-v-tbl tr.s td{background:var(--navy);color:#fff;font-weight:700;font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;padding:6px 9px}
 .wi-v-ins{font-weight:500;margin-bottom:6px;line-height:1.5}
 .wi-v-ln{font-size:12px;border-radius:5px;padding:4px 8px;margin-top:4px;line-height:1.45}
+.wi-v-en{font-size:11px;color:#6b7280;font-weight:400;margin-top:2px}
 /* annotator */
 .wi-ann{position:fixed;inset:0;background:rgba(10,16,30,.82);z-index:300;display:flex;flex-direction:column}
 .wi-ann-bar{display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:10px 14px;background:#fff}
@@ -616,19 +617,76 @@ function wiContentHTML(wi){
 }
 
 // ══════════════════════════════════════════════════════
+//  TRANSLATION (Marathi / Hindi)
+//  Step text is translated field by field (instruction, key point, check,
+//  avoid, section headings, area, PPE, title) with the same MyMemory
+//  service as normal documents. Translations are saved on the version
+//  under wiTr[lang][englishText], so re-opening or re-printing does not
+//  call the service again and the wording stays the same every print.
+//  Labels are fixed bilingual text, e.g. "तपासा (Check)".
+// ══════════════════════════════════════════════════════
+const WI_LABELS={
+  en:{step:'Step',photo:'Photo',instruction:'Instruction',key:'★ Key point',check:'✓ Check',avoid:'✗ Avoid',tool:'Tool',
+      machine:'Machine',area:'Area / station',machArea:'Machine / area',part:'Part / customer',allParts:'All parts',instruments:'Instruments',ppe:'PPE',
+      ack:t=>`OPERATOR ACKNOWLEDGEMENT — I have read and understood this ${t}`,sr:'Sr',name:'Name',emp:'Emp No',sign:'Signature',date:'Date',trainer:'Trained by',
+      rev:'REVISION HISTORY',scan:'Scan for the current<br>approved revision'},
+  mr:{step:'पायरी',photo:'फोटो',instruction:'सूचना (Instruction)',key:'★ महत्त्वाचा मुद्दा (Key point)',check:'✓ तपासा (Check)',avoid:'✗ टाळा (Avoid)',tool:'साधन (Tool)',
+      machine:'मशीन (Machine)',area:'क्षेत्र (Area)',machArea:'मशीन / क्षेत्र',part:'पार्ट / ग्राहक',allParts:'सर्व पार्ट (All parts)',instruments:'उपकरणे (Instruments)',ppe:'सुरक्षा साधने (PPE)',
+      ack:()=>'ऑपरेटर पोचपावती — मी ही सूचना वाचली आणि समजून घेतली आहे (Operator acknowledgement)',sr:'क्र.',name:'नाव',emp:'कर्मचारी क्र.',sign:'सही',date:'दिनांक',trainer:'प्रशिक्षक',
+      rev:'आवृत्ती इतिहास (REVISION HISTORY)',scan:'नवीनतम मंजूर आवृत्तीसाठी<br>स्कॅन करा'},
+  hi:{step:'चरण',photo:'फोटो',instruction:'निर्देश (Instruction)',key:'★ मुख्य बिंदु (Key point)',check:'✓ जाँचें (Check)',avoid:'✗ बचें (Avoid)',tool:'उपकरण (Tool)',
+      machine:'मशीन (Machine)',area:'क्षेत्र (Area)',machArea:'मशीन / क्षेत्र',part:'पार्ट / ग्राहक',allParts:'सभी पार्ट (All parts)',instruments:'मापन उपकरण (Instruments)',ppe:'सुरक्षा उपकरण (PPE)',
+      ack:()=>'ऑपरेटर पावती — मैंने यह निर्देश पढ़ और समझ लिया है (Operator acknowledgement)',sr:'क्र.',name:'नाम',emp:'कर्मचारी क्र.',sign:'हस्ताक्षर',date:'दिनांक',trainer:'प्रशिक्षक',
+      rev:'संशोधन इतिहास (REVISION HISTORY)',scan:'नवीनतम स्वीकृत संस्करण के लिए<br>स्कैन करें'},
+};
+const WI_TR_FIELDS=['text','key','check','avoid'];
+
+// Returns {wi, title, failed}: a copy of the steps with translated text and
+// the English kept on each step as `en`, for checking the translation.
+async function wiTranslate(docId,langCode,onProgress){
+  const doc=await DB.getDoc(docId), ver=await DB.getVer(docId,doc.revision);
+  const wi=ver?.wi; if(!wi?.steps?.length) throw new Error('This document has no steps to translate');
+  const saved=(ver.wiTr&&ver.wiTr[langCode])||{};
+  const memo={...saved};
+  const want=new Set([doc.title,wi.area,...(wi.ppe||[])]);
+  for(const st of wi.steps){ if(st.kind==='section') want.add(st.text); else WI_TR_FIELDS.forEach(f=>want.add(st[f])); }
+  const todo=[...want].filter(t=>t&&String(t).trim()&&!(t in memo));
+  let failed=0, lastErr='';
+  for(let i=0;i<todo.length;i++){
+    try{ memo[todo[i]]=await myMemoryTranslate(todo[i],langCode); }
+    catch(e){ failed++; lastErr=e.message; if(/rate limit/i.test(e.message)) { failed+=todo.length-i-1; break; } }
+    onProgress&&onProgress(i+1,todo.length);
+    if(i>0&&i%5===0) await new Promise(r=>setTimeout(r,300));
+  }
+  if(todo.length&&failed===todo.length&&!Object.keys(saved).length) throw new Error(lastErr||'Translation service did not answer');
+  if(Object.keys(memo).length>Object.keys(saved).length)
+    await DB.updateVer(ver.id,{wiTr:{...(ver.wiTr||{}),[langCode]:memo}}).catch(()=>{});
+  const T=t=>(t&&memo[t])||t||'';
+  const out=wiClone(wi);
+  out.area=T(wi.area); out.ppe=(wi.ppe||[]).map(T);
+  out.steps=wi.steps.map(st=>{
+    if(st.kind==='section') return {...st,text:T(st.text),en:{text:st.text}};
+    const t={...st,en:{}}; WI_TR_FIELDS.forEach(f=>{ t.en[f]=st[f]||''; t[f]=T(st[f]); }); return t;
+  });
+  return {wi:out,title:T(doc.title),failed};
+}
+// English original shown small under a translated line (screen + print)
+function wiEnLine(st,f,cls){ const en=st.en?.[f]; return en&&en!==st[f]?`<div class="${cls}">${esc(en)}</div>`:''; }
+
+// ══════════════════════════════════════════════════════
 //  READ-ONLY BODY (used inside the normal document view)
 // ══════════════════════════════════════════════════════
-function wiBodyHTML(wi){
+function wiBodyHTML(wi,L=WI_LABELS.en){
   wiCSS();
   if(!wi||!wi.steps) return '<p style="color:#9ca3af">No steps yet.</p>';
   const nums=wiNums(wi.steps), photos=wi.photos;
-  const info=[['Machine',wi.machineLabel],['Area / station',wi.area],['Part / customer',wi.partLabel],
-    ['Instruments',(wi.instruments||[]).map(g=>`${g.gaugeId?g.gaugeId+' ':''}${g.name}`).join(', ')],['PPE',(wi.ppe||[]).join(', ')]].filter(x=>x[1]);
+  const info=[[L.machine,wi.machineLabel],[L.area,wi.area],[L.part,wi.partLabel],
+    [L.instruments,(wi.instruments||[]).map(g=>`${g.gaugeId?g.gaugeId+' ':''}${g.name}`).join(', ')],[L.ppe,(wi.ppe||[]).join(', ')]].filter(x=>x[1]);
   return `${info.length?`<div class="wi-v-info">${info.map(([l,v])=>`<div><b>${l}</b>${esc(v)}</div>`).join('')}</div>`:''}
   <table class="wi-v-tbl">${wi.steps.map((s,i)=>{
-    if(s.kind==='section') return `<tr class="s"><td colspan="${photos?3:2}">${esc(s.text)}</td></tr>`;
-    const lines=WI_EXTRA_KEYS.filter(k=>s[k]).map(k=>`<div class="wi-v-ln" style="background:${WI_EXTRA[k].bg};color:${WI_EXTRA[k].fg}"><b>${WI_EXTRA[k].label}:</b> ${esc(k==='tool'?wiInstLabel(s.tool,wi.instruments):s[k])}</div>`).join('');
-    const txt=`<div class="wi-v-ins">${esc(s.text)}</div>${lines}`;
+    if(s.kind==='section') return `<tr class="s"><td colspan="${photos?3:2}">${esc(s.text)}${s.en?.text&&s.en.text!==s.text?` <span style="opacity:.7;font-weight:400;text-transform:none;letter-spacing:0">(${esc(s.en.text)})</span>`:''}</td></tr>`;
+    const lines=WI_EXTRA_KEYS.filter(k=>s[k]).map(k=>`<div class="wi-v-ln" style="background:${WI_EXTRA[k].bg};color:${WI_EXTRA[k].fg}"><b>${L[k]}:</b> ${esc(k==='tool'?wiInstLabel(s.tool,wi.instruments):s[k])}${wiEnLine(s,k,'wi-v-en')}</div>`).join('');
+    const txt=`<div class="wi-v-ins">${esc(s.text)}${wiEnLine(s,'text','wi-v-en')}</div>${lines}`;
     if(!photos) return `<tr><td class="n">${nums[i]}</td><td>${txt}</td></tr>`;
     return s.photo?`<tr><td class="n">${nums[i]}</td><td class="p"><img src="${wiPhotoUrl(s.photo)}" alt="Step ${nums[i]}" onclick="wiZoom(this.src)"></td><td>${txt}</td></tr>`
                   :`<tr><td class="n">${nums[i]}</td><td colspan="2">${txt}</td></tr>`;
@@ -650,10 +708,12 @@ async function wiDeleteDemo(id){
 //  PRINT — same header, footer and revision history as every DMS document;
 //  the body is the step table. A4 portrait.
 // ══════════════════════════════════════════════════════
-async function wiPrint(id){
+// tr (optional) = a translation from wiTranslate plus langCode/langName/langLabel.
+async function wiPrint(id,tr=null){
   const doc=await DB.getDoc(id); if(!doc){toast('Document not found','d');return}
   const ver=await DB.getVer(id,doc.revision), allVers=await DB.getAllVers(id);
-  const wi=ver?.wi||{steps:[]};
+  const wi=tr?.wi||ver?.wi||{steps:[]};
+  const L=(tr&&WI_LABELS[tr.langCode])||WI_LABELS.en;
   const links=await wiLoadLinks();
   const typeName_=ALL_TYPES[doc.docType]?.name||doc.docType;
   const nums=wiNums(wi.steps||[]), photos=wi.photos;
@@ -667,20 +727,20 @@ async function wiPrint(id){
   try{ const q=qrcode(0,'M'); q.addData(qrUrl); q.make(); qrSvg=q.createSvgTag({cellSize:4,margin:0,scalable:true}); }
   catch(e){ qrSvg=`<div style="font-size:6pt;word-break:break-all">${esc(qrUrl)}</div>`; }
   const rows=(wi.steps||[]).map((s,i)=>{
-    if(s.kind==='section') return `<tr class="sec"><td colspan="${photos?3:2}">${esc(s.text)}</td></tr>`;
-    const lines=WI_EXTRA_KEYS.filter(k=>s[k]).map(k=>`<div class="ln"><b>${WI_EXTRA[k].print}:</b> ${esc(k==='tool'?wiInstLabel(s.tool,wi.instruments):s[k])}</div>`).join('');
-    const txt=`<div class="ins">${esc(s.text)||'&nbsp;'}</div>${lines}`;
+    if(s.kind==='section') return `<tr class="sec"><td colspan="${photos?3:2}">${esc(s.text)}${s.en?.text&&s.en.text!==s.text?` <span style="font-weight:normal;text-transform:none;letter-spacing:0">(${esc(s.en.text)})</span>`:''}</td></tr>`;
+    const lines=WI_EXTRA_KEYS.filter(k=>s[k]).map(k=>`<div class="ln"><b>${L[k]}:</b> ${esc(k==='tool'?wiInstLabel(s.tool,wi.instruments):s[k])}${wiEnLine(s,k,'en')}</div>`).join('');
+    const txt=`<div class="ins">${esc(s.text)||'&nbsp;'}${wiEnLine(s,'text','en')}</div>${lines}`;
     if(!photos) return `<tr><td class="n">${nums[i]}</td><td>${txt}</td></tr>`;
     return s.photo?`<tr><td class="n">${nums[i]}</td><td class="ph"><img src="${wiPhotoUrl(s.photo)}" alt=""></td><td>${txt}</td></tr>`
                   :`<tr><td class="n">${nums[i]}</td><td colspan="2">${txt}</td></tr>`;
   }).join('');
   const revRows=allVers.map(v=>`<tr><td>${esc(v.revision)}</td><td>${fmtD(v.preparedDate||'')}</td><td>${esc(v.preparedBy||'')}</td><td>${esc(v.approvedBy||'Pending')}</td><td>${esc(v.changeSummary||'')}</td></tr>`).join('');
-  const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${esc(doc.docNumber)} — ${esc(doc.title)}</title>
+  const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${esc(doc.docNumber)} — ${esc(doc.title)}${tr?' — '+esc(tr.langName):''}</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:Arial,sans-serif;font-size:10pt;color:#000;background:#d1d5db;padding:64px 24px 24px}
+body{font-family:Arial,'Nirmala UI','Mangal','Noto Sans Devanagari',sans-serif;font-size:10pt;color:#000;background:#d1d5db;padding:64px 24px 24px}
 @page{size:A4;margin:10mm 12mm 11mm}
-@media print{body{background:#fff!important;padding:0!important}.no-print{display:none!important}#page-wrap{box-shadow:none!important;margin:0!important;padding:0!important;width:auto!important}}
+@media print{body{background:#fff!important;padding:0!important}.no-print{display:none!important}#page-wrap{box-shadow:none!important;margin:0!important;padding:0 1px!important;width:auto!important}}
 #page-wrap{background:#fff;width:210mm;max-width:100%;margin:0 auto;padding:12mm 12mm 14mm;box-shadow:0 4px 24px rgba(0,0,0,.25);border-radius:2px}
 table{border-collapse:collapse;width:100%}
 table.wrap>thead>tr>td{padding-bottom:7px;border-bottom:2px solid #000}
@@ -689,20 +749,25 @@ table.wrap>tbody>tr>td{padding-top:8px;vertical-align:top}
 table.hdr td{border:none;padding:2px 0;vertical-align:middle}
 .hdr-co{font-size:12pt;font-weight:bold}.hdr-title{font-size:11pt;font-weight:bold;text-align:center}
 .hdr-type{font-size:8pt;color:#555;text-align:center;margin-top:2px}.hdr-meta{font-size:8.5pt;text-align:right;line-height:1.6}
+table.info,table.steps{table-layout:fixed}
+.info td,.steps td,.steps th{overflow-wrap:anywhere}
 .info td{border:1px solid #999;padding:4px 7px;font-size:8.5pt;vertical-align:top}
-.info td.k{background:#ececec;font-weight:bold;width:16%;white-space:nowrap}
+.info td.k{background:#ececec;font-weight:bold;width:16%}
 .qr{width:27mm;text-align:center;font-size:6.5pt;color:#333}
 .qr #qr{width:21mm;height:21mm;margin:0 auto 2px}.qr #qr svg{width:21mm;height:21mm;display:block}
 .steps{margin-top:8px}
 .steps th{background:#ececec;border:1px solid #999;font-size:8.5pt;padding:4px 6px;text-align:left}
 .steps td{border:1px solid #999;vertical-align:top;padding:6px}
-.steps td.n{width:9mm;text-align:center;font-weight:bold;font-size:12pt}
+.steps td.n{width:11mm;text-align:center;font-weight:bold;font-size:12pt}
 .steps td.ph{width:46%;padding:3px;text-align:center}
 .steps td.ph img{max-width:100%;max-height:68mm;display:block;margin:0 auto}
 .steps tr.sec td{background:#1e3a5f;color:#fff;font-weight:bold;font-size:8.5pt;letter-spacing:.06em;text-transform:uppercase;padding:4px 7px}
 .steps tr{break-inside:avoid;page-break-inside:avoid}
 .ins{font-size:10.5pt;line-height:1.45;margin-bottom:5px}
 .ln{font-size:9pt;line-height:1.4;margin-top:3px}
+.en{font-size:7.5pt;color:#555;font-weight:normal;margin-top:1px}
+.lang{font-size:8.5pt;color:#166534;text-align:center;font-weight:bold;margin-top:2px}
+.lang-note{border:1px solid #86efac;background:#f0fdf4;color:#166534;font-size:8pt;padding:4px 8px;margin-bottom:6px}
 .sub{font-size:9pt;font-weight:bold;margin:14px 0 5px;color:#1e3a5f;break-after:avoid}
 .sign th,.rev th{border:1px solid #999;padding:4px 6px;font-size:8pt;text-align:left}
 .sign th{background:#ececec}.rev th{background:#1e3a5f;color:#fff}
@@ -720,26 +785,27 @@ table.hdr td{border:none;padding:2px 0;vertical-align:middle}
 <div id="page-wrap"><table class="wrap">
 <thead><tr><td><table class="hdr"><tr>
   <td style="width:33%"><div class="hdr-co">V R ALUCAST</div><div style="font-size:7.5pt;color:#555">Aluminium High Pressure Die Casting</div></td>
-  <td style="width:34%"><div class="hdr-title">${esc(doc.title)}</div><div class="hdr-type">${esc(typeName_)}</div></td>
+  <td style="width:34%"><div class="hdr-title">${esc(doc.title)}</div>${tr&&tr.title&&tr.title!==doc.title?`<div class="hdr-title" style="font-size:10pt">${esc(tr.title)}</div>`:''}<div class="hdr-type">${esc(typeName_)}</div>${tr?`<div class="lang">${esc(tr.langLabel)} (${esc(tr.langName)})</div>`:''}</td>
   <td style="width:33%" class="hdr-meta"><div><b>Doc No:</b> ${esc(doc.docNumber)}</div><div><b>Rev:</b> ${esc(doc.revision)}</div>
     <div><b>Status:</b> ${esc(doc.status)}</div><div><b>Date:</b> ${fmtD(ver?.preparedDate||doc.createdDate||'')}</div></td>
 </tr></table></td></tr></thead>
 <tbody><tr><td>
+  ${tr?`<div class="lang-note">🌐 ${esc(tr.langName)} translation of ${esc(doc.docNumber)} Rev ${esc(doc.revision)}. The English text is shown under each line. For official records, the English document applies.</div>`:''}
   <table class="info"><tr>
-    <td class="k">Machine / area</td><td>${esc([wi.machineLabel,wi.area].filter(Boolean).join(' · ')||'—')}</td>
-    <td class="k">Part / customer</td><td>${esc(wi.partLabel||'All parts')}</td>
-    <td rowspan="2" class="qr"><div id="qr">${qrSvg}</div>Scan for the current<br>approved revision</td></tr>
-    <tr><td class="k">Instruments</td><td>${instTxt}</td><td class="k">PPE</td><td>${esc((wi.ppe||[]).join(', ')||'—')}</td></tr></table>
-  <table class="steps"><thead><tr><th style="width:9mm">Step</th>${photos?'<th>Photo</th>':''}<th>Instruction</th></tr></thead>
+    <td class="k">${L.machArea}</td><td>${esc([wi.machineLabel,wi.area].filter(Boolean).join(' · ')||'—')}</td>
+    <td class="k">${L.part}</td><td>${esc(wi.partLabel||L.allParts)}</td>
+    <td rowspan="2" class="qr"><div id="qr">${qrSvg}</div>${L.scan}</td></tr>
+    <tr><td class="k">${L.instruments}</td><td>${instTxt}</td><td class="k">${L.ppe}</td><td>${esc((wi.ppe||[]).join(', ')||'—')}</td></tr></table>
+  <table class="steps"><thead><tr><th style="width:11mm">${L.step}</th>${photos?`<th>${L.photo}</th>`:''}<th>${L.instruction}</th></tr></thead>
     <tbody>${rows||`<tr><td colspan="3" style="text-align:center;color:#777">No steps</td></tr>`}</tbody></table>
-  <div class="keep"><div class="sub">OPERATOR ACKNOWLEDGEMENT — I have read and understood this ${esc(typeName_.toLowerCase())}</div>
-  <table class="sign"><thead><tr><th style="width:6%">Sr</th><th style="width:30%">Name</th><th style="width:13%">Emp No</th><th style="width:19%">Signature</th><th style="width:13%">Date</th><th>Trained by</th></tr></thead>
+  <div class="keep"><div class="sub">${L.ack(esc(typeName_.toLowerCase()))}</div>
+  <table class="sign"><thead><tr><th style="width:6%">${L.sr}</th><th style="width:30%">${L.name}</th><th style="width:13%">${L.emp}</th><th style="width:19%">${L.sign}</th><th style="width:13%">${L.date}</th><th>${L.trainer}</th></tr></thead>
     <tbody>${[1,2,3,4,5,6].map(n=>`<tr><td>${n}</td><td></td><td></td><td></td><td></td><td></td></tr>`).join('')}</tbody></table></div>
-  <div class="keep"><div class="sub">REVISION HISTORY</div>
+  <div class="keep"><div class="sub">${L.rev}</div>
   <table class="rev"><thead><tr><th>Rev</th><th>Date</th><th>Prepared By</th><th>Approved By</th><th>Change Summary</th></tr></thead><tbody>${revRows}</tbody></table></div>
 </td></tr></tbody>
 <tfoot><tr><td><table style="width:100%;font-size:7.5pt;color:#555"><tr>
-  <td>${esc(doc.docNumber)} Rev ${esc(doc.revision)}</td><td style="text-align:center">V R ALUCAST — Confidential</td><td style="text-align:right">${doc.status==='ACTIVE'?'Controlled copy':'NOT APPROVED — '+esc(doc.status)}</td>
+  <td>${esc(doc.docNumber)} Rev ${esc(doc.revision)}${tr?' · '+esc(tr.langName):''}</td><td style="text-align:center">V R ALUCAST — Confidential</td><td style="text-align:right">${doc.status==='ACTIVE'?'Controlled copy':'NOT APPROVED — '+esc(doc.status)}</td>
 </tr></table></td></tr></tfoot>
 </table></div>
 </body></html>`;
