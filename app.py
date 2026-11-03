@@ -205,6 +205,11 @@ def json_object_body():
 
 BAD_BODY = ({'error': 'Request body must be a JSON object'}, 400)
 
+def body_or_empty():
+    """Request body as a dict; {} if missing or not a JSON object, so a
+    malformed request gets a clean 400/'missing fields' instead of a 500."""
+    return json_object_body() or {}
+
 @app.before_request
 def require_login():
     path = request.path
@@ -232,7 +237,7 @@ def require_admin():
 
 @app.route('/api/auth/login', methods=['POST'])
 def login():
-    d = request.json
+    d = body_or_empty()
     user = User.query.filter_by(username=d.get('username')).first()
     if not user:
         return jsonify({'error': 'Invalid credentials'}), 401
@@ -274,7 +279,7 @@ def get_users_with_passwords():
 def create_user():
     err = require_admin()
     if err: return err
-    d = request.json or {}
+    d = body_or_empty()
     username, password, role, name = d.get('username'), d.get('password'), d.get('role'), d.get('name')
     if not username or not password or not role or not name:
         return jsonify({'error': 'Missing fields'}), 400
@@ -296,7 +301,7 @@ def delete_user(uid):
 
 @app.route('/api/auth/password', methods=['POST'])
 def change_password():
-    d = request.json
+    d = body_or_empty()
     username = d.get('username','')
     new_password = d.get('newPassword','')
     if not username or not new_password:
@@ -317,8 +322,9 @@ def change_password():
 def reset_user_password(uid):
     err = require_admin()
     if err: return err
-    d = request.json
-    new_password = d.get('newPassword','vra@2025')
+    d = json_object_body()
+    if d is None: return jsonify(BAD_BODY[0]), 400
+    new_password = d.get('newPassword') or 'vra@2025'
     u = User.query.get_or_404(uid)
     u.password = generate_password_hash(new_password)
     db.session.commit()
@@ -341,7 +347,8 @@ def list_documents():
 
 @app.route('/api/documents', methods=['POST'])
 def save_document():
-    d = request.json
+    d = json_object_body()
+    if d is None: return jsonify(BAD_BODY[0]), 400
     existing = Document.query.filter_by(doc_number=d.get('docNumber')).first()
     if existing:
         existing.title = d.get('title',existing.title)
@@ -431,7 +438,8 @@ def get_audit_log():
 
 @app.route('/api/auditlog', methods=['POST'])
 def post_audit_log():
-    d = request.json
+    d = json_object_body()
+    if d is None: return jsonify(BAD_BODY[0]), 400
     log = AuditLog(
         action=d.get('action',''),
         module='documents',
@@ -456,12 +464,14 @@ def get_setting(key):
 
 @app.route('/api/settings/<key>', methods=['POST'])
 def save_setting(key):
+    body = json_object_body()
+    if body is None: return jsonify(BAD_BODY[0]), 400
     r = GenericRecord.query.filter_by(module='setting_'+key).first()
     if r:
-        r.data = json.dumps(request.json.get('value'))
+        r.data = json.dumps(body.get('value'))
         r.updated_at = datetime.utcnow()
     else:
-        r = GenericRecord(module='setting_'+key, data=json.dumps(request.json.get('value')))
+        r = GenericRecord(module='setting_'+key, data=json.dumps(body.get('value')))
         db.session.add(r)
     db.session.commit()
     return jsonify({'ok': True})
@@ -482,7 +492,7 @@ def list_rm_lots():
 
 @app.route('/api/rm/lots', methods=['POST'])
 def save_rm_lot():
-    d = request.json
+    d = body_or_empty()
     existing = RMLot.query.filter_by(lot_number=d.get('lotNumber','')).first()
     if existing:
         return jsonify({'id': existing.id})
@@ -755,8 +765,9 @@ def public_feedback_submit(token):
     if d.get('status') == 'SUBMITTED':
         return jsonify({'error': 'This feedback link has already been used'}), 410
 
-    body = request.json or {}
-    raw_ratings = body.get('ratings') or {}
+    body = body_or_empty()
+    raw_ratings = body.get('ratings')
+    if not isinstance(raw_ratings, dict): raw_ratings = {}
     ratings = {}
     for key in CF_RATING_KEYS:
         try:
@@ -1159,7 +1170,11 @@ def qms2_bulk_delete(module):
             module = prefixed
         else:
             return jsonify({'error':'Unknown module'}), 400
-    ids = request.json.get('ids', [])
+    body = json_object_body()
+    if body is None: return jsonify(BAD_BODY[0]), 400
+    ids = body.get('ids') or []
+    if not isinstance(ids, list):
+        return jsonify({'error': '"ids" must be a list'}), 400
     if ids:
         for rid in ids:
             r = GenericRecord.query.get(rid)
