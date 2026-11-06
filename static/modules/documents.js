@@ -837,7 +837,7 @@ async function viewDoc(id){
       ${canApprove?`<button class="btn btn-g btn-sm" onclick="showApproveM(${id})">✓ Approve</button>
         <button class="btn btn-r btn-sm" onclick="showRejectM(${id})">✗ Reject</button>`:''}
       <button class="btn btn-p btn-sm" onclick="printDoc(${id})">🖨 Print</button>
-      <button class="btn btn-sm" style="background:#f0fdf4;color:#166534;border:1px solid #86efac" onclick="showTranslatePicker(${id})">🌐 Translate</button>
+      <button class="btn btn-sm" style="background:#f0fdf4;color:#166534;border:1px solid #86efac" onclick="showTranslatePicker(${id},${isSteps})">🌐 Translate</button>
       ${isSteps?`<a class="btn btn-o btn-sm" href="/wi/${encodeURIComponent(doc.docNumber)}" target="_blank" rel="noopener" title="What operators see after scanning the QR code">📱 Phone view</a>
       ${doc.demo&&u.role==='APPROVER'?`<button class="btn btn-r btn-sm" onclick="wiDeleteDemo(${id})">🗑 Delete sample</button>`:''}`:''}
     </div>
@@ -928,7 +928,7 @@ async function doNewRev(id){
   const cr=doc.revision;
   const nr=cr.length===1&&cr!=='Z'?String.fromCharCode(cr.charCodeAt(0)+1):(cr==='Z'?'AA':cr.slice(0,-1)+String.fromCharCode(cr.charCodeAt(cr.length-1)+1));
   const ov=await DB.getVer(id,cr);
-  await DB.createVer({docId:id,revision:nr,content:ov?.content||'',...(ov?.wi?{wi:ov.wi}:{}),...(ov?.wiTr?{wiTr:ov.wiTr}:{}),changeSummary:'New revision — in progress',preparedBy:Auth.user.name,preparedDate:new Date().toISOString(),status:'DRAFT'});
+  await DB.createVer({docId:id,revision:nr,content:ov?.content||'',...(ov?.wi?{wi:ov.wi}:{}),...(ov?.wiTr2?{wiTr2:ov.wiTr2}:{}),changeSummary:'New revision — in progress',preparedBy:Auth.user.name,preparedDate:new Date().toISOString(),status:'DRAFT'});
   await DB.updateDoc(id,{revision:nr,status:'DRAFT'});
   await DB.log({docId:id,docNumber:doc.docNumber,action:'NEW_REVISION_STARTED',user:Auth.user.name,notes:`Rev ${nr}`});
   toast(`Rev ${nr} created`,'s'); editDoc(id);
@@ -1506,12 +1506,13 @@ async function doAutoBackup(){
 const LANG_OPTIONS = {
   'mr': { name:'Marathi', label:'मराठी', flag:'🇮🇳' },
   'hi': { name:'Hindi',   label:'हिंदी',  flag:'🇮🇳' },
+  'en': { name:'English', label:'English', flag:'🇬🇧' },  // step documents written in Marathi
 };
 
 // Store last translated content for printing
 const _translatedCache = {};
 
-function showTranslatePicker(id) {
+function showTranslatePicker(id, isSteps = false) {
   // Show inline language picker
   const panel = document.getElementById(`translate-panel-${id}`);
   const content = document.getElementById(`translate-content-${id}`);
@@ -1528,6 +1529,9 @@ function showTranslatePicker(id) {
         <button class="btn btn-p" style="padding:10px 24px;font-size:13.5px" onclick="startTranslation(${id},'hi')">
           🇮🇳 हिंदी (Hindi)
         </button>
+        ${isSteps ? `<button class="btn btn-p" style="padding:10px 24px;font-size:13.5px" onclick="startTranslation(${id},'en')">
+          🇬🇧 English
+        </button>` : ''}
       </div>
       <p style="font-size:11px;color:#9ca3af;margin-top:12px">
         Powered by MyMemory free translation · Technical terms may remain in English
@@ -1536,7 +1540,7 @@ function showTranslatePicker(id) {
   panel.scrollIntoView({behavior:'smooth', block:'nearest'});
 }
 
-async function startTranslation(docId, langCode) {
+async function startTranslation(docId, langCode, fresh = false) {
   const lang = LANG_OPTIONS[langCode];
   const panel   = document.getElementById(`translate-panel-${docId}`);
   const status  = document.getElementById(`translate-status-${docId}`);
@@ -1554,18 +1558,20 @@ async function startTranslation(docId, langCode) {
       const progressEl = document.getElementById(`translate-progress-${docId}`);
       const r = await wiTranslate(docId, langCode, (done, total) => {
         progressEl.textContent = `Translating… ${done} of ${total} lines`;
-      });
+      }, { fresh });
       _translatedCache[docId] = { wi: r.wi, title: r.title, langCode, langName: lang.name, langLabel: lang.label };
       status.style.display = 'none';
       content.innerHTML =
         `<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:7px;padding:8px 12px;margin-bottom:14px;font-size:12px;color:#166534">
-          ✅ Translated to ${lang.name} (${lang.label}). The English is shown in grey under each line. Review technical terms before shop floor use.
-          ${r.failed ? `<br>⚠️ ${r.failed} line(s) could not be translated and are left in English. Try again in a minute.` : ''}
+          ✅ Translated to ${lang.name} (${lang.label}). The original text is shown in grey under each line. Lines already in ${lang.name} are kept as written. Review technical terms before shop floor use.
+          ${r.failed ? `<br>⚠️ ${r.failed} line(s) could not be translated and are left as written. Click Translate again later to retry only those.` : ''}
+          <br><a style="text-decoration:underline;cursor:pointer;font-weight:600" onclick="startTranslation(${docId},'${langCode}',true)">↻ Translation looks wrong? Translate everything again</a>
         </div>
         ${r.title && r.title !== doc.title ? `<div style="font-weight:700;font-size:15px;color:#0d2f6e;margin-bottom:10px">${esc(r.title)}</div>` : ''}
         ${wiBodyHTML(r.wi, WI_LABELS[langCode])}`;
       return;
     }
+    if (langCode === 'en') throw new Error('English translation is only available for step-by-step documents');
     const ver = await DB.getVer(docId, doc.revision);
     const html = ver?.content || '';
 
@@ -1649,7 +1655,7 @@ async function translateHTMLContent(htmlContent, langCode, onProgress) {
 // MyMemory free translation API — no key needed, CORS friendly
 async function myMemoryTranslate(text, langCode) {
   // Split long texts into chunks (MyMemory works best under 1000 chars)
-  if (text.length <= 1000) {
+  if (text.length <= 450) {
     return await _myMemoryCall(text, langCode);
   }
   // Split at sentence boundaries for longer text
@@ -1657,7 +1663,7 @@ async function myMemoryTranslate(text, langCode) {
   const chunks = [];
   let current = '';
   for (const s of sentences) {
-    if ((current + s).length > 900) {
+    if ((current + s).length > 450) {
       if (current) chunks.push(current.trim());
       current = s;
     } else {
@@ -1676,7 +1682,10 @@ async function _myMemoryCall(text, langCode) {
   const data = await res.json();
   if (data.responseStatus === 429) throw new Error('Rate limit reached — wait a minute and try again');
   if (data.responseStatus !== 200) throw new Error(data.responseDetails || 'Translation failed');
-  return data.responseData.translatedText;
+  const out = String(data.responseData?.translatedText || '');
+  if (/^MYMEMORY WARNING/i.test(out)) throw new Error('Rate limit reached — wait a minute and try again');
+  if (/^QUERY LENGTH LIMIT/i.test(out)) throw new Error('Text too long for the translation service');
+  return out;
 }
 
 // Print the translated document
