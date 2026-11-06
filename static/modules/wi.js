@@ -89,8 +89,8 @@ function wiCSS(){
 .wi-v-tbl td.p{width:44%}
 .wi-v-tbl td.p img{width:100%;max-height:300px;object-fit:contain;display:block;border-radius:4px;background:#f3f4f6;cursor:zoom-in}
 .wi-v-tbl tr.s td{background:var(--navy);color:#fff;font-weight:700;font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;padding:6px 9px}
-.wi-v-ins{font-weight:500;margin-bottom:6px;line-height:1.5}
-.wi-v-ln{font-size:12px;border-radius:5px;padding:4px 8px;margin-top:4px;line-height:1.45}
+.wi-v-ins{font-weight:500;margin-bottom:6px;line-height:1.5;white-space:pre-line}
+.wi-v-ln{font-size:12px;border-radius:5px;padding:4px 8px;margin-top:4px;line-height:1.45;white-space:pre-line}
 .wi-v-en{font-size:11px;color:#6b7280;font-weight:400;margin-top:2px}
 /* annotator */
 .wi-ann{position:fixed;inset:0;background:rgba(10,16,30,.82);z-index:300;display:flex;flex-direction:column}
@@ -612,7 +612,7 @@ async function wiSave(){
 function wiContentHTML(wi){
   const nums=wiNums(wi.steps);
   return `<table>${wi.steps.map((s,i)=>s.kind==='section'?`<tr><th colspan="3">${esc(s.text)}</th></tr>`:
-    `<tr><td>${nums[i]}</td><td>${s.photo&&wi.photos?`<img src="/api/public/wi-photo/${esc(s.photo)}" style="width:240px">`:''}</td><td><p>${esc(s.text)}</p>${
+    `<tr><td>${nums[i]}</td><td>${s.photo&&wi.photos?`<img src="/api/public/wi-photo/${esc(s.photo)}" style="width:240px">`:''}</td><td><p>${esc(s.text).replace(/\n/g,'<br>')}</p>${
       WI_EXTRA_KEYS.filter(k=>s[k]).map(k=>`<div><b>${WI_EXTRA[k].label}:</b> ${esc(k==='tool'?wiInstLabel(s.tool,wi.instruments):s[k])}</div>`).join('')}</td></tr>`).join('')}</table>`;
 }
 
@@ -641,27 +641,60 @@ const WI_LABELS={
 };
 const WI_TR_FIELDS=['text','key','check','avoid'];
 
+// Text is translated LINE BY LINE (so Enter-separated points stay separate
+// and no request exceeds the service's 500-character limit), and each
+// line's source language is detected: a line written in Devanagari is
+// treated as Marathi, anything else as English. A line already in the
+// target language is kept as it is. Translations are saved on the version
+// under wiTr2[target][line]; failed lines are never saved, so they are
+// tried again next time. opts.fresh ignores the saved ones.
+const WI_DEVANAGARI=/[ऀ-ॿ]/;
+function wiLineLang(line){ return WI_DEVANAGARI.test(line)?'mr':'en'; }
+function wiNeedsTr(line,tgt){ return /[A-Za-zऀ-ॿ]/.test(line) && wiLineLang(line)!==tgt; }
+async function wiMT(text,src,tgt){
+  // pieces of at most 450 characters, split at sentence ends, then at spaces
+  const pieces=[]; let cur='';
+  for(const sen of (text.match(/[^।.!?;]+[।.!?;]*\s*/g)||[text])){
+    if((cur+sen).length>450){ if(cur.trim()) pieces.push(cur.trim()); cur=''; }
+    let x=sen; while(x.length>450){ const cut=x.lastIndexOf(' ',450)>100?x.lastIndexOf(' ',450):450; pieces.push(x.slice(0,cut).trim()); x=x.slice(cut); }
+    cur+=x;
+  }
+  if(cur.trim()) pieces.push(cur.trim());
+  const out=[];
+  for(const piece of pieces){
+    const res=await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(piece)}&langpair=${src}|${tgt}`);
+    if(!res.ok) throw new Error(`Translation service error ${res.status}`);
+    const d=await res.json();
+    const t=String(d?.responseData?.translatedText||'');
+    if(d.responseStatus==429||/^MYMEMORY WARNING/i.test(t)) throw new Error('Rate limit reached — the free translation service allows a limited amount per day. Try again later.');
+    if(d.responseStatus!=200||!t||/^(QUERY LENGTH LIMIT|PLEASE SELECT|INVALID)/i.test(t)) throw new Error(d.responseDetails||'Translation failed');
+    out.push(t);
+  }
+  return out.join(' ');
+}
 // Returns {wi, title, failed}: a copy of the steps with translated text and
-// the English kept on each step as `en`, for checking the translation.
-async function wiTranslate(docId,langCode,onProgress){
+// the original kept on each step as `en`, for checking the translation.
+async function wiTranslate(docId,tgt,onProgress,opts={}){
   const doc=await DB.getDoc(docId), ver=await DB.getVer(docId,doc.revision);
   const wi=ver?.wi; if(!wi?.steps?.length) throw new Error('This document has no steps to translate');
-  const saved=(ver.wiTr&&ver.wiTr[langCode])||{};
+  const store=ver.wiTr2||{};
+  const saved=opts.fresh?{}:(store[tgt]||{});
   const memo={...saved};
-  const want=new Set([doc.title,wi.area,...(wi.ppe||[])]);
-  for(const st of wi.steps){ if(st.kind==='section') want.add(st.text); else WI_TR_FIELDS.forEach(f=>want.add(st[f])); }
-  const todo=[...want].filter(t=>t&&String(t).trim()&&!(t in memo));
-  let failed=0, lastErr='';
+  const texts=[doc.title,wi.area,...(wi.ppe||[])];
+  for(const st of wi.steps){ if(st.kind==='section') texts.push(st.text); else WI_TR_FIELDS.forEach(f=>texts.push(st[f])); }
+  const lines=new Set();
+  texts.forEach(t=>String(t||'').split('\n').forEach(l=>{ l=l.trim(); if(l&&wiNeedsTr(l,tgt)) lines.add(l); }));
+  const todo=[...lines].filter(l=>!(l in memo));
+  let failed=0, done=0, lastErr='';
   for(let i=0;i<todo.length;i++){
-    try{ memo[todo[i]]=await myMemoryTranslate(todo[i],langCode); }
-    catch(e){ failed++; lastErr=e.message; if(/rate limit/i.test(e.message)) { failed+=todo.length-i-1; break; } }
+    try{ memo[todo[i]]=await wiMT(todo[i],wiLineLang(todo[i]),tgt); done++; }
+    catch(e){ failed++; lastErr=e.message; if(/rate limit/i.test(e.message)){ failed+=todo.length-i-1; break; } }
     onProgress&&onProgress(i+1,todo.length);
     if(i>0&&i%5===0) await new Promise(r=>setTimeout(r,300));
   }
-  if(todo.length&&failed===todo.length&&!Object.keys(saved).length) throw new Error(lastErr||'Translation service did not answer');
-  if(Object.keys(memo).length>Object.keys(saved).length)
-    await DB.updateVer(ver.id,{wiTr:{...(ver.wiTr||{}),[langCode]:memo}}).catch(()=>{});
-  const T=t=>(t&&memo[t])||t||'';
+  if(todo.length&&!done&&!Object.keys(saved).length&&failed) throw new Error(lastErr||'Translation service did not answer');
+  if(done||opts.fresh) await DB.updateVer(ver.id,{wiTr2:{...store,[tgt]:memo}}).catch(()=>{});
+  const T=t=>String(t||'').split('\n').map(line=>{ const l=line.trim(); return l&&(l in memo)?memo[l]:line; }).join('\n');
   const out=wiClone(wi);
   out.area=T(wi.area); out.ppe=(wi.ppe||[]).map(T);
   out.steps=wi.steps.map(st=>{
@@ -763,8 +796,8 @@ table.info,table.steps{table-layout:fixed}
 .steps td.ph img{max-width:100%;max-height:68mm;display:block;margin:0 auto}
 .steps tr.sec td{background:#1e3a5f;color:#fff;font-weight:bold;font-size:8.5pt;letter-spacing:.06em;text-transform:uppercase;padding:4px 7px}
 .steps tr{break-inside:avoid;page-break-inside:avoid}
-.ins{font-size:10.5pt;line-height:1.45;margin-bottom:5px}
-.ln{font-size:9pt;line-height:1.4;margin-top:3px}
+.ins{font-size:10.5pt;line-height:1.45;margin-bottom:5px;white-space:pre-line}
+.ln{font-size:9pt;line-height:1.4;margin-top:3px;white-space:pre-line}
 .en{font-size:7.5pt;color:#555;font-weight:normal;margin-top:1px}
 .lang{font-size:8.5pt;color:#166534;text-align:center;font-weight:bold;margin-top:2px}
 .lang-note{border:1px solid #86efac;background:#f0fdf4;color:#166534;font-size:8pt;padding:4px 8px;margin-bottom:6px}
@@ -790,7 +823,7 @@ table.info,table.steps{table-layout:fixed}
     <div><b>Status:</b> ${esc(doc.status)}</div><div><b>Date:</b> ${fmtD(ver?.preparedDate||doc.createdDate||'')}</div></td>
 </tr></table></td></tr></thead>
 <tbody><tr><td>
-  ${tr?`<div class="lang-note">🌐 ${esc(tr.langName)} translation of ${esc(doc.docNumber)} Rev ${esc(doc.revision)}. The English text is shown under each line. For official records, the English document applies.</div>`:''}
+  ${tr?`<div class="lang-note">🌐 ${esc(tr.langName)} translation of ${esc(doc.docNumber)} Rev ${esc(doc.revision)}. The original text is shown under each translated line. For official records, the original document applies.</div>`:''}
   <table class="info"><tr>
     <td class="k">${L.machArea}</td><td>${esc([wi.machineLabel,wi.area].filter(Boolean).join(' · ')||'—')}</td>
     <td class="k">${L.part}</td><td>${esc(wi.partLabel||L.allParts)}</td>
