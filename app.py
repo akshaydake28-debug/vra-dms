@@ -1239,15 +1239,18 @@ def delete_generic_one(module, rid):
 #  The browser reads the Excel/CSV file and groups its rows into invoices;
 #  everything that decides what gets saved happens here, in one transaction
 #  per import:
-#    • purchases → busyPurchases (one per supplier bill), suppliers that
-#      don't exist yet are created in purVendors as "Registered"
+#    • purchases → busyPurchases (one per supplier bill). Raw material is
+#      received at the gate first (Label Generator + Invoice / Delivery
+#      entry), so a bill that needs inspection is LINKED to those receipt
+#      entries when they can be found, never duplicated. A bill with no
+#      receipt yet waits on the BUSY Check page.
 #    • sales     → prodDispatch lines (part stock goes down)
 #  Each import is a busyBatches record listing exactly what it created, so
-#  it can be undone on its own. An invoice is identified by party + bill /
-#  voucher number + financial year; importing it again is refused, and a
-#  copy that differs from what was imported is reported, never overwritten.
-#  QC inspection of a purchase creates the supplier-rating entry
-#  (purVendorLots) and, for raw material lines, the RM lots.
+#  it can be undone on its own. A bill is identified by its DMS supplier +
+#  supplier bill no. or BUSY voucher no. + financial year; importing it again
+#  is refused, and a copy that differs is reported, never overwritten.
+#  Suppliers BUSY names differently are matched once and remembered as
+#  aliases (busyNames); duplicates can be merged.
 # ══════════════════════════════════════════════════════
 BUSY_KINDS = ('purchase', 'sale')
 BUSY_ITEM_MAP = 'busyItemMap'                     # setting: item key -> what the item is
@@ -1255,8 +1258,11 @@ BUSY_MANAGED = ('busyPurchases', 'busyBatches')   # only written through /api/bu
 BUSY_PURCHASE_TYPES = ('rm', 'inspect', 'none')   # raw material / needs QC / no inspection
 BUSY_SALE_TYPES = ('part', 'skip')                # a part (dispatch) / not a part (freight etc.)
 BUSY_TIMINGS = ('OnTime', 'Within5', 'After5')
+BUSY_RECEIPT_DAYS = 60                            # a receipt is looked for within this many days of the bill
+BUSY_QTY_TOLERANCE = 0.005                        # 0.5 % (at least 1 unit) before quantities count as different
 _KG_PER_UNIT = {'KG': 1, 'KGS': 1, 'KILOGRAM': 1, 'KILOGRAMS': 1, 'MT': 1000, 'TON': 1000, 'TONS': 1000,
                 'TONNE': 1000, 'TONNES': 1000, 'QTL': 100, 'QUINTAL': 100, 'QUINTALS': 100}
+_BUSY_NAME_NOISE = re.compile(r'\b(M\s*/\s*S|MESSRS|THE|PVT|PRIVATE|LTD|LIMITED|LLP|CO|COMPANY|AND)\b\.?')
 
 def _bnorm(v):
     return re.sub(r'[^A-Z0-9]', '', str(v or '').upper())
@@ -1265,6 +1271,23 @@ def _bparty_name_key(name):
     n = str(name or '').upper().strip()
     n = re.sub(r'^M\s*/\s*S\.?\s+|^MESSRS\.?\s+', '', n)
     return _bnorm(n)
+
+def _bloose(name):
+    """Name with M/s, Pvt, Ltd … removed — for suggesting a match, never for deciding one."""
+    return _bnorm(_BUSY_NAME_NOISE.sub(' ', str(name or '').upper().replace('&', ' ')))
+
+def _bdigits(v):
+    return re.sub(r'\D', '', str(v or '')).lstrip('0')
+
+def _bnumbers(*values):
+    """All the ways a bill / voucher number may have been written: exact, and digits only."""
+    out = set()
+    for v in values:
+        n = _bnorm(v)
+        if n: out.add('N' + n)
+        d = _bdigits(v)
+        if len(d) >= 2: out.add('D' + d)
+    return out
 
 def _bgstin(v):
     g = _bnorm(v)
@@ -1276,6 +1299,14 @@ def _bparty_key(inv):
 def _bfy(date_str):
     y, m = int(date_str[:4]), int(date_str[5:7])
     return f'{y}-{y+1}' if m >= 4 else f'{y-1}-{y}'
+
+def _bday(s):
+    try: return datetime.strptime(str(s or '')[:10], '%Y-%m-%d')
+    except ValueError: return None
+
+def _bnear(a, b, days=BUSY_RECEIPT_DAYS):
+    da, dbb = _bday(a), _bday(b)
+    return bool(da and dbb and abs((da - dbb).days) <= days)
 
 def _bitem_key(kind, item):
     return ('P|' if kind == 'purchase' else 'S|') + _bnorm(item)
@@ -1320,7 +1351,7 @@ def _bclean_invoice(kind, inv):
     clean = {'date': date, 'party': party, 'gstin': _bgstin(inv.get('gstin')), 'vchNo': vch,
              'billNo': bill, 'lines': lines}
     clean['key'] = ('P|' + _bparty_key(clean) if kind == 'purchase' else 'S') + '|' + _bnorm(number) + '|' + _bfy(date)
-    sig = [clean['date'], _bparty_name_key(party), clean['gstin']] + sorted(
+    sig = [clean['date'], _bparty_name_key(party)] + sorted(
         [_bnorm(l['item']), round(l['qty'], 3), round(l['amount'] or 0, 2)] for l in lines)
     clean['hash'] = hashlib.sha1(json.dumps(sig).encode()).hexdigest()
     return clean, None
@@ -1332,48 +1363,135 @@ def _bvendor_approved(v):
     return ((v.get('sample1') or {}).get('decision') == 'ACCEPT' and
             (v.get('sample2') or {}).get('decision') == 'ACCEPT' and v.get('includeInApprovedList') == 'Y')
 
+def _bvendor_names(v):
+    return [n for n in [v.get('name'), v.get('busyName')] + list(v.get('busyNames') or []) if n]
+
+def _bkg(line):
+    f = _KG_PER_UNIT.get(_bnorm(line.get('unit')))
+    return None if f is None else line['qty'] * f
+
+def _bdiffers(a, b):
+    return abs((a or 0) - (b or 0)) > max(1.0, BUSY_QTY_TOLERANCE * max(abs(a or 0), abs(b or 0)))
+
 class _BusyIndex:
     """What already exists, loaded once per request."""
     def __init__(self, kind):
         self.kind = kind
         self.vendors = _brows('purVendors')
+        self.vendor_by_id = {r.id: v for r, v in self.vendors}
         self.by_gstin, self.by_name = {}, {}
         for r, v in self.vendors:
-            g = _bgstin(v.get('gstNo'))
-            if g: self.by_gstin.setdefault(g, (r, v))
-            for n in (v.get('name'), v.get('busyName')):
-                k = _bparty_name_key(n)
-                if k: self.by_name.setdefault(k, (r, v))
+            self._index_vendor(r, v)
+        self.parts = {r.id: d for r, d in _brows('prodParts')}
+        self.item_map = _bitem_map()
         if kind == 'purchase':
-            self.imported = {d.get('key'): d.get('hash') for _, d in _brows('busyPurchases')}
-            self.manual = {(d.get('vendorId'), _bnorm(d.get('refNo'))) for _, d in _brows('purVendorLots')
-                           if not d.get('busyPurchaseId') and d.get('refNo')}
+            self.purchases = _brows('busyPurchases')
+            self.imported = {d.get('key'): d.get('hash') for _, d in self.purchases}
+            self.by_vendor_fy = {}
+            self.linked_vls, self.linked_lots, self.inspection_vls = set(), set(), set()
+            for r, d in self.purchases:
+                self.by_vendor_fy.setdefault((d.get('vendorId'), _bfy(d['date'])), []).append(d)
+                link, insp = d.get('link') or {}, d.get('inspection') or {}
+                self.linked_vls.update(link.get('vendorLotIds') or [])
+                self.linked_lots.update(link.get('rmLotIds') or [])
+                self.linked_lots.update(insp.get('rmLotIds') or [])
+                if insp.get('vendorLotId'): self.inspection_vls.add(insp['vendorLotId'])
+            self.vendor_lots = [(r, d) for r, d in _brows('purVendorLots') if not d.get('busyPurchaseId')]
+            self.rm_lots = [l.to_dict() for l in RMLot.query.all()]
         else:
             self.imported = {}
+            self.manual, self.manual_sig = set(), set()
             for _, d in _brows('prodDispatch'):
                 if d.get('busyKey'):
                     self.imported.setdefault(d['busyKey'], d.get('busyHash'))
-            self.manual = {_bnorm(d.get('invoice')) for _, d in _brows('prodDispatch')
-                           if not d.get('busyKey') and d.get('invoice')}
-        self.parts = {r.id: d for r, d in _brows('prodParts')}
-        self.item_map = _bitem_map()
+                else:
+                    if d.get('invoice'): self.manual |= _bnumbers(d['invoice'])
+                    self.manual_sig.add((d.get('date'), d.get('partId'), _bnum(d.get('qty'))))
 
-    def vendor_for(self, inv):
+    def _index_vendor(self, r, v):
+        g = _bgstin(v.get('gstNo'))
+        if g: self.by_gstin.setdefault(g, (r, v))
+        for n in _bvendor_names(v):
+            k = _bparty_name_key(n)
+            if k: self.by_name.setdefault(k, (r, v))
+
+    def resolve(self, inv, supplier_map=None):
+        """(vendor id or None, row info). A GSTIN match is certain. A name-only match
+        is used unless other suppliers look alike (likely duplicates) — then the user
+        is asked, as for a name the DMS doesn't know."""
         g = inv.get('gstin')
-        hit = (g and self.by_gstin.get(g)) or self.by_name.get(_bparty_name_key(inv['party']))
-        return hit
+        hit = g and self.by_gstin.get(g)
+        sug = []
+        if not hit:
+            hit = self.by_name.get(_bparty_name_key(inv['party']))
+            sug = self.suggest_vendors(inv)
+            if hit and len({x['id'] for x in sug} | {hit[0].id}) > 1:
+                hit = None
+        if hit:
+            return hit[0].id, {'id': hit[0].id, 'name': hit[1].get('name'), 'approved': _bvendor_approved(hit[1])}
+        choice = _bsupplier_choice(supplier_map, inv, self)
+        vid = choice if isinstance(choice, int) else None
+        return vid, {'id': vid, 'name': inv['party'], 'unknown': True, 'choice': choice, 'suggestions': sug}
 
-    def status(self, inv):
-        """new / imported / changed / manual (looks like an entry made by hand)."""
+    def suggest_vendors(self, inv):
+        """Existing suppliers that look like this BUSY party (for the user to confirm)."""
+        k = _bloose(inv['party'])
+        out = []
+        if len(k) < 3:
+            return out
+        for r, v in self.vendors:
+            for n in _bvendor_names(v):
+                lk = _bloose(n)
+                if lk and (lk == k or (min(len(lk), len(k)) >= 4 and (lk in k or k in lk))):
+                    out.append({'id': r.id, 'name': v.get('name'), 'supNumber': v.get('supNumber'),
+                                'gstNo': v.get('gstNo') or '', 'exact': lk == k})
+                    break
+        return sorted(out, key=lambda x: not x['exact'])[:6]
+
+    def status(self, inv, vid=None):
+        """new / imported / changed / manual (sales only: looks like an entry made by hand)."""
         if inv['key'] in self.imported:
             return 'imported' if self.imported[inv['key']] == inv['hash'] else 'changed'
         if self.kind == 'purchase':
-            hit = self.vendor_for(inv)
-            if hit and (hit[0].id, _bnorm(inv['billNo'] or inv['vchNo'])) in self.manual:
-                return 'manual'
-        elif _bnorm(inv['vchNo']) in self.manual:
+            if vid:
+                nums = _bnumbers(inv['billNo'], inv['vchNo'])
+                for d in self.by_vendor_fy.get((vid, _bfy(inv['date'])), []):
+                    if nums & _bnumbers(d.get('billNo'), d.get('vchNo')):
+                        return 'imported' if d.get('hash') == inv['hash'] else 'changed'
+            return 'new'
+        if _bnumbers(inv['vchNo']) & self.manual:
             return 'manual'
+        for l in inv['lines']:
+            m = self.line_map(l['item'])
+            if m and m['type'] == 'part' and (inv['date'], m['partId'], l['qty']) in self.manual_sig:
+                return 'manual'
         return 'new'
+
+    def receipts(self, vid, date, nums, grades, broad=False):
+        """Gate receipts (Invoice / Delivery entries and RM lots) that belong to this bill.
+        broad=True also returns entries without a matching number, for the user to pick from."""
+        if not vid:
+            return [], []
+        names = {_bloose(n) for n in _bvendor_names(self.vendor_by_id.get(vid, {}))} - {''}
+        days = 90 if broad else BUSY_RECEIPT_DAYS
+        vls = []
+        for r, d in self.vendor_lots:
+            if d.get('vendorId') != vid or r.id in self.linked_vls or not _bnear(d.get('date'), date, days):
+                continue
+            hit = bool(nums & _bnumbers(d.get('refNo')))
+            if hit or broad:
+                vls.append({'id': r.id, 'refNo': d.get('refNo'), 'date': d.get('date'), 'qtyReceived': d.get('qtyReceived'),
+                            'qtyRejected': d.get('qtyRejected'), 'timing': d.get('timing'), 'numberMatch': hit})
+        lots = []
+        for l in self.rm_lots:
+            if l['id'] in self.linked_lots or not _bnear(l.get('date'), date, days):
+                continue
+            lk = _bloose(l.get('supplier'))
+            same_sup = bool(lk) and any(lk == n or (min(len(lk), len(n)) >= 4 and (lk in n or n in lk)) for n in names)
+            hit = same_sup and bool(nums & _bnumbers(l.get('invoice'))) and (not grades or l.get('grade') in grades)
+            if hit or (broad and same_sup):
+                lots.append({**l, 'numberMatch': hit})
+        return vls, lots
 
     def line_map(self, item):
         m = self.item_map.get(_bitem_key(self.kind, item))
@@ -1437,7 +1555,16 @@ def _bparse_request():
         return None, None, (jsonify({'error': 'No invoices found in the file'}), 400)
     return d, kind, None
 
-def _bpreview(kind, invoices):
+def _bsupplier_choice(supplier_map, inv, idx):
+    """The supplier the user picked for an unknown BUSY party: a vendor id, 'new', or None (not chosen)."""
+    c = (supplier_map or {}).get(_bparty_key(inv))
+    if c == 'new':
+        return 'new'
+    if isinstance(c, int) and not isinstance(c, bool) and c in idx.vendor_by_id:
+        return c
+    return None
+
+def _bpreview(kind, invoices, supplier_map=None):
     idx = _BusyIndex(kind)
     out, unknown, seen = [], {}, set()
     for i, raw in enumerate(invoices):
@@ -1445,22 +1572,28 @@ def _bpreview(kind, invoices):
         row = {'index': i, 'ref': (raw or {}).get('ref') if isinstance(raw, dict) else None}
         if err:
             row.update(status='error', error=err); out.append(row); continue
-        row.update(key=inv['key'], date=inv['date'], party=inv['party'], number=inv['billNo'] or inv['vchNo'],
-                   lines=len(inv['lines']), qty=sum(l['qty'] for l in inv['lines']),
-                   amount=sum(l['amount'] or 0 for l in inv['lines']))
+        row.update(key=inv['key'], partyKey=_bparty_key(inv), date=inv['date'], party=inv['party'],
+                   number=inv['billNo'] or inv['vchNo'], lines=len(inv['lines']),
+                   qty=sum(l['qty'] for l in inv['lines']), amount=sum(l['amount'] or 0 for l in inv['lines']))
         if inv['key'] in seen:
             row.update(status='error', error='appears twice in this file'); out.append(row); continue
         seen.add(inv['key'])
-        row['status'] = idx.status(inv)
+        vid = None
         if kind == 'purchase':
-            hit = idx.vendor_for(inv)
-            row['vendor'] = ({'id': hit[0].id, 'name': hit[1].get('name'), 'approved': _bvendor_approved(hit[1])}
-                             if hit else {'id': None, 'name': inv['party'], 'create': True})
+            vid, row['vendor'] = idx.resolve(inv, supplier_map)
+        row['status'] = idx.status(inv, vid)
+        grades = set()
         for l in inv['lines']:
-            if not idx.line_map(l['item']):
+            m = idx.line_map(l['item'])
+            if not m:
                 k = _bitem_key(kind, l['item'])
                 u = unknown.setdefault(k, {'key': k, 'item': l['item'], 'unit': l['unit'], 'invoices': 0})
                 u['invoices'] += 1
+            elif m['type'] == 'rm':
+                grades.add(_master_grade(m['grade']))
+        if kind == 'purchase' and vid and row['status'] == 'new':
+            vls, lots = idx.receipts(vid, inv['date'], _bnumbers(inv['billNo'], inv['vchNo']), grades)
+            row['receipt'] = {'vendorLots': len(vls), 'rmLots': len(lots)}
         out.append(row)
     return out, list(unknown.values()), idx
 
@@ -1468,7 +1601,7 @@ def _bpreview(kind, invoices):
 def busy_preview():
     d, kind, err = _bparse_request()
     if err: return err
-    rows, unknown, _ = _bpreview(kind, d['invoices'])
+    rows, unknown, _ = _bpreview(kind, d['invoices'], d.get('supplierMap'))
     counts = {}
     for r in rows: counts[r['status']] = counts.get(r['status'], 0) + 1
     return jsonify({'invoices': rows, 'unknownItems': unknown, 'counts': counts})
@@ -1480,19 +1613,37 @@ def _bnext_sup_number(vendors):
         if m: n = max(n, int(m.group(1)))
     return f'VRA-SUP-{n+1:03d}'
 
+def _block_imports():
+    # One import at a time: two people importing the same file at once must
+    # not both see every bill as new. (SQLite already serialises writers.)
+    if db.engine.dialect.name == 'postgresql':
+        db.session.execute(db.text('SELECT pg_advisory_xact_lock(7316201)'))
+
+def _bremember_alias(vr, v, inv):
+    """BUSY calls this supplier something else — remember it (and its GSTIN) for next time."""
+    names = list(v.get('busyNames') or [])
+    if _bparty_name_key(inv['party']) not in {_bparty_name_key(n) for n in _bvendor_names(v)}:
+        names.append(inv['party'])
+    v['busyNames'] = names
+    if inv['gstin'] and not _bgstin(v.get('gstNo')):
+        v['gstNo'] = inv['gstin']
+    vr.data = json.dumps(v); vr.updated_at = datetime.utcnow()
+
 @app.route('/api/busy/import', methods=['POST'])
 def busy_import():
     d, kind, err = _bparse_request()
     if err: return err
     force = set(k for k in (d.get('includeManual') or []) if isinstance(k, str))
+    supplier_map = d.get('supplierMap') if isinstance(d.get('supplierMap'), dict) else {}
     user = _current_user_name() or ''
     now = datetime.utcnow().isoformat()
     try:
+        _block_imports()
         e = _bsave_item_map(d.get('itemMap'), kind)
         if e:
             db.session.rollback()
             return jsonify({'error': e}), 400
-        rows, unknown, idx = _bpreview(kind, d['invoices'])
+        rows, unknown, idx = _bpreview(kind, d['invoices'], supplier_map)
         take = [r for r in rows if r['status'] == 'new' or (r['status'] == 'manual' and r['key'] in force)]
         need = {u['item'] for u in unknown}
         blocked = [r for r in take if any(not idx.line_map(l['item'])
@@ -1501,6 +1652,11 @@ def busy_import():
             db.session.rollback()
             return jsonify({'error': 'Some items are not matched yet: ' + ', '.join(sorted(need)[:10]),
                             'unknownItems': unknown}), 400
+        undecided = sorted({r['party'] for r in take if kind == 'purchase' and r['vendor'].get('unknown')
+                            and r['vendor']['suggestions'] and not r['vendor'].get('choice')})
+        if undecided:
+            db.session.rollback()
+            return jsonify({'error': 'Choose whether these suppliers are new or already in the DMS: ' + ', '.join(undecided[:10])}), 400
         if not take:
             db.session.rollback()
             return jsonify({'error': 'Nothing new to import — every invoice in the file is already in, changed, or has an error.'}), 400
@@ -1508,13 +1664,19 @@ def busy_import():
         batch = GenericRecord(module='busyBatches', data='{}')
         db.session.add(batch); db.session.flush()
         created = {'busyPurchases': [], 'prodDispatch': [], 'purVendors': []}
+        linked = 0
         new_vendors = {}
         for r in take:
             inv = _bclean_invoice(kind, d['invoices'][r['index']])[0]
             if kind == 'purchase':
-                hit = idx.vendor_for(inv)
-                if hit:
-                    vid = hit[0].id
+                vid, vinfo = idx.resolve(inv, supplier_map)
+                choice = vinfo.get('choice')
+                if not vinfo.get('unknown'):
+                    pass
+                elif isinstance(choice, int):
+                    vr = GenericRecord.query.get(vid)
+                    _bremember_alias(vr, idx.vendor_by_id[vid], inv)
+                    idx._index_vendor(vr, idx.vendor_by_id[vid])
                 else:
                     pk = _bparty_key(inv)
                     if pk not in new_vendors:
@@ -1523,9 +1685,8 @@ def busy_import():
                                'createdAt': now, 'createdBy': user, 'busyBatchId': batch.id}
                         vr = GenericRecord(module='purVendors', data=json.dumps(rec))
                         db.session.add(vr); db.session.flush()
-                        idx.vendors.append((vr, rec))
-                        if rec['gstNo']: idx.by_gstin[rec['gstNo']] = (vr, rec)
-                        idx.by_name[_bparty_name_key(rec['name'])] = (vr, rec)
+                        idx.vendors.append((vr, rec)); idx.vendor_by_id[vr.id] = rec
+                        idx._index_vendor(vr, rec)
                         new_vendors[pk] = vr.id
                         created['purVendors'].append(vr.id)
                     vid = new_vendors[pk]
@@ -1538,9 +1699,19 @@ def busy_import():
                        'party': inv['party'], 'gstin': inv['gstin'], 'billNo': inv['billNo'], 'vchNo': inv['vchNo'],
                        'date': inv['date'], 'lines': lines, 'total': sum(l['amount'] or 0 for l in lines),
                        'status': 'awaiting' if needs else 'not-required', 'importedAt': now, 'importedBy': user}
+                if needs:
+                    vls, lots = idx.receipts(vid, inv['date'], _bnumbers(inv['billNo'], inv['vchNo']),
+                                             {l['grade'] for l in lines if l['type'] == 'rm'})
+                    if vls or lots:
+                        rec['status'] = 'matched'
+                        rec['link'] = {'vendorLotIds': [x['id'] for x in vls], 'rmLotIds': [x['id'] for x in lots],
+                                       'auto': True, 'by': user, 'at': now}
+                        idx.linked_vls.update(rec['link']['vendorLotIds']); idx.linked_lots.update(rec['link']['rmLotIds'])
+                        linked += 1
                 pr = GenericRecord(module='busyPurchases', data=json.dumps(rec))
                 db.session.add(pr); db.session.flush()
                 created['busyPurchases'].append(pr.id)
+                idx.by_vendor_fy.setdefault((vid, _bfy(inv['date'])), []).append(rec)
             else:
                 for l in inv['lines']:
                     m = idx.line_map(l['item'])
@@ -1556,13 +1727,14 @@ def busy_import():
         counts = {}
         for r in rows: counts[r['status']] = counts.get(r['status'], 0) + 1
         info = {'kind': kind, 'fileName': str(d.get('fileName') or '')[:200], 'importedAt': now, 'importedBy': user,
-                'invoices': len(take), 'created': created, 'fileCounts': counts, 'status': 'active'}
+                'invoices': len(take), 'created': created, 'fileCounts': counts, 'status': 'active', 'linked': linked}
         batch.data = json.dumps(info)
         db.session.commit()
     except Exception as ex:
         db.session.rollback()
         return jsonify({'error': f'Import failed — nothing was saved. ({ex})'}), 500
-    return jsonify({'ok': True, 'batchId': batch.id, 'invoices': len(take), 'created': {k: len(v) for k, v in created.items()},
+    return jsonify({'ok': True, 'batchId': batch.id, 'invoices': len(take), 'linked': linked,
+                    'created': {k: len(v) for k, v in created.items()},
                     'skipped': {k: v for k, v in counts.items() if k != 'new'}})
 
 @app.route('/api/busy/batches/<int:bid>/undo', methods=['POST'])
@@ -1580,7 +1752,7 @@ def busy_undo(bid):
     rows = {r.id: (r, safe_json_loads(r.data, {})) for r in GenericRecord.query.filter(GenericRecord.id.in_(pids)).all()} if pids else {}
     inspected = [d.get('billNo') or d.get('vchNo') for r, d in rows.values() if d.get('status') == 'inspected']
     if inspected:
-        return jsonify({'error': 'Undo the QC inspection of these bills first: ' + ', '.join(inspected[:15])}), 409
+        return jsonify({'error': 'Undo the receipt made from BUSY for these bills first: ' + ', '.join(inspected[:15])}), 409
     try:
         removed = 0
         for module in ('busyPurchases', 'prodDispatch'):
@@ -1620,16 +1792,35 @@ def _bnext_lot_number(date_str, taken):
     taken.add(num)
     return num
 
+def _bpurchase(pid):
+    r = GenericRecord.query.get(pid)
+    p = safe_json_loads(r.data, {}) if r and r.module == 'busyPurchases' else None
+    return r, p
+
+def _bremove_inspection(p):
+    """Delete the rating entry and RM lots a 'receipt made from BUSY' created."""
+    insp = p.get('inspection') or {}
+    vl = GenericRecord.query.get(insp.get('vendorLotId')) if insp.get('vendorLotId') else None
+    if vl and vl.module == 'purVendorLots':
+        db.session.delete(vl)
+    for lid in insp.get('rmLotIds') or []:
+        lot = RMLot.query.get(lid)
+        if lot: db.session.delete(lot)
+    p.setdefault('history', []).append({'removedInspection': insp, 'by': _current_user_name() or '',
+                                        'at': datetime.utcnow().isoformat()})
+    p.pop('inspection', None)
+
+# "Make receipt from BUSY": for a bill whose material was NOT entered at the
+# gate — creates the rating entry and RM lots from the bill.
 @app.route('/api/busy/purchases/<int:pid>/inspect', methods=['POST'])
 def busy_inspect(pid):
     d = json_object_body()
     if d is None: return jsonify(BAD_BODY[0]), 400
-    r = GenericRecord.query.get(pid)
-    p = safe_json_loads(r.data, {}) if r and r.module == 'busyPurchases' else None
+    r, p = _bpurchase(pid)
     if not p:
         return jsonify({'error': 'Purchase not found'}), 404
     if p.get('status') != 'awaiting':
-        return jsonify({'error': 'This purchase is not awaiting inspection'}), 409
+        return jsonify({'error': 'This bill already has a receipt'}), 409
     recv = str(d.get('receivedDate') or p['date'])
     try: datetime.strptime(recv, '%Y-%m-%d')
     except ValueError: return jsonify({'error': 'Received date is not valid'}), 400
@@ -1648,6 +1839,7 @@ def busy_inspect(pid):
             x = given.get(i) or {}
             rej = _bnum(x.get('rejected')) or 0
             if rej < 0 or rej > l['qty']:
+                db.session.rollback()
                 return jsonify({'error': f'Rejected qty for "{l["item"]}" must be between 0 and {l["qty"]}'}), 400
             acc = l['qty'] - rej
             tot_q += l['qty']; tot_rej += rej; units.add(l.get('unit') or '')
@@ -1655,13 +1847,16 @@ def busy_inspect(pid):
             if l['type'] == 'rm':
                 grade = _master_grade(l.get('grade'))
                 if not grade:
+                    db.session.rollback()
                     return jsonify({'error': f'Grade "{l.get("grade")}" for "{l["item"]}" is no longer in the Grade Master'}), 400
                 factor = _KG_PER_UNIT.get(_bnorm(l.get('unit')))
                 if factor is None:
+                    db.session.rollback()
                     return jsonify({'error': f'"{l["item"]}" is in "{l.get("unit") or "no unit"}" — raw material must be in kg, MT or quintal to become a lot'}), 400
                 spectro = x.get('spectro') if x.get('spectro') in ('Done', 'Pending', 'Not Required') else 'Pending'
                 approver = str(x.get('approvedBy') or '').strip()
                 if not approver:
+                    db.session.rollback()
                     return jsonify({'error': f'"Approved by" is required for raw material "{l["item"]}"'}), 400
                 try: bundles = max(1, int(x.get('bundles') or 1))
                 except (TypeError, ValueError): bundles = 1
@@ -1689,24 +1884,14 @@ def busy_inspect(pid):
 
 @app.route('/api/busy/purchases/<int:pid>/inspect', methods=['DELETE'])
 def busy_undo_inspect(pid):
-    r = GenericRecord.query.get(pid)
-    p = safe_json_loads(r.data, {}) if r and r.module == 'busyPurchases' else None
+    r, p = _bpurchase(pid)
     if not p:
         return jsonify({'error': 'Purchase not found'}), 404
     if p.get('status') != 'inspected':
-        return jsonify({'error': 'This purchase has not been inspected'}), 409
-    insp = p.get('inspection') or {}
+        return jsonify({'error': 'This bill has no receipt made from BUSY'}), 409
     try:
-        vl = GenericRecord.query.get(insp.get('vendorLotId'))
-        if vl and vl.module == 'purVendorLots':
-            db.session.delete(vl)
-        for lid in insp.get('rmLotIds') or []:
-            lot = RMLot.query.get(lid)
-            if lot: db.session.delete(lot)
+        _bremove_inspection(p)
         p['status'] = 'awaiting'
-        p.setdefault('history', []).append({'undoneInspection': insp, 'by': _current_user_name() or '',
-                                            'at': datetime.utcnow().isoformat()})
-        p.pop('inspection', None)
         r.data = json.dumps(p); r.updated_at = datetime.utcnow()
         db.session.commit()
     except Exception as ex:
@@ -1714,25 +1899,330 @@ def busy_undo_inspect(pid):
         return jsonify({'error': f'Undo failed — nothing was changed. ({ex})'}), 500
     return jsonify({'ok': True})
 
+@app.route('/api/busy/purchases/<int:pid>/candidates', methods=['GET'])
+def busy_candidates(pid):
+    """Gate receipts this bill could be linked to (number matches first)."""
+    r, p = _bpurchase(pid)
+    if not p:
+        return jsonify({'error': 'Purchase not found'}), 404
+    idx = _BusyIndex('purchase')
+    link = p.get('link') or {}
+    idx.linked_vls -= set(link.get('vendorLotIds') or []); idx.linked_lots -= set(link.get('rmLotIds') or [])
+    grades = {l.get('grade') for l in p['lines'] if l.get('type') == 'rm'}
+    vls, lots = idx.receipts(p['vendorId'], p['date'], _bnumbers(p.get('billNo'), p.get('vchNo')), grades, broad=True)
+    key = lambda x: (not x['numberMatch'], abs((_bday(x.get('date')) - _bday(p['date'])).days) if _bday(x.get('date')) else 999)
+    return jsonify({'vendorLots': sorted(vls, key=key), 'rmLots': sorted(lots, key=key),
+                    'linked': {'vendorLotIds': link.get('vendorLotIds') or [], 'rmLotIds': link.get('rmLotIds') or []}})
+
+@app.route('/api/busy/purchases/<int:pid>/link', methods=['POST'])
+def busy_link(pid):
+    """Link a bill to the receipts entered at the gate. With replaceInspection,
+    a receipt that was made from BUSY (a duplicate) is removed first."""
+    d = json_object_body()
+    if d is None: return jsonify(BAD_BODY[0]), 400
+    r, p = _bpurchase(pid)
+    if not p:
+        return jsonify({'error': 'Purchase not found'}), 404
+    vl_ids = [x for x in d.get('vendorLotIds') or [] if isinstance(x, int)]
+    lot_ids = [x for x in d.get('rmLotIds') or [] if isinstance(x, int)]
+    if not vl_ids and not lot_ids:
+        return jsonify({'error': 'Pick at least one receipt entry or RM lot'}), 400
+    if p.get('status') == 'inspected' and not d.get('replaceInspection'):
+        return jsonify({'error': 'This bill has a receipt made from BUSY — choose to replace it'}), 409
+    if p.get('status') not in ('awaiting', 'matched', 'inspected'):
+        return jsonify({'error': 'This bill does not need a receipt'}), 409
+    idx = _BusyIndex('purchase')
+    own = p.get('link') or {}
+    idx.linked_vls -= set(own.get('vendorLotIds') or []); idx.linked_lots -= set(own.get('rmLotIds') or [])
+    insp_lots = set((p.get('inspection') or {}).get('rmLotIds') or [])
+    manual = {rr.id: dd for rr, dd in idx.vendor_lots}
+    for i in vl_ids:
+        if i not in manual or manual[i].get('vendorId') != p['vendorId']:
+            return jsonify({'error': 'That receipt entry belongs to another supplier or no longer exists'}), 400
+        if i in idx.linked_vls:
+            return jsonify({'error': f'Receipt entry {manual[i].get("refNo")} is already linked to another BUSY bill'}), 409
+    lots = {l['id'] for l in idx.rm_lots}
+    for i in lot_ids:
+        if i not in lots or i in insp_lots:
+            return jsonify({'error': 'That RM lot no longer exists'}), 400
+        if i in idx.linked_lots:
+            return jsonify({'error': 'That RM lot is already linked to another BUSY bill'}), 409
+    try:
+        if p.get('status') == 'inspected':
+            _bremove_inspection(p)
+        p['status'] = 'matched'
+        p['link'] = {'vendorLotIds': vl_ids, 'rmLotIds': lot_ids, 'auto': False,
+                     'by': _current_user_name() or '', 'at': datetime.utcnow().isoformat()}
+        r.data = json.dumps(p); r.updated_at = datetime.utcnow()
+        db.session.commit()
+    except Exception as ex:
+        db.session.rollback()
+        return jsonify({'error': f'Link failed — nothing was changed. ({ex})'}), 500
+    return jsonify({'ok': True})
+
+@app.route('/api/busy/purchases/<int:pid>/link', methods=['DELETE'])
+def busy_unlink(pid):
+    r, p = _bpurchase(pid)
+    if not p:
+        return jsonify({'error': 'Purchase not found'}), 404
+    if p.get('status') != 'matched':
+        return jsonify({'error': 'This bill is not linked'}), 409
+    p['status'] = 'awaiting'
+    p.setdefault('history', []).append({'unlinked': p.pop('link', None), 'by': _current_user_name() or '',
+                                        'at': datetime.utcnow().isoformat()})
+    r.data = json.dumps(p); r.updated_at = datetime.utcnow()
+    db.session.commit()
+    return jsonify({'ok': True})
+
+@app.route('/api/busy/rematch', methods=['POST'])
+def busy_rematch():
+    """Look again for gate receipts of every bill still waiting for one."""
+    idx = _BusyIndex('purchase')
+    n, now, user = 0, datetime.utcnow().isoformat(), _current_user_name() or ''
+    for r, p in idx.purchases:
+        if p.get('status') != 'awaiting':
+            continue
+        vls, lots = idx.receipts(p['vendorId'], p['date'], _bnumbers(p.get('billNo'), p.get('vchNo')),
+                                 {l.get('grade') for l in p['lines'] if l.get('type') == 'rm'})
+        if vls or lots:
+            p['status'] = 'matched'
+            p['link'] = {'vendorLotIds': [x['id'] for x in vls], 'rmLotIds': [x['id'] for x in lots],
+                         'auto': True, 'by': user, 'at': now}
+            idx.linked_vls.update(p['link']['vendorLotIds']); idx.linked_lots.update(p['link']['rmLotIds'])
+            r.data = json.dumps(p); r.updated_at = datetime.utcnow()
+            n += 1
+    db.session.commit()
+    return jsonify({'ok': True, 'linked': n})
+
+@app.route('/api/busy/check', methods=['GET'])
+def busy_check():
+    """BUSY ↔ DMS check for a period: bills without a gate receipt, linked
+    bills whose quantities differ, receipts made twice, and gate receipts
+    with no BUSY bill yet."""
+    frm, to = str(request.args.get('from') or ''), str(request.args.get('to') or '')
+    if not (_bday(frm) and _bday(to)):
+        return jsonify({'error': 'Give a from and to date'}), 400
+    idx = _BusyIndex('purchase')
+    vl_by_id = {rr.id: dd for rr, dd in _brows('purVendorLots')}
+    lot_by_id = {l['id']: l for l in idx.rm_lots}
+    vname = lambda vid: (idx.vendor_by_id.get(vid) or {}).get('name')
+    inside = lambda s: frm <= str(s or '')[:10] <= to
+    out = {'noReceipt': [], 'differs': [], 'duplicates': [], 'notBilled': {'vendorLots': [], 'rmLots': []},
+           'counts': {'bills': 0, 'matched': 0, 'madeFromBusy': 0, 'noInspection': 0}}
+    for r, p in idx.purchases:
+        if not inside(p.get('date')):
+            continue
+        out['counts']['bills'] += 1
+        base = {'id': r.id, 'date': p['date'], 'billNo': p.get('billNo') or p.get('vchNo'), 'supplier': vname(p['vendorId']) or p.get('party'),
+                'lines': [{'item': l['item'], 'qty': l['qty'], 'unit': l.get('unit'), 'type': l.get('type'), 'grade': l.get('grade')} for l in p['lines']]}
+        st = p.get('status')
+        if st == 'not-required':
+            out['counts']['noInspection'] += 1
+        elif st == 'awaiting':
+            out['noReceipt'].append(base)
+        elif st == 'inspected':
+            out['counts']['madeFromBusy'] += 1
+            vls, lots = idx.receipts(p['vendorId'], p['date'], _bnumbers(p.get('billNo'), p.get('vchNo')),
+                                     {l.get('grade') for l in p['lines'] if l.get('type') == 'rm'})
+            if vls or lots:
+                out['duplicates'].append({**base, 'manualVendorLots': vls, 'manualRmLots': lots,
+                                          'busyLots': [lot_by_id[i] for i in (p.get('inspection') or {}).get('rmLotIds') or [] if i in lot_by_id]})
+        elif st == 'matched':
+            out['counts']['matched'] += 1
+            link = p.get('link') or {}
+            vls = [vl_by_id[i] for i in link.get('vendorLotIds') or [] if i in vl_by_id]
+            lots = [lot_by_id[i] for i in link.get('rmLotIds') or [] if i in lot_by_id]
+            issues = []
+            billed = sum(l['qty'] for l in p['lines'] if l.get('type') in ('rm', 'inspect'))
+            if not vls:
+                issues.append('No Invoice / Delivery entry (supplier rating) linked')
+            elif _bdiffers(billed, sum(_bnum(v.get('qtyReceived')) or 0 for v in vls)):
+                issues.append(f'Billed {billed:g}, receipt entry says {sum(_bnum(v.get("qtyReceived")) or 0 for v in vls):g}')
+            rm_lines = [l for l in p['lines'] if l.get('type') == 'rm']
+            for g in sorted({l.get('grade') for l in rm_lines}):
+                if not [l for l in lots if l.get('grade') == g]:
+                    issues.append(f'No RM lot for {g}')
+            kg = [_bkg(l) for l in rm_lines]
+            if rm_lines and lots and None not in kg:
+                # lots hold what was accepted: billed minus what the gate entry rejected
+                rejected = sum(_bnum(v.get('qtyRejected')) or 0 for v in vls)
+                want, have = sum(kg) - rejected, sum(_bnum(l.get('weightKg')) or 0 for l in lots)
+                if _bdiffers(want, have):
+                    issues.append(f'RM lots {have:g} kg, but billed {sum(kg):g} kg' + (f' − {rejected:g} rejected' if rejected else ''))
+            if issues:
+                out['differs'].append({**base, 'issues': issues})
+    for rr, d in idx.vendor_lots:
+        if inside(d.get('date')) and rr.id not in idx.linked_vls:
+            out['notBilled']['vendorLots'].append({'id': rr.id, 'date': d.get('date'), 'refNo': d.get('refNo'),
+                                                  'supplier': vname(d.get('vendorId')), 'qtyReceived': d.get('qtyReceived')})
+    for l in idx.rm_lots:
+        if inside(l.get('date')) and l['id'] not in idx.linked_lots:
+            out['notBilled']['rmLots'].append(l)
+    return jsonify(out)
+
+@app.route('/api/admin/merge/suppliers', methods=['POST'])
+def busy_merge_suppliers():
+    """Merge a duplicate supplier into the one to keep: its bills and rating
+    entries move across and its names become aliases of the kept supplier."""
+    err = require_admin()
+    if err: return err
+    d = json_object_body()
+    if d is None: return jsonify(BAD_BODY[0]), 400
+    fr, to = GenericRecord.query.get(d.get('fromId')), GenericRecord.query.get(d.get('toId'))
+    if not fr or not to or fr.module != 'purVendors' or to.module != 'purVendors' or fr.id == to.id:
+        return jsonify({'error': 'Pick two different suppliers'}), 400
+    vf, vt = safe_json_loads(fr.data, {}), safe_json_loads(to.data, {})
+    has_approval = lambda v: bool(v.get('sample1') or v.get('sample2') or v.get('includeInApprovedList') == 'Y')
+    if has_approval(vf) and not has_approval(vt):
+        return jsonify({'error': f'{vf.get("name")} has approval / sample records and {vt.get("name")} has none — merge the other way round.'}), 400
+    g1, g2 = _bgstin(vf.get('gstNo')), _bgstin(vt.get('gstNo'))
+    if g1 and g2 and g1 != g2:
+        return jsonify({'error': f'They have different GST numbers ({g1} / {g2}) — they are different suppliers.'}), 400
+    try:
+        moved = 0
+        for module in ('busyPurchases', 'purVendorLots'):
+            for r, x in _brows(module):
+                if x.get('vendorId') == fr.id:
+                    x['vendorId'] = to.id; r.data = json.dumps(x); r.updated_at = datetime.utcnow(); moved += 1
+        names = list(vt.get('busyNames') or [])
+        have = {_bparty_name_key(n) for n in _bvendor_names(vt)}
+        for n in _bvendor_names(vf):
+            if _bparty_name_key(n) not in have:
+                names.append(n); have.add(_bparty_name_key(n))
+        vt['busyNames'] = names
+        if g1 and not g2: vt['gstNo'] = vf.get('gstNo')
+        vt.setdefault('mergedFrom', []).append({'supNumber': vf.get('supNumber'), 'name': vf.get('name'),
+                                                'by': _current_user_name() or '', 'at': datetime.utcnow().isoformat()})
+        to.data = json.dumps(vt); to.updated_at = datetime.utcnow()
+        db.session.delete(fr)
+        db.session.commit()
+    except Exception as ex:
+        db.session.rollback()
+        return jsonify({'error': f'Merge failed — nothing was changed. ({ex})'}), 500
+    return jsonify({'ok': True, 'moved': moved, 'kept': vt.get('name')})
+
+def _blinked_ids():
+    vls, lots, refs = set(), set(), {}
+    for _, p in _brows('busyPurchases'):
+        bill = p.get('billNo') or p.get('vchNo')
+        for i in (p.get('link') or {}).get('vendorLotIds') or []: vls.add(i); refs[('vl', i)] = bill
+        for i in ((p.get('link') or {}).get('rmLotIds') or []) + ((p.get('inspection') or {}).get('rmLotIds') or []):
+            lots.add(i); refs[('lot', i)] = bill
+    return vls, lots, refs
+
 def busy_guard(module, rid=None, deleting=False):
     """Records the BUSY link depends on can't be changed around it."""
     if module in BUSY_MANAGED:
-        return jsonify({'error': 'Change BUSY imports from the BUSY pages (undo the import or inspection).'}), 409
+        return jsonify({'error': 'Change BUSY imports from the BUSY pages (undo the import, or unlink / undo the receipt).'}), 409
     if rid is None or not deleting:
         return None
     r = GenericRecord.query.get(rid)
     d = safe_json_loads(r.data, {}) if r and r.module == module else {}
-    if module == 'purVendorLots' and d.get('busyPurchaseId'):
-        return jsonify({'error': 'This entry comes from a BUSY purchase inspection — undo the inspection on the BUSY Purchases page instead.'}), 409
+    if module == 'purVendorLots':
+        if d.get('busyPurchaseId'):
+            return jsonify({'error': 'This entry was made from a BUSY bill — undo it on the BUSY Purchases page instead.'}), 409
+        vls, _, refs = _blinked_ids()
+        if rid in vls:
+            return jsonify({'error': f'This entry is linked to BUSY bill {refs[("vl", rid)]} — unlink it on the BUSY Purchases page first.'}), 409
     if module == 'purVendors' and any(x.get('vendorId') == rid for _, x in _brows('busyPurchases')):
-        return jsonify({'error': 'This supplier has purchases imported from BUSY, so it cannot be deleted.'}), 409
+        return jsonify({'error': 'This supplier has purchases imported from BUSY, so it cannot be deleted (use Merge for a duplicate).'}), 409
     return None
 
 def busy_lot_guard(lid):
-    for _, p in _brows('busyPurchases'):
-        if lid in ((p.get('inspection') or {}).get('rmLotIds') or []):
-            return jsonify({'error': f'This lot was created by the QC inspection of BUSY bill {p.get("billNo") or p.get("vchNo")} — undo that inspection on the BUSY Purchases page instead.'}), 409
+    _, lots, refs = _blinked_ids()
+    if lid in lots:
+        return jsonify({'error': f'This lot is linked to BUSY bill {refs[("lot", lid)]} — unlink it (or undo its receipt) on the BUSY Purchases page first.'}), 409
     return None
+
+# ══════════════════════════════════════════════════════
+#  MERGE DUPLICATES — parts and customer names (suppliers: above)
+#  Admin only, one transaction each. Every record that points at the
+#  duplicate is re-pointed at the one kept, then the duplicate is removed.
+# ══════════════════════════════════════════════════════
+PART_REF_MODULES = ('prodShifts', 'prodFettling', 'prodDispatch', 'prodStockAdj', 'versions')
+
+def _repoint(obj, key, old, new):
+    """Replace obj[...][key] == old with new anywhere inside obj; returns the number replaced."""
+    n = 0
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k == key and not isinstance(v, (dict, list)) and v not in ('', None) and str(v) == str(old):
+                obj[k] = new if isinstance(v, int) else str(new); n += 1
+            else:
+                n += _repoint(v, key, old, new)
+    elif isinstance(obj, list):
+        for v in obj: n += _repoint(v, key, old, new)
+    return n
+
+@app.route('/api/admin/merge/parts', methods=['POST'])
+def merge_parts():
+    err = require_admin()
+    if err: return err
+    d = json_object_body()
+    if d is None: return jsonify(BAD_BODY[0]), 400
+    fr, to = GenericRecord.query.get(d.get('fromId')), GenericRecord.query.get(d.get('toId'))
+    if not fr or not to or fr.module != 'prodParts' or to.module != 'prodParts' or fr.id == to.id:
+        return jsonify({'error': 'Pick two different parts'}), 400
+    pf, pt = safe_json_loads(fr.data, {}), safe_json_loads(to.data, {})
+    try:
+        moved = 0
+        for module in PART_REF_MODULES:
+            for r, x in _brows(module):
+                n = _repoint(x, 'partId', fr.id, to.id)
+                if n:
+                    if module == 'versions' and isinstance(x.get('wi'), dict) and str(x['wi'].get('partId')) == str(to.id):
+                        x['wi']['partLabel'] = f"{pt.get('partNumber','')} — {pt.get('partName','')}"
+                    r.data = json.dumps(x); r.updated_at = datetime.utcnow(); moved += n
+        m = GenericRecord.query.filter_by(module='setting_' + BUSY_ITEM_MAP).first()
+        if m:
+            mp = safe_json_loads(m.data, {})
+            n = _repoint(mp, 'partId', fr.id, to.id)
+            if n: m.data = json.dumps(mp); moved += n
+        for k, v in pf.items():                         # keep details the kept part is missing
+            if k not in ('demo', 'active', 'mergedFrom') and (k not in pt or pt.get(k) in ('', None, {}, [])):
+                pt[k] = v
+        pt.setdefault('mergedFrom', []).append({'partNumber': pf.get('partNumber'), 'partName': pf.get('partName'),
+                                                'by': _current_user_name() or '', 'at': datetime.utcnow().isoformat()})
+        to.data = json.dumps(pt); to.updated_at = datetime.utcnow()
+        db.session.delete(fr)
+        db.session.commit()
+    except Exception as ex:
+        db.session.rollback()
+        return jsonify({'error': f'Merge failed — nothing was changed. ({ex})'}), 500
+    return jsonify({'ok': True, 'moved': moved, 'kept': pt.get('partNumber')})
+
+CUSTOMER_FIELDS = (('prodDispatch', 'customer'), ('prodParts', 'customer'))
+
+@app.route('/api/admin/merge/customers', methods=['GET'])
+def list_customer_names():
+    names = {}
+    for module, field in CUSTOMER_FIELDS:
+        for _, x in _brows(module):
+            n = str(x.get(field) or '').strip()
+            if n: names[n] = names.get(n, 0) + 1
+    return jsonify([{'name': n, 'count': c} for n, c in sorted(names.items(), key=lambda t: t[0].upper())])
+
+@app.route('/api/admin/merge/customers', methods=['POST'])
+def merge_customers():
+    """Rename every use of one customer name to another (dispatches and parts)."""
+    err = require_admin()
+    if err: return err
+    d = json_object_body()
+    if d is None: return jsonify(BAD_BODY[0]), 400
+    old, new = str(d.get('from') or '').strip(), str(d.get('to') or '').strip()
+    if not old or not new or old == new:
+        return jsonify({'error': 'Pick the name to replace and the name to keep'}), 400
+    try:
+        n = 0
+        for module, field in CUSTOMER_FIELDS:
+            for r, x in _brows(module):
+                if str(x.get(field) or '').strip() == old:
+                    x[field] = new; r.data = json.dumps(x); r.updated_at = datetime.utcnow(); n += 1
+        db.session.commit()
+    except Exception as ex:
+        db.session.rollback()
+        return jsonify({'error': f'Merge failed — nothing was changed. ({ex})'}), 500
+    return jsonify({'ok': True, 'changed': n})
 
 # ══════════════════════════════════════════════════════
 #  BACKUP & RESTORE

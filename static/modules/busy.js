@@ -110,9 +110,11 @@ function busyGroup(kind,aoa,det,map){
     if(firstCells.some(c=>/^\s*(grand\s*)?total\b/i.test(c))) continue;      // total / sub-total rows
     const head={date:get(row,'date'),vchNo:String(get(row,'vchNo')??'').trim(),billNo:String(get(row,'billNo')??'').trim(),
       party:String(get(row,'party')??'').trim(),gstin:String(get(row,'gstin')??'').trim()};
-    const startsNew=head.vchNo||head.billNo||head.party;
+    // A row continues the invoice above unless it shows a different voucher, bill or party —
+    // BUSY may repeat the voucher no. on every item row but print the party only once.
+    const startsNew=(head.vchNo&&head.vchNo!==last.vchNo)||(head.billNo&&head.billNo!==last.billNo)||(head.party&&head.party!==last.party);
     if(startsNew) last={...head,date:head.date!==''?head.date:last.date};
-    else if(head.date!=='') last={...last,date:head.date};
+    else for(const k of ['date','gstin']) if(head[k]!==''&&!last[k]) last[k]=head[k];
     if(!item) continue;
     const qtyRaw=get(row,'qty');
     const line={item,qty:busyNum(qtyRaw),unit:String(get(row,'unit')??'').trim()||busyUnitFrom(qtyRaw),
@@ -231,7 +233,12 @@ async function busyCheck(){
   const s3=document.getElementById('busy-step3');
   s3.innerHTML='<div class="card"><div class="cb muted">Checking against the DMS…</div></div>';
   try{
+    _busy.supplierMap={};
     _busy.preview=await busyApi('POST','/api/busy/preview',{kind,invoices});
+    // BUSY parties the DMS doesn't know: with no look-alike they are simply new; with one, the user decides
+    for(const r of _busy.preview.invoices) if(r.vendor?.unknown&&!r.vendor.suggestions.length) _busy.supplierMap[r.partyKey]='new';
+    if(Object.keys(_busy.supplierMap).length) _busy.preview=await busyApi('POST','/api/busy/preview',{kind,invoices,supplierMap:_busy.supplierMap});
+    _busy.vendors=kind==='purchase'?(await busyVendors()).sort((a,b)=>String(a.name).localeCompare(String(b.name))):[];
     _busy.choices={};_busy.includeManual=new Set();
     const [parts,grades]=await Promise.all([db.prodParts.toArray().catch(()=>[]),typeof rmGetGrades==='function'?rmGetGrades():[]]);
     _busy.parts=parts.sort((a,b)=>String(a.partNumber).localeCompare(String(b.partNumber)));_busy.grades=grades;
@@ -260,6 +267,16 @@ function busyRenderPreview(){
   const cnt=s=>rows.filter(r=>r.status===s).length;
   const toImport=cnt('new')+_busy.includeManual.size;
   const pending=unk.filter(u=>!busyChoiceComplete(_busy.choices[u.key])).length;
+  const parties=[];{const seen=new Set();for(const r of rows) if(r.vendor?.unknown&&!seen.has(r.partyKey)){seen.add(r.partyKey);parties.push(r);}}
+  const supPending=parties.filter(r=>!_busy.supplierMap[r.partyKey]).length;
+  const supCtl=r=>{const cur=_busy.supplierMap[r.partyKey],sug=r.vendor.suggestions||[];
+    const others=_busy.vendors.filter(v=>!sug.some(x=>x.id===v.id));
+    return `<select class="fc" onchange="busySetSupplier('${r.partyKey}',this.value)">
+      <option value="">— same as an existing supplier, or new? —</option>
+      ${sug.length?`<optgroup label="Looks like">${sug.map(x=>`<option value="${x.id}" ${cur===x.id?'selected':''}>${esc(x.name)} (${esc(x.supNumber||'')})${x.gstNo?' · '+esc(x.gstNo):''}</option>`).join('')}</optgroup>`:''}
+      <option value="new" ${cur==='new'?'selected':''}>➕ New supplier — add to the Supplier Register</option>
+      ${others.length?`<optgroup label="Other suppliers">${others.map(v=>`<option value="${v.id}" ${cur===v.id?'selected':''}>${esc(v.name)} (${esc(v.supNumber||'')})</option>`).join('')}</optgroup>`:''}
+    </select>`;};
   const fmt=n=>Number(n||0).toLocaleString('en-IN',{maximumFractionDigits:2});
   const itemCtl=u=>{
     const c=_busy.choices[u.key]||{};
@@ -275,29 +292,45 @@ function busyRenderPreview(){
   };
   document.getElementById('busy-step3').innerHTML=`
   ${_busy.problems.length?`<div class="alert al-w">⚠️ ${_busy.problems.length} row(s) have a problem: ${_busy.problems.slice(0,5).map(esc).join('; ')}${_busy.problems.length>5?'…':''}</div>`:''}
-  ${unk.length?`<div class="card" style="margin-bottom:12px"><div class="ch"><h5>3a. New items — tell the DMS what they are (asked once, remembered)</h5>
+  ${parties.length?`<div class="card" style="margin-bottom:12px"><div class="ch"><h5>New supplier names — same as a supplier you already have? (asked once, remembered)</h5>
+    <span class="badge ${supPending?'bp':'ba'}">${supPending?supPending+' left':'all done'}</span></div><div class="tw"><table>
+    <thead><tr><th>Name in BUSY</th><th>GSTIN in BUSY</th><th style="width:55%">In the DMS this is…</th></tr></thead>
+    <tbody>${parties.map(r=>`<tr><td><b>${esc(r.party)}</b></td><td class="mono" style="font-size:12px">${esc(r.partyKey.length===15?r.partyKey:'')}</td><td>${supCtl(r)}</td></tr>`).join('')}</tbody>
+  </table></div></div>`:''}
+  ${unk.length?`<div class="card" style="margin-bottom:12px"><div class="ch"><h5>New items — tell the DMS what they are (asked once, remembered)</h5>
     <span class="badge ${pending?'bp':'ba'}">${pending?pending+' left':'all done'}</span></div><div class="tw"><table>
     <thead><tr><th>Item in BUSY</th><th>Unit</th><th>In invoices</th><th style="width:55%">${kind==='sale'?'Which part is it?':'What is it?'}</th></tr></thead>
     <tbody>${unk.map(u=>`<tr><td><b>${esc(u.item)}</b></td><td>${esc(u.unit)}</td><td style="text-align:center">${u.invoices}</td><td>${itemCtl(u)}</td></tr>`).join('')}</tbody>
   </table>${kind==='sale'&&!_busy.parts.length?'<div class="alert al-w" style="margin:8px">No parts in the Part Master yet — add them first (Production → Part Master).</div>':''}</div></div>`:''}
-  <div class="card" style="margin-bottom:12px"><div class="ch"><h5>3b. Invoices in the file — ${rows.length}</h5>
+  <div class="card" style="margin-bottom:12px"><div class="ch"><h5>Invoices in the file — ${rows.length}</h5>
     <div style="display:flex;gap:6px;flex-wrap:wrap">${Object.entries(BUSY_STATUS).filter(([s])=>cnt(s)).map(([s,[l,c]])=>`<span class="badge ${c}">${cnt(s)} ${l.split(' — ')[0].toLowerCase()}</span>`).join('')}</div></div>
     <div class="tw" style="max-height:460px;overflow:auto"><table>
     <thead><tr><th>Date</th><th>${kind==='purchase'?'Bill no.':'Invoice no.'}</th><th>${kind==='purchase'?'Supplier':'Customer'}</th><th style="text-align:right">Lines</th><th style="text-align:right">Qty</th><th style="text-align:right">Amount</th><th>Status</th></tr></thead>
     <tbody>${rows.map(r=>`<tr>
       <td class="mono">${esc(r.date||'')}</td><td class="mono">${esc(r.number||'')}</td>
-      <td>${esc(r.party||'')}${r.vendor?(r.vendor.create?' <span class="badge bp" title="Will be added to the Supplier Register as Registered">new supplier</span>':(!r.vendor.approved?' <span class="badge br" title="Not on the Approved Supplier List">not approved</span>':'')
-        +(busyNorm(r.vendor.name)!==busyNorm(r.party)?`<div class="muted" style="font-size:11px">matched to ${esc(r.vendor.name)}</div>`:'')):''}</td>
+      <td>${esc(r.party||'')}${!r.vendor?'':r.vendor.unknown
+          ?(_busy.supplierMap[r.partyKey]==='new'?' <span class="badge bp" title="Will be added to the Supplier Register as Registered">new supplier</span>'
+            :_busy.supplierMap[r.partyKey]?`<div class="muted" style="font-size:11px">→ ${esc((_busy.vendors.find(v=>v.id===_busy.supplierMap[r.partyKey])||{}).name||'')}</div>`
+            :' <span class="badge br">choose supplier above</span>')
+          :((!r.vendor.approved?' <span class="badge br" title="Not on the Approved Supplier List">not approved</span>':'')
+            +(busyNorm(r.vendor.name)!==busyNorm(r.party)?`<div class="muted" style="font-size:11px">matched to ${esc(r.vendor.name)}</div>`:''))}</td>
       <td class="mono" style="text-align:right">${r.lines??''}</td><td class="mono" style="text-align:right">${r.qty!=null?fmt(r.qty):''}</td><td class="mono" style="text-align:right">${r.amount?fmt(r.amount):''}</td>
       <td>${r.status==='manual'?`<label style="font-size:12px;cursor:pointer"><input type="checkbox" ${_busy.includeManual.has(r.key)?'checked':''} onchange="busyToggleManual('${r.key}',this.checked)"> <span class="badge bp">${BUSY_STATUS.manual[0]}</span> import anyway</label>`
-        :`<span class="badge ${BUSY_STATUS[r.status][1]}">${BUSY_STATUS[r.status][0]}</span>${r.error?`<div style="font-size:11px;color:#dc2626">${esc(r.error)} (${esc(r.ref||'')})</div>`:''}`}</td></tr>`).join('')}</tbody>
+        :`<span class="badge ${BUSY_STATUS[r.status][1]}">${BUSY_STATUS[r.status][0]}</span>${r.receipt&&(r.receipt.vendorLots||r.receipt.rmLots)?`<div style="font-size:11px;color:#15803d">✓ gate receipt found — will be linked, not duplicated</div>`:''}${r.error?`<div style="font-size:11px;color:#dc2626">${esc(r.error)} (${esc(r.ref||'')})</div>`:''}`}</td></tr>`).join('')}</tbody>
   </table></div>
   ${cnt('changed')?'<div style="font-size:11px;color:#6b7280;padding:6px 12px">"Changed in BUSY": an invoice with this number was imported before with different details. It is not overwritten — undo that import (Import History) and import again if the BUSY version is correct.</div>':''}
   </div>
   <div style="display:flex;justify-content:flex-end;gap:8px;align-items:center">
-    ${pending?`<span style="font-size:12px;color:#d97706">Match the ${pending} new item(s) above first</span>`:''}
-    <button class="btn btn-p" id="busy-go" ${pending||!toImport?'disabled':''} onclick="busyImport()">📥 Import ${toImport} invoice${toImport===1?'':'s'}</button>
+    ${pending||supPending?`<span style="font-size:12px;color:#d97706">Answer the ${supPending?supPending+' supplier name(s)':''}${supPending&&pending?' and ':''}${pending?pending+' item(s)':''} above first</span>`:''}
+    <button class="btn btn-p" id="busy-go" ${pending||supPending||!toImport?'disabled':''} onclick="busyImport()">📥 Import ${toImport} invoice${toImport===1?'':'s'}</button>
   </div>`;
+}
+async function busySetSupplier(pk,val){
+  _busy.supplierMap[pk]=val==='new'?'new':(val?+val:undefined);
+  if(!val) delete _busy.supplierMap[pk];
+  try{_busy.preview=await busyApi('POST','/api/busy/preview',{kind:_busy.kind,invoices:_busy.invoices,supplierMap:_busy.supplierMap});}
+  catch(e){toast(e.message,'d');}
+  busyRenderPreview();
 }
 function busySetChoice(key,c){_busy.choices[key]={...c,item:(_busy.preview.unknownItems.find(u=>u.key===key)||{}).item};busyRenderPreview();}
 function busyToggleManual(key,on){on?_busy.includeManual.add(key):_busy.includeManual.delete(key);busyRenderPreview();}
@@ -306,18 +339,19 @@ async function busyImport(){
   const {kind}=_busy;
   const btn=document.getElementById('busy-go');if(btn){btn.disabled=true;btn.textContent='Importing…';}
   try{
-    const r=await busyApi('POST','/api/busy/import',{kind,fileName:_busy.fileName,invoices:_busy.invoices,itemMap:_busy.choices,includeManual:[..._busy.includeManual]});
+    const r=await busyApi('POST','/api/busy/import',{kind,fileName:_busy.fileName,invoices:_busy.invoices,itemMap:_busy.choices,supplierMap:_busy.supplierMap,includeManual:[..._busy.includeManual]});
     await DB.setSetting('busyColumns_'+kind,{map:_busy.map,savedAt:new Date().toISOString()}).catch(()=>{});
     const c=r.created;
     document.getElementById('busy-step2').innerHTML='';
     document.getElementById('busy-step3').innerHTML=`<div class="card"><div class="cb">
       <div style="font-size:15px;font-weight:700;color:#15803d;margin-bottom:8px">✅ Imported ${r.invoices} invoice${r.invoices===1?'':'s'}</div>
       <div style="font-size:13px;line-height:1.8">${kind==='purchase'
-        ?`${c.busyPurchases} purchase bill(s) added${c.purVendors?` · ${c.purVendors} new supplier(s) added to the Supplier Register as <b>Registered</b>`:''}<br>Bills with raw material or QC items are waiting for inspection.`
+        ?`${c.busyPurchases} purchase bill(s) added${c.purVendors?` · ${c.purVendors} new supplier(s) added to the Supplier Register as <b>Registered</b>`:''}
+          <br>${r.linked?`<b>${r.linked}</b> bill(s) linked to the gate receipt entered when the material came in. `:''}Bills with raw material or QC items and no gate receipt yet are listed on BUSY Check.`
         :`${c.prodDispatch} dispatch line(s) added — part stock updated.`}
       ${Object.keys(r.skipped||{}).length?`<br><span class="muted">Skipped: ${Object.entries(r.skipped).map(([k,n])=>`${n} ${(BUSY_STATUS[k]||[k])[0].split(' — ')[0].toLowerCase()}`).join(', ')}</span>`:''}</div>
       <div style="display:flex;gap:8px;margin-top:12px">
-        ${kind==='purchase'?`<button class="btn btn-p" onclick="nav('busy-purchases')">🔍 Go to inspection</button>`:`<button class="btn btn-p" onclick="nav('prod-dispatch')">🚚 Dispatch Register</button>`}
+        ${kind==='purchase'?`<button class="btn btn-p" onclick="nav('busy-check')">✔️ BUSY Check</button>`:`<button class="btn btn-p" onclick="nav('prod-dispatch')">🚚 Dispatch Register</button>`}
         <button class="btn btn-o" onclick="nav('busy-history')">🕘 Import History (undo)</button>
         <button class="btn btn-o" onclick="busyRenderImport()">Import another file</button></div>
     </div></div>`;
@@ -336,34 +370,85 @@ async function busyImport(){
 // and the shared table cache can be a few seconds old.
 async function busyVendors(){return (await busyApi('GET','/api/purVendors').catch(()=>[])).map(r=>({...r.data,id:r.id}));}
 let _busyPurFilter='awaiting';
-const BUSY_PSTATUS={awaiting:['Awaiting inspection','bp'],inspected:['Inspected','ba'],'not-required':['No inspection needed','bd']};
+const BUSY_PSTATUS={awaiting:['No gate receipt yet','bp'],matched:['Matched to gate receipt','ba'],inspected:['Receipt made from BUSY','bd'],'not-required':['No inspection needed','bd']};
 async function busyRenderPurchases(f){
   if(f&&f.status) _busyPurFilter=f.status;
-  const [rows,vendors]=await Promise.all([busyApi('GET','/api/busyPurchases').catch(()=>[]),busyVendors()]);
-  const vById=Object.fromEntries(vendors.map(v=>[v.id,v]));
+  const [rows,vendors,lots]=await Promise.all([busyApi('GET','/api/busyPurchases').catch(()=>[]),busyVendors(),busyApi('GET','/api/rm/lots').catch(()=>[])]);
+  const vById=Object.fromEntries(vendors.map(v=>[v.id,v])),lotById=Object.fromEntries(lots.map(l=>[l.id,l]));
   const all=rows.map(r=>({...r.data,id:r.id})).sort((a,b)=>String(b.date).localeCompare(String(a.date))||b.id-a.id);
   const list=all.filter(p=>_busyPurFilter==='all'||p.status===_busyPurFilter);
   const n=s=>all.filter(p=>p.status===s).length;
   const fmt=x=>Number(x||0).toLocaleString('en-IN',{maximumFractionDigits:2});
   setC(`
-  <div class="ph"><h2>🧾 BUSY Purchases</h2><button class="btn btn-p" onclick="_busy.kind='purchase';nav('busy-import')">📥 Import from BUSY</button></div>
+  <div class="ph"><h2>🧾 BUSY Purchases</h2><div style="display:flex;gap:8px">
+    <button class="btn btn-o" onclick="nav('busy-check')">✔️ BUSY Check</button>
+    <button class="btn btn-p" onclick="_busy.kind='purchase';nav('busy-import')">📥 Import from BUSY</button></div></div>
+  <div style="font-size:12px;color:#6b7280;margin-bottom:10px">Raw material is entered at the gate (Label Generator + Invoice / Delivery entry). Each BUSY bill is linked to that receipt — nothing is entered twice.</div>
   <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
-    ${[['awaiting','Awaiting inspection'],['inspected','Inspected'],['not-required','No inspection needed'],['all','All']].map(([s,l])=>`<button class="btn ${_busyPurFilter===s?'btn-p':'btn-o'} btn-sm" onclick="busyRenderPurchases({status:'${s}'})">${l}${s!=='all'?` (${n(s)})`:''}</button>`).join('')}
+    ${[['awaiting','No gate receipt yet'],['matched','Matched'],['inspected','Receipt made from BUSY'],['not-required','No inspection needed'],['all','All']].map(([s,l])=>`<button class="btn ${_busyPurFilter===s?'btn-p':'btn-o'} btn-sm" onclick="busyRenderPurchases({status:'${s}'})">${l}${s!=='all'?` (${n(s)})`:''}</button>`).join('')}
   </div>
   <div class="card"><div class="tw"><table>
     <thead><tr><th>Date</th><th>Bill no.</th><th>Supplier</th><th>Items</th><th style="text-align:right">Amount</th><th>Status</th><th></th></tr></thead>
     <tbody>${list.map(p=>{const v=vById[p.vendorId];const appr=v&&typeof purIsApproved==='function'&&purIsApproved(v);
+      const lk=p.link||{},lotNums=(lk.rmLotIds||[]).map(i=>lotById[i]?.lotNumber).filter(Boolean);
       return`<tr>
       <td class="mono">${esc(p.date)}</td><td class="mono">${esc(p.billNo||p.vchNo)}</td>
       <td>${esc(v?.name||p.party)}${appr?'':' <span class="badge br" title="Not on the Approved Supplier List">not approved</span>'}</td>
       <td style="font-size:12px">${p.lines.map(l=>`${esc(l.item)} — ${fmt(l.qty)} ${esc(l.unit||'')}${l.type==='rm'?` <span class="badge" style="background:#FAEEDA;color:#BA7517">${esc(l.grade)}</span>`:''}`).join('<br>')}</td>
       <td class="mono" style="text-align:right">${p.total?fmt(p.total):''}</td>
       <td><span class="badge ${BUSY_PSTATUS[p.status]?.[1]||'bd'}">${BUSY_PSTATUS[p.status]?.[0]||esc(p.status)}</span>
+        ${p.status==='matched'?`<div style="font-size:11px;color:#6b7280">${(lk.vendorLotIds||[]).length} delivery entr${(lk.vendorLotIds||[]).length===1?'y':'ies'}${lotNums.length?' · '+lotNums.map(esc).join(', '):''}${lk.auto?' · auto':''}</div>`:''}
         ${p.inspection?`<div style="font-size:11px;color:#6b7280">${esc(p.inspection.by||'')} · ${esc(p.inspection.receivedDate||'')}${(p.inspection.lines||[]).filter(l=>l.lotNumber).map(l=>`<br>Lot ${esc(l.lotNumber)}`).join('')}</div>`:''}</td>
-      <td style="white-space:nowrap">${p.status==='awaiting'?`<button class="btn btn-p btn-xs" onclick="busyOpenInspect(${p.id})">🔍 Inspect</button>`:''}
-        ${p.status==='inspected'?`<button class="btn btn-o btn-xs" onclick="busyUndoInspect(${p.id})">↩ Undo inspection</button>`:''}</td></tr>`;}).join('')
+      <td style="white-space:nowrap">${p.status==='awaiting'?`<button class="btn btn-p btn-xs" onclick="busyOpenLink(${p.id})">🔗 Link gate receipt</button>
+          <button class="btn btn-o btn-xs" title="Only if the material was not entered at the gate" onclick="busyOpenInspect(${p.id})">Make receipt from bill</button>`:''}
+        ${p.status==='matched'?`<button class="btn btn-o btn-xs" onclick="busyOpenLink(${p.id})">🔗 Change link</button>
+          <button class="btn btn-o btn-xs" onclick="busyUnlink(${p.id})">Unlink</button>`:''}
+        ${p.status==='inspected'?`<button class="btn btn-o btn-xs" onclick="busyOpenLink(${p.id})">🔗 Replace with gate receipt</button>
+          <button class="btn btn-o btn-xs" onclick="busyUndoInspect(${p.id})">↩ Undo receipt</button>`:''}</td></tr>`;}).join('')
       ||`<tr><td colspan="7" style="text-align:center;padding:26px;color:#9ca3af">${all.length?'Nothing in this list.':'No purchases imported yet — use Import from BUSY.'}</td></tr>`}</tbody>
   </table></div></div>`);
+}
+
+// ── link a bill to the receipt entered at the gate ──
+async function busyOpenLink(id,after){
+  const [r,c]=await Promise.all([busyApi('GET','/api/busyPurchases/'+id).catch(()=>null),busyApi('GET',`/api/busy/purchases/${id}/candidates`).catch(e=>({error:e.message}))]);
+  if(!r) return; if(c.error){alert('❌ '+c.error);return;}
+  const p=r.data,fmt=x=>Number(x||0).toLocaleString('en-IN',{maximumFractionDigits:2});
+  const pre=(list,ids)=>new Set(ids.length?ids:list.filter(x=>x.numberMatch).map(x=>x.id));
+  const vlSel=pre(c.vendorLots,c.linked.vendorLotIds),lotSel=pre(c.rmLots,c.linked.rmLotIds);
+  const ov=document.createElement('div');ov.className='overlay';ov.id='busy-link-ov';
+  ov.innerHTML=`<div class="modal" style="width:780px;max-width:96vw">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <h3>Link bill ${esc(p.billNo||p.vchNo)} to its gate receipt</h3><button class="btn btn-o btn-sm" onclick="document.getElementById('busy-link-ov').remove()">✕</button></div>
+    <div style="font-size:12px;margin-bottom:8px"><b>${esc(p.party)}</b> · bill date ${esc(p.date)} · ${p.lines.filter(l=>l.type==='rm'||l.type==='inspect').map(l=>`${esc(l.item)} ${fmt(l.qty)} ${esc(l.unit||'')}`).join(', ')}</div>
+    ${p.status==='inspected'?'<div class="alert al-w" style="margin-bottom:8px">This bill already has a receipt made from BUSY. Linking replaces it: the rating entry and RM lot(s) made from the bill are removed and the gate entries below are used instead.</div>':''}
+    <div class="lbl" style="margin-top:4px">Invoice / Delivery entries for this supplier (±90 days)</div>
+    <div class="tw" style="max-height:200px;overflow:auto"><table><thead><tr><th></th><th>Ref / Invoice</th><th>Date</th><th style="text-align:right">Received</th><th style="text-align:right">Rejected</th></tr></thead><tbody>
+    ${c.vendorLots.map(x=>`<tr><td><input type="checkbox" class="bl-vl" value="${x.id}" ${vlSel.has(x.id)?'checked':''}></td><td class="mono">${esc(x.refNo||'')}${x.numberMatch?' <span class="badge ba">number matches</span>':''}</td><td class="mono">${esc(x.date||'')}</td><td class="mono" style="text-align:right">${fmt(x.qtyReceived)}</td><td class="mono" style="text-align:right">${fmt(x.qtyRejected)}</td></tr>`).join('')
+      ||'<tr><td colspan="5" class="muted" style="text-align:center;padding:12px">No unlinked entries for this supplier.</td></tr>'}</tbody></table></div>
+    <div class="lbl" style="margin-top:10px">RM lots from this supplier (±90 days)</div>
+    <div class="tw" style="max-height:200px;overflow:auto"><table><thead><tr><th></th><th>Lot</th><th>Date</th><th>Grade</th><th>Invoice on label</th><th style="text-align:right">kg</th></tr></thead><tbody>
+    ${c.rmLots.map(x=>`<tr><td><input type="checkbox" class="bl-lot" value="${x.id}" ${lotSel.has(x.id)?'checked':''}></td><td class="mono">${esc(x.lotNumber)}${x.numberMatch?' <span class="badge ba">invoice matches</span>':''}</td><td class="mono">${esc(x.date||'')}</td><td>${esc(x.grade||'')}</td><td class="mono">${esc(x.invoice||'')}</td><td class="mono" style="text-align:right">${fmt(x.weightKg)}</td></tr>`).join('')
+      ||'<tr><td colspan="6" class="muted" style="text-align:center;padding:12px">No unlinked RM lots for this supplier.</td></tr>'}</tbody></table></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+      <button class="btn btn-o" onclick="document.getElementById('busy-link-ov').remove()">Cancel</button>
+      <button class="btn btn-p" id="bl-save" onclick="busySaveLink(${id},${p.status==='inspected'},${after?`'${after}'`:'null'})">🔗 Link</button></div>
+  </div>`;
+  document.body.appendChild(ov);
+}
+async function busySaveLink(id,replace,after){
+  const ids=cls=>[...document.querySelectorAll('.'+cls+':checked')].map(x=>+x.value);
+  const body={vendorLotIds:ids('bl-vl'),rmLotIds:ids('bl-lot'),replaceInspection:!!replace};
+  if(!body.vendorLotIds.length&&!body.rmLotIds.length){toast('Tick at least one entry or lot','d');return;}
+  if(replace&&!confirm('Remove the receipt made from BUSY for this bill and use the gate entries instead?')) return;
+  try{await busyApi('POST',`/api/busy/purchases/${id}/link`,body);document.getElementById('busy-link-ov').remove();toast('✅ Linked');busyUpdateCount();
+    after==='check'?busyRenderCheck():busyRenderPurchases();}
+  catch(e){alert('❌ '+e.message);}
+}
+async function busyUnlink(id){
+  if(!confirm('Unlink this bill from its gate receipt? The entries and lots stay as they are; the bill goes back to "No gate receipt yet".')) return;
+  try{await busyApi('DELETE',`/api/busy/purchases/${id}/link`);toast('Unlinked');busyUpdateCount();busyRenderPurchases();}
+  catch(e){alert('❌ '+e.message);}
 }
 
 async function busyOpenInspect(id){
@@ -375,7 +460,8 @@ async function busyOpenInspect(id){
   const ov=document.createElement('div');ov.className='overlay';ov.id='busy-insp-ov';
   ov.innerHTML=`<div class="modal" style="width:760px;max-width:96vw">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-      <h3>QC inspection — bill ${esc(p.billNo||p.vchNo)}</h3><button class="btn btn-o btn-sm" onclick="document.getElementById('busy-insp-ov').remove()">✕</button></div>
+      <h3>Make receipt from BUSY bill ${esc(p.billNo||p.vchNo)}</h3><button class="btn btn-o btn-sm" onclick="document.getElementById('busy-insp-ov').remove()">✕</button></div>
+    <div class="alert al-w" style="margin-bottom:8px">Use this only if the material was <b>not</b> entered at the gate. If it was, close this and use <b>Link gate receipt</b> instead — otherwise it is counted twice.</div>
     <div style="font-size:13px;margin-bottom:10px"><b>${esc(v?.name||p.party)}</b> · bill date ${esc(p.date)}${v&&typeof purIsApproved==='function'&&!purIsApproved(v)?' · <span class="badge br">not on the Approved Supplier List</span>':''}</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
       <div class="fg"><label class="lbl">Received date *</label><input class="fc" type="date" id="bi-date" value="${esc(p.date)}"></div>
@@ -395,7 +481,7 @@ async function busyOpenInspect(id){
     <div style="font-size:11px;color:#6b7280">Saving adds this delivery to the supplier's rating${lines.some(l=>l.type==='rm')?' and creates the raw material lot(s) in the Lot Register':''}. It can be undone from this page.</div>
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
       <button class="btn btn-o" onclick="document.getElementById('busy-insp-ov').remove()">Cancel</button>
-      <button class="btn btn-p" id="bi-save" onclick="busySaveInspect(${id},${JSON.stringify(lines.map(l=>l.i))})">💾 Save inspection</button></div>
+      <button class="btn btn-p" id="bi-save" onclick="busySaveInspect(${id},${JSON.stringify(lines.map(l=>l.i))})">💾 Save receipt</button></div>
   </div>`;
   document.body.appendChild(ov);
 }
@@ -407,15 +493,15 @@ async function busySaveInspect(id,idxs){
   try{
     const r=await busyApi('POST',`/api/busy/purchases/${id}/inspect`,body);
     document.getElementById('busy-insp-ov').remove();
-    toast('✅ Inspection saved');busyUpdateCount();
+    toast('✅ Receipt saved');busyUpdateCount();
     if(r.rmLots?.length&&confirm(`Raw material lot${r.rmLots.length>1?'s':''} created: ${r.rmLots.map(l=>l.lotNumber).join(', ')}.\n\nPrint the bundle labels now?${r.rmLots.length>1?'\n(The first lot opens now; print the others from the Lot Register.)':''}`)){
       window._rmPrefillLot=r.rmLots[0];nav('rm-labels');
     } else busyRenderPurchases();
   }catch(e){btn.disabled=false;alert('❌ '+e.message);}
 }
 async function busyUndoInspect(id){
-  if(!confirm('Undo this inspection?\n\nIts supplier-rating entry and the raw material lot(s) it created will be removed, and the bill goes back to "Awaiting inspection". Labels already printed for those lots should be removed from the bundles.')) return;
-  try{await busyApi('DELETE',`/api/busy/purchases/${id}/inspect`);toast('Inspection undone');busyUpdateCount();busyRenderPurchases();}
+  if(!confirm('Undo the receipt made from this bill?\n\nIts supplier-rating entry and the raw material lot(s) it created will be removed, and the bill goes back to "No gate receipt yet". Labels already printed for those lots should be removed from the bundles.')) return;
+  try{await busyApi('DELETE',`/api/busy/purchases/${id}/inspect`);toast('Receipt undone');busyUpdateCount();busyRenderPurchases();}
   catch(e){alert('❌ '+e.message);}
 }
 async function busyUpdateCount(){
@@ -478,6 +564,152 @@ async function busyForgetItem(key){
   delete map[key];
   await DB.setSetting('busyItemMap',map);
   busyRenderItems();
+}
+
+// ══════════════════════════════════════════════════════
+//  BUSY CHECK — weekly / monthly: does BUSY agree with what came in at the gate?
+// ══════════════════════════════════════════════════════
+let _busyChk=null;
+function busyMonthRange(off=0){const d=new Date();d.setDate(1);d.setMonth(d.getMonth()+off);
+  const iso=x=>new Date(x.getTime()-x.getTimezoneOffset()*60000).toISOString().slice(0,10);
+  const e=new Date(d.getFullYear(),d.getMonth()+1,0);return {from:iso(d),to:iso(e)};}
+async function busyRenderCheck(f){
+  _busyChk={...(_busyChk||busyMonthRange(0)),...(f||{})};
+  const {from,to}=_busyChk;
+  setC(`<div class="ph"><h2>✔️ BUSY Check</h2><div class="muted">Checking…</div></div>`);
+  let c;try{c=await busyApi('GET',`/api/busy/check?from=${from}&to=${to}`);}catch(e){setC(`<div class="alert al-d">⚠️ ${esc(e.message)}</div>`);return;}
+  _busyChk.data=c;
+  const fmt=x=>Number(x||0).toLocaleString('en-IN',{maximumFractionDigits:2});
+  const nb=c.notBilled.vendorLots.length+c.notBilled.rmLots.length;
+  const problems=c.duplicates.length+c.noReceipt.length+c.differs.length+nb;
+  const items=x=>x.lines.filter(l=>l.type==='rm'||l.type==='inspect').map(l=>`${esc(l.item)} ${fmt(l.qty)} ${esc(l.unit||'')}`).join(', ');
+  const sec=(title,cls,n,body,help)=>n?`<div class="card" style="margin-bottom:12px"><div class="ch"><h5>${title}</h5><span class="badge ${cls}">${n}</span></div>${help?`<div style="font-size:12px;color:#6b7280;padding:8px 14px 0">${help}</div>`:''}<div class="tw">${body}</div></div>`:'';
+  setC(`
+  <div class="ph"><h2>✔️ BUSY Check</h2><div style="display:flex;gap:8px;align-items:end;flex-wrap:wrap">
+    <button class="btn btn-o btn-sm" onclick="busyRenderCheck(busyMonthRange(-1))">Last month</button>
+    <button class="btn btn-o btn-sm" onclick="busyRenderCheck(busyMonthRange(0))">This month</button>
+    <div class="fg" style="margin:0"><label class="lbl">From</label><input class="fc" type="date" value="${from}" onchange="busyRenderCheck({from:this.value})"></div>
+    <div class="fg" style="margin:0"><label class="lbl">To</label><input class="fc" type="date" value="${to}" onchange="busyRenderCheck({to:this.value})"></div>
+    <button class="btn btn-o" onclick="busyRematch()" title="Look again for gate entries of bills still without one">🔄 Re-check links</button>
+  </div></div>
+  <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:14px">
+    ${[[c.counts.bills,'BUSY bills'],[c.counts.matched,'Matched to gate receipt'],[c.noReceipt.length,'No gate receipt yet'],[nb,'Received, not billed'],[c.duplicates.length,'Entered twice']].map(([v,l],i)=>`
+    <div class="card" style="padding:12px 16px"><div style="font-size:22px;font-weight:800;color:${i>=2&&v?'#d97706':'var(--navy)'}">${v}</div><div class="muted" style="font-size:12px">${l}</div></div>`).join('')}
+  </div>
+  ${!problems?`<div class="alert al-s">✅ BUSY and the DMS agree for ${esc(from)} to ${esc(to)}: every bill that needs a receipt is matched, and every gate entry has a bill.</div>`:''}
+  ${sec('🔴 Entered twice — received at the gate AND made from the BUSY bill','br',c.duplicates.length,`<table>
+    <thead><tr><th>Bill</th><th>Supplier</th><th>Gate entry</th><th>Copy made from BUSY</th><th></th></tr></thead><tbody>
+    ${c.duplicates.map((x,i)=>`<tr><td class="mono">${esc(x.billNo)}<div class="muted">${esc(x.date)}</div></td><td>${esc(x.supplier||'')}</td>
+      <td style="font-size:12px">${x.manualVendorLots.map(v=>`Entry ${esc(v.refNo)} · ${fmt(v.qtyReceived)}`).join('<br>')}${x.manualRmLots.map(l=>`<br>Lot ${esc(l.lotNumber)} · ${fmt(l.weightKg)} kg`).join('')}</td>
+      <td style="font-size:12px">${x.busyLots.map(l=>`Lot ${esc(l.lotNumber)} · ${fmt(l.weightKg)} kg`).join('<br>')||'rating entry'}</td>
+      <td><button class="btn btn-p btn-xs" onclick="busyFixDuplicate(${i})">Keep gate entry, remove BUSY copy</button></td></tr>`).join('')}</tbody></table>`,
+    'The gate entry and its labels are what is on the bundles, so those are kept. The rating entry and RM lot(s) that were made from the BUSY bill are removed.')}
+  ${sec('🟠 Billed in BUSY — no gate receipt found','bp',c.noReceipt.length,`<table>
+    <thead><tr><th>Date</th><th>Bill</th><th>Supplier</th><th>Items</th><th></th></tr></thead><tbody>
+    ${c.noReceipt.map(x=>`<tr><td class="mono">${esc(x.date)}</td><td class="mono">${esc(x.billNo)}</td><td>${esc(x.supplier||'')}</td><td style="font-size:12px">${items(x)}</td>
+      <td style="white-space:nowrap"><button class="btn btn-p btn-xs" onclick="busyOpenLink(${x.id},'check')">🔗 Link gate receipt</button></td></tr>`).join('')}</tbody></table>`,
+    'Either the gate entry has a different supplier / invoice number (link it by hand), or the material has not arrived or was not entered.')}
+  ${sec('🟠 Matched, but the quantities differ','bp',c.differs.length,`<table>
+    <thead><tr><th>Date</th><th>Bill</th><th>Supplier</th><th>What differs</th><th></th></tr></thead><tbody>
+    ${c.differs.map(x=>`<tr><td class="mono">${esc(x.date)}</td><td class="mono">${esc(x.billNo)}</td><td>${esc(x.supplier||'')}</td><td style="font-size:12px;color:#b45309">${x.issues.map(esc).join('<br>')}</td>
+      <td><button class="btn btn-o btn-xs" onclick="busyOpenLink(${x.id},'check')">🔗 Check link</button></td></tr>`).join('')}</tbody></table>`,
+    'Correct the gate entry or RM lot weight (Invoice / Delivery Register, Lot Register) — or the BUSY bill — so they agree.')}
+  ${sec('🟠 Received at the gate — no BUSY bill yet','bp',nb,`<table>
+    <thead><tr><th>Date</th><th>Entry / lot</th><th>Supplier</th><th>Invoice</th><th style="text-align:right">Qty</th></tr></thead><tbody>
+    ${c.notBilled.vendorLots.map(v=>`<tr><td class="mono">${esc(v.date||'')}</td><td>Delivery entry</td><td>${esc(v.supplier||'')}</td><td class="mono">${esc(v.refNo||'')}</td><td class="mono" style="text-align:right">${fmt(v.qtyReceived)}</td></tr>`).join('')}
+    ${c.notBilled.rmLots.map(l=>`<tr><td class="mono">${esc(l.date||'')}</td><td class="mono">Lot ${esc(l.lotNumber)} · ${esc(l.grade||'')}</td><td>${esc(l.supplier||'')}</td><td class="mono">${esc(l.invoice||'')}</td><td class="mono" style="text-align:right">${fmt(l.weightKg)} kg</td></tr>`).join('')}</tbody></table>`,
+    'Normal for a few days until accounts enter the bill in BUSY. If it stays here after the next import, the invoice number or supplier may be typed differently — use Link gate receipt on the bill.')}`);
+}
+async function busyFixDuplicate(i){
+  const x=_busyChk.data.duplicates[i];
+  if(!confirm(`Bill ${x.billNo}: keep the gate entry and its lot(s), and remove the rating entry and RM lot(s) made from the BUSY bill?`)) return;
+  try{await busyApi('POST',`/api/busy/purchases/${x.id}/link`,{vendorLotIds:x.manualVendorLots.map(v=>v.id),rmLotIds:x.manualRmLots.map(l=>l.id),replaceInspection:true});
+    toast('✅ Duplicate removed');busyRenderCheck();}
+  catch(e){alert('❌ '+e.message);}
+}
+async function busyRematch(){
+  try{const r=await busyApi('POST','/api/busy/rematch');toast(r.linked?`✅ ${r.linked} bill(s) linked`:'No new links found');busyUpdateCount();busyRenderCheck();}
+  catch(e){alert('❌ '+e.message);}
+}
+
+// ══════════════════════════════════════════════════════
+//  MERGE DUPLICATES — suppliers, parts, customer names (admin)
+// ══════════════════════════════════════════════════════
+function busyLoose(s){return busyNorm(String(s||'').toUpperCase().replace(/&/g,' ').replace(/\b(M\s*\/\s*S|MESSRS|THE|PVT|PRIVATE|LTD|LIMITED|LLP|CO|COMPANY|AND)\b\.?/g,' '));}
+function busyGroupsOf(items,keys){
+  // items sharing any key end up in one group
+  const groups=[],byKey={};
+  for(const it of items){
+    const ks=keys(it).filter(Boolean);let g=ks.map(k=>byKey[k]).find(Boolean);
+    if(!g){g={items:[]};groups.push(g);}
+    if(!g.items.includes(it)) g.items.push(it);
+    for(const k of ks) byKey[k]=g;
+  }
+  return groups.filter(g=>g.items.length>1);
+}
+let _busyMerge={tab:'suppliers'};
+async function busyRenderMerge(f){
+  Object.assign(_busyMerge,f||{});
+  const tab=_busyMerge.tab,isAdmin=Auth.user?.role==='APPROVER';
+  let list=[],groups=[],label,sub;
+  if(tab==='suppliers'){
+    const [vs,vl]=await Promise.all([busyVendors(),busyApi('GET','/api/purVendorLots').catch(()=>[])]);
+    const cnt={};vl.forEach(l=>{cnt[l.data.vendorId]=(cnt[l.data.vendorId]||0)+1;});
+    // rank: approved first, then with GSTIN, then most entries — the likely one to keep comes first in each group
+    list=vs.map(v=>({id:v.id,rank:(typeof purIsApproved==='function'&&purIsApproved(v)?1e6:0)+(v.gstNo?1e5:0)+(cnt[v.id]||0),name:v.name,sub:`${v.supNumber||''}${v.gstNo?' · '+v.gstNo:''} · ${cnt[v.id]||0} entries${typeof purIsApproved==='function'&&purIsApproved(v)?' · approved':''}${v.source==='BUSY'?' · from BUSY':''}`}));
+    groups=busyGroupsOf(vs,v=>[busyLoose(v.name),v.gstNo?'G'+busyNorm(v.gstNo):'']).map(g=>g.items.map(v=>v.id));
+    label='supplier';
+  } else if(tab==='parts'){
+    const ps=await busyApi('GET','/api/prodParts').catch(()=>[]);
+    list=ps.map(r=>({id:r.id,rank:(r.data.demo?0:1e6)-r.id,name:`${r.data.partNumber||''} — ${r.data.partName||''}`,sub:`${r.data.customer||''}${r.data.grade?' · '+r.data.grade:''}${r.data.demo?' · sample data':''}`,pn:r.data.partNumber}));
+    groups=busyGroupsOf(list,p=>[busyNorm(p.pn)]).map(g=>g.items.map(p=>p.id));
+    label='part';
+  } else {
+    const cs=await busyApi('GET','/api/admin/merge/customers').catch(()=>[]);
+    list=cs.map((c,i)=>({id:i,rank:c.count,name:c.name,sub:`${c.count} use${c.count===1?'':'s'}`}));
+    groups=busyGroupsOf(list,c=>[busyLoose(c.name)]).map(g=>g.items.map(c=>c.id));
+    label='customer name';
+  }
+  _busyMerge.list=list;
+  const byId=Object.fromEntries(list.map(x=>[x.id,x]));
+  groups=groups.map(g=>g.sort((a,b)=>(byId[b].rank||0)-(byId[a].rank||0)));
+  const opt=sel=>list.map(x=>`<option value="${x.id}" ${sel===x.id?'selected':''}>${esc(x.name)}</option>`).join('');
+  setC(`
+  <div class="ph"><h2>🧹 Merge Duplicates</h2></div>
+  <div style="display:flex;gap:8px;margin-bottom:12px">${[['suppliers','Suppliers'],['parts','Parts'],['customers','Customer names']].map(([t,l])=>`<button class="btn ${tab===t?'btn-p':'btn-o'} btn-sm" onclick="busyRenderMerge({tab:'${t}'})">${l}</button>`).join('')}</div>
+  ${isAdmin?'':'<div class="alert al-w">Only an admin can merge.</div>'}
+  <div style="font-size:12px;color:#6b7280;margin-bottom:10px">${tab==='suppliers'?'Everything of the duplicate (invoice / delivery entries, BUSY bills) moves to the supplier you keep; its names and GSTIN are remembered so BUSY keeps matching. Approval stays with the supplier you keep.'
+    :tab==='parts'?'Shift entries, fettling, dispatches, stock adjustments, Work Instructions and BUSY item matches of the duplicate move to the part you keep. Details the kept part is missing are copied over.'
+    :'Every dispatch and part that uses the duplicate name gets the name you keep.'} Take a backup first — a merge cannot be undone except by restoring.</div>
+  <div class="card" style="margin-bottom:12px"><div class="ch"><h5>Likely duplicates</h5><span class="badge ${groups.length?'bp':'ba'}">${groups.length||'none found'}</span></div>
+    ${groups.map((g,gi)=>`<div style="padding:10px 14px;border-top:1px solid var(--border)">
+      ${g.map((id,k)=>`<label style="display:flex;gap:8px;align-items:center;font-size:13px;margin:3px 0;cursor:pointer"><input type="radio" name="bm-g${gi}" value="${id}" ${k===0?'checked':''}> <b>${esc(byId[id].name)}</b> <span class="muted" style="font-size:11px">${esc(byId[id].sub)}</span></label>`).join('')}
+      ${isAdmin?`<button class="btn btn-p btn-xs" style="margin-top:6px" onclick="busyMergeGroup(${gi},${JSON.stringify(g)})">Keep the ticked one, merge the others into it</button>`:''}</div>`).join('')
+      ||'<div class="muted" style="padding:14px">No look-alike names found. Use the form below for others.</div>'}
+  </div>
+  ${isAdmin?`<div class="card"><div class="ch"><h5>Merge any two</h5></div><div class="cb" style="display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end">
+    <div class="fg" style="margin:0"><label class="lbl">Duplicate ${label} (will be removed)</label><select class="fc" id="bm-from"><option value="">—</option>${opt()}</select></div>
+    <div class="fg" style="margin:0"><label class="lbl">${label[0].toUpperCase()+label.slice(1)} to keep</label><select class="fc" id="bm-to"><option value="">—</option>${opt()}</select></div>
+    <button class="btn btn-p" onclick="busyMergePair(+document.getElementById('bm-from').value,+document.getElementById('bm-to').value,document.getElementById('bm-from').value,document.getElementById('bm-to').value)">Merge</button>
+  </div></div>`:''}`);
+}
+async function busyMergeOne(fromId,toId){
+  const {tab,list}=_busyMerge;
+  if(tab==='customers') return busyApi('POST','/api/admin/merge/customers',{from:list[fromId].name,to:list[toId].name});
+  return busyApi('POST',`/api/admin/merge/${tab}`,{fromId,toId});
+}
+async function busyMergePair(fromId,toId,fv,tv){
+  if(fv===''||tv===''||fromId===toId){toast('Pick two different entries','d');return;}
+  const n=i=>_busyMerge.list.find(x=>x.id===i)?.name;
+  if(!confirm(`Merge "${n(fromId)}" into "${n(toId)}"?\n\n"${n(fromId)}" will be removed and everything that used it will use "${n(toId)}".`)) return;
+  try{await busyMergeOne(fromId,toId);toast('✅ Merged');busyRenderMerge();}catch(e){alert('❌ '+e.message);}
+}
+async function busyMergeGroup(gi,ids){
+  const keep=+document.querySelector(`input[name="bm-g${gi}"]:checked`).value;
+  const n=i=>_busyMerge.list.find(x=>x.id===i)?.name,others=ids.filter(i=>i!==keep);
+  if(!confirm(`Keep "${n(keep)}" and merge into it:\n${others.map(i=>'• '+n(i)).join('\n')}`)) return;
+  try{for(const i of others) await busyMergeOne(i,keep);toast('✅ Merged');busyRenderMerge();}
+  catch(e){alert('❌ '+e.message);busyRenderMerge();}
 }
 
 // ══ END BUSY LINK ══
