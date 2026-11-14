@@ -81,42 +81,78 @@ async function renderBackup() {
   };
 }
 
+// Downloads a backup of what is in the database right now. Returns true only
+// once the file has been handed to the browser.
+async function downloadBackup(prefix) {
+  const res = await fetch(window.location.origin + '/api/backup');
+  if (!res.ok) throw new Error('server answered ' + res.status);
+  const data = await res.json();
+  const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const d = new Date();
+  const stamp = `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
+  a.href = url;
+  a.download = prefix === 'backup' ? `VRA_DMS_Backup_${stamp}.json`
+    : `VRA_DMS_BeforeRestore_${stamp}_${String(d.getHours()).padStart(2,'0')}${String(d.getMinutes()).padStart(2,'0')}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return true;
+}
+
 async function doExport() {
   toast('Preparing backup...','s');
   try {
-    const data = await fetch(window.location.origin + '/api/backup').then(r => r.json());
-    const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    const d = new Date();
-    a.href = url;
-    a.download = `VRA_DMS_Backup_${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-    localStorage.setItem('vra_last_backup', d.toLocaleString('en-IN'));
+    await downloadBackup('backup');
+    localStorage.setItem('vra_last_backup', new Date().toLocaleString('en-IN'));
     toast('✅ Full backup downloaded!','s');
     renderBackup();
   } catch(e) { toast('Backup failed: ' + e.message,'d'); }
 }
 
 async function doImport() {
-  if (!window._importData) { toast('No file selected','d'); return; }
-  toast('Restoring data — please wait...','s');
+  const file = window._importData;
+  if (!file) { toast('No file selected','d'); return; }
+  const complete = Number.isInteger(file.backupFormat) && file.backupFormat >= 2;
+  const when = file.exportedAt ? new Date(file.exportedAt.replace(' ', 'T') + 'Z').toLocaleString('en-IN') : 'unknown date';
+  const msg = `Restore the backup taken on ${when}?\n\n` +
+    (complete
+      ? 'ALL company data will be put back exactly as it was at that time. Anything entered after that backup will be removed.'
+      : 'This is an older backup file. The data it contains will replace the current data for those modules.') +
+    '\n\nA copy of the current data will be downloaded first, so you can undo this restore.';
+  if (!confirm(msg)) return;
+
+  // Safety copy first — if it can't be made, don't restore.
   try {
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', window.location.origin + '/api/restore', true);
-    xhr.setRequestHeader('Content-Type', 'application/json');
-    xhr.onload = function() {
-      if (xhr.status === 200) {
-        const r = JSON.parse(xhr.responseText);
-        window._importData = null;
-        toast('✅ Restore complete — ' + JSON.stringify(r), 's');
-        renderBackup();
-      } else {
-        toast('Restore failed: ' + xhr.status, 'd');
-      }
-    };
-    xhr.onerror = () => toast('Restore failed — network error','d');
-    xhr.send(JSON.stringify(window._importData));
-  } catch(e) { toast('Restore failed: ' + e.message,'d'); }
+    toast('Saving a copy of the current data first...','s');
+    await downloadBackup('before-restore');
+  } catch(e) {
+    toast('Restore cancelled — could not save a copy of the current data (' + e.message + ')','d');
+    return;
+  }
+
+  toast('Restoring data — please wait...','s');
+  const btn = document.getElementById('import-btn');
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch(window.location.origin + '/api/restore', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(file)
+    });
+    const r = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      alert('❌ ' + (r.error || ('Restore failed (' + res.status + '). Nothing was changed.')));
+      return;
+    }
+    window._importData = null;
+    let done = `✅ Restore complete: ${r.documents} documents, ${r.records} records, ${r.rmLots} raw material lots.`;
+    if (r.renumbered) done += `\n\n⚠️ ${r.renumbered} record(s) could not keep their original number, so links to them (e.g. a part or supplier) may need checking.`;
+    if (r.backupErrors) done += `\n\n⚠️ The backup file itself listed ${r.backupErrors} unreadable record(s) that were not included.`;
+    done += '\n\nThe copy of the data from before the restore is in your Downloads folder (VRA_DMS_BeforeRestore_…).';
+    alert(done);
+    renderBackup();
+  } catch(e) {
+    alert('❌ Restore failed — ' + e.message + '. Check whether it went through before trying again.');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }

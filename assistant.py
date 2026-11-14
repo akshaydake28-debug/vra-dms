@@ -571,6 +571,8 @@ AREA_INFO = {
     'mktEnquiries': 'Marketing — customer enquiry register', 'mktFeasibility': 'Marketing — feasibility reviews',
     'mktFeasQns': 'Marketing — feasibility questions', 'mktQuotations': 'Marketing — quotations',
     'purVendors': 'Purchasing — supplier register / approved suppliers', 'purVendorLots': 'Purchasing — invoice / delivery register',
+    'busyPurchases': 'BUSY link — purchase bills imported from BUSY (supplier, bill no, items, qty, amount, QC inspection status)',
+    'busyBatches': 'BUSY link — history of imports from BUSY (purchase / sales registers)',
     'calGauges': 'Calibration — gauge / instrument register', 'calRecords': 'Calibration — calibration records (next due dates)',
     'customDocTypes': 'Documents — custom document types',
     'tasks': 'Task Manager — tasks with owner, deadline (YYYY-MM-DD), status, priority, history',

@@ -34,7 +34,7 @@ function purVendorRows(vendor,lots){
     const received=Number(l.qtyReceived)||0;
     const rejected=Number(l.qtyRejected)||0;
     const accepted=(l.qtyAccepted!==''&&l.qtyAccepted!=null)?Number(l.qtyAccepted):Math.max(received-rejected,0);
-    rows.push({id:l.id,source:'Invoice',date:l.date||'',refNo:l.refNo||'',qtyReceived:received,qtyRejected:rejected,qtyAccepted:accepted,timing:l.timing||'OnTime'});
+    rows.push({id:l.id,source:'Invoice',busy:!!l.busyPurchaseId,date:l.date||'',refNo:l.refNo||'',qtyReceived:received,qtyRejected:rejected,qtyAccepted:accepted,timing:l.timing||'OnTime'});
   });
   rows.sort((a,b)=>(a.date||'')>(b.date||'')?1:-1);
   return rows;
@@ -187,7 +187,7 @@ async function purRenderSuppliers(){
         ?`<tr><td colspan="6" style="text-align:center;padding:30px;color:#9ca3af">No suppliers yet. Click + Add Supplier to register one.</td></tr>`
         :vendors.map(v=>`<tr>
           <td class="mono" style="color:var(--navy);font-weight:700">${esc(v.supNumber)}</td>
-          <td><strong>${esc(v.name)}</strong></td>
+          <td><strong>${esc(v.name)}</strong>${v.source==='BUSY'?' <span class="badge bd" title="Added automatically by a BUSY import">BUSY</span>':''}</td>
           <td>${esc(v.scopeOfSupply||'—')}</td>
           <td>${esc(v.contactPerson||'—')}${v.contactPhone?' · '+esc(v.contactPhone):''}</td>
           <td>${purStageBadge(purStage(v))}</td>
@@ -204,6 +204,9 @@ async function purRenderSuppliers(){
 
 async function purDeleteVendor(id){
   const v=await db.purVendors.get(id);
+  // Suppliers with BUSY purchases can't be deleted (the server refuses) — say so before anything is removed
+  const busy=await fetch(window.location.origin+'/api/busyPurchases').then(r=>r.ok?r.json():[]).catch(()=>[]);
+  if(busy.some(b=>b.data?.vendorId===id)){alert(`${v?.name||'This supplier'} has purchase bills imported from BUSY, so it can't be deleted.`);return;}
   if(!confirm(`Delete supplier ${v?.name}? All invoice/delivery records will also be deleted.`)) return;
   const lots=await db.purVendorLots.where('vendorId').equals(id).toArray().catch(()=>[]);
   for(const l of lots) await db.purVendorLots.delete(l.id);
@@ -488,7 +491,7 @@ async function purViewVendor(id){
           <td style="text-align:center;color:#7f1d1d">${r.qtyRejected}</td>
           <td style="text-align:center;color:#14532d">${r.qtyAccepted}</td>
           <td>${PUR_TIMING_LABELS[r.timing]||r.timing}</td>
-          <td style="white-space:nowrap">${r.source==='Invoice'?`
+          <td style="white-space:nowrap">${r.busy?`<a href="#" style="font-size:11px" onclick="event.preventDefault();nav('busy-purchases')">From BUSY — change on BUSY Purchases</a>`:r.source==='Invoice'?`
             <button class="btn btn-o btn-xs" onclick="purOpenLotForm(${id},${r.id},'vendor')">✏️</button>
             <button class="btn btn-r btn-xs" onclick="purDeleteLot(${r.id},'vendor')">🗑️</button>
           `:'<span class="muted" style="font-size:11px">Edit via Supplier form</span>'}</td>
@@ -564,7 +567,7 @@ async function purRenderInvoices(){
             <td style="text-align:center;color:#7f1d1d">${r.qtyRejected}</td>
             <td style="text-align:center;color:#14532d">${r.qtyAccepted}</td>
             <td>${PUR_TIMING_LABELS[r.timing]||r.timing}</td>
-            <td style="white-space:nowrap">${r.source==='Invoice'?`
+            <td style="white-space:nowrap">${r.busy?`<a href="#" style="font-size:11px" onclick="event.preventDefault();nav('busy-purchases')">From BUSY — change on BUSY Purchases</a>`:r.source==='Invoice'?`
               <button class="btn btn-o btn-xs" onclick="purOpenLotForm(null,${r.id},'register')">✏️</button>
               <button class="btn btn-r btn-xs" onclick="purDeleteLot(${r.id},'register')">🗑️</button>
             `:'<span class="muted" style="font-size:11px">Edit via Supplier form</span>'}</td>

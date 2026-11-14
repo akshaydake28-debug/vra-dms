@@ -8,6 +8,8 @@ import json
 import re
 import secrets
 import base64
+import hashlib
+import math
 
 app = Flask(__name__, static_folder='static')
 CORS(app)
@@ -169,6 +171,7 @@ PUBLIC_PATHS = {'/api/auth/login'}
 # own token and never expose data beyond that one record.
 PUBLIC_PREFIXES = ('/api/public/feedback/', '/api/public/wi/', '/api/public/wi-photo/')
 BACKUP_API_TOKEN = os.environ.get('BACKUP_API_TOKEN')
+BACKUP_FORMAT = 2   # see backup() / _restore_data()
 HASH_PREFIXES = ('pbkdf2:', 'scrypt:', 'argon2:')
 # APPROVER is this app's admin-equivalent role — it's what the frontend
 # already gates the Users management screen on (see nav-users in index.html).
@@ -556,6 +559,8 @@ def rename_rm_grade():
 
 @app.route('/api/rm/lots/<int:lid>', methods=['DELETE'])
 def delete_rm_lot(lid):
+    err = busy_lot_guard(lid)
+    if err: return err
     l = RMLot.query.get(lid)
     if l:
         db.session.delete(l)
@@ -568,13 +573,16 @@ def backup():
         'exportedAt': str(datetime.utcnow()),
         'exportedBy': 'System',
         'appVersion': '4.0',
+        # 2 = complete snapshot that keeps every record's id; restore() then
+        # puts the database back exactly as it was (see restore()).
+        'backupFormat': BACKUP_FORMAT,
         'documents': [],
         'versions': [],
         'audit': [],
         'users': [],
     }
     backup_errors = []
-    for d in Document.query.all():
+    for d in Document.query.order_by(Document.id).all():
         try:
             extra = json.loads(d.extra) if d.extra else {}
         except (TypeError, ValueError):
@@ -592,10 +600,10 @@ def backup():
             'user':l.user,'notes':l.notes,'timestamp':str(l.timestamp)})
     for u in User.query.all():
         data['users'].append({'id':u.id,'username':u.username,'role':u.role,'name':u.name})
-    data['rm_lots'] = [{k:v for k,v in l.to_dict().items() if k != 'id'} for l in RMLot.query.all()]
+    data['rm_lots'] = [l.to_dict() for l in RMLot.query.order_by(RMLot.id).all()]
     # All generic modules
     modules = {}
-    for r in GenericRecord.query.all():
+    for r in GenericRecord.query.order_by(GenericRecord.id).all():
         # Earlier restores left a stale generic 'rm_lots' copy behind; the real
         # lots are exported above from their own table, so never let it override them.
         if r.module == 'rm_lots':
@@ -647,59 +655,113 @@ def restore():
         if isinstance(value, list) and not all(isinstance(x, dict) for x in value):
             return jsonify({'error':f'Invalid backup: "{key}" must be a list of objects'}), 400
 
-    # Documents — clear all and restore fresh, but only if the file actually
-    # contains a documents list; a file without one must not wipe them.
+    try:
+        result = _restore_data(data)
+    except Exception as e:
+        # Everything happens in one transaction: on any error nothing is
+        # changed, and the database stays exactly as it was before.
+        db.session.rollback()
+        return jsonify({'error': f'Restore failed — nothing was changed. ({e})'}), 500
+    return jsonify(result)
+
+def _valid_id(v):
+    return v if isinstance(v, int) and not isinstance(v, bool) and v > 0 else None
+
+def _reset_id_sequences(*models):
+    """Rows restored with their original ids don't advance Postgres' id
+    counter; move it past the highest id so the next new record can't
+    collide. SQLite needs nothing (it always uses max(id)+1).
+    The counter only ever moves forward: it isn't undone by a rollback, so
+    lowering it during a restore that then fails would leave it below the
+    ids still in the table."""
+    if db.engine.dialect.name != 'postgresql':
+        return
+    for m in models:
+        t = m.__table__.name
+        seq = f"pg_get_serial_sequence('\"{t}\"', 'id')"
+        db.session.execute(db.text(
+            f"SELECT setval({seq}, GREATEST(COALESCE((SELECT MAX(id) FROM \"{t}\"), 0) + 1, nextval({seq})), false)"))
+
+def _restore_data(data):
+    """Records point at each other by id (an invoice at its supplier, a
+    shift entry or dispatch at its part, a PFMEA row at its part, a skill
+    at its documents), so every restored row keeps its original id.
+
+    A complete backup (backupFormat >= 2) is a snapshot: the database is put
+    back exactly as it was — modules that were empty at backup time end up
+    empty, and settings take the backed-up values. Older files keep the
+    previous, cautious behaviour: only what the file contains is replaced.
+    """
+    fmt = data.get('backupFormat')
+    full = isinstance(fmt, int) and not isinstance(fmt, bool) and fmt >= 2
+    keep_ids, renumber = [], []      # (row, wanted id) / rows that get a new id
+
+    def place(row, wanted, taken):
+        wanted = _valid_id(wanted)
+        if wanted and wanted not in taken:
+            row.id = wanted
+            taken.add(wanted)
+            keep_ids.append(row)
+        else:
+            renumber.append(row)
+
+    # Documents — replaced only if the file actually contains a documents
+    # list; a file without one must not wipe them.
+    docs_in = data.get('documents')
     doc_count = 0
     doc_id_map = {}  # old document id (in the backup) -> new id after restore
     new_docs = []
     if docs_in is not None:
         Document.query.delete()
-    for d in (docs_in or []):
-        doc = Document(
-            doc_number=d.get('docNumber'), title=d.get('title'),
-            doc_type=d.get('docType'), revision=d.get('revision'),
-            status=d.get('status'), content=d.get('content',''),
-            created_by=d.get('createdBy',''), approved_by=d.get('approvedBy',''),
-            created_date=d.get('createdDate',''), approved_date=d.get('approvedDate',''),
-            extra=json.dumps(d.get('extra',{}))
-        )
-        db.session.add(doc)
-        new_docs.append((d.get('id'), doc))
-        doc_count += 1
-    # Documents get fresh ids on restore, so version/audit rows that point at
-    # a document by id must be re-pointed at the new one.
+        taken = set()
+        for d in docs_in:
+            place(Document(
+                doc_number=d.get('docNumber'), title=d.get('title'),
+                doc_type=d.get('docType'), revision=d.get('revision'),
+                status=d.get('status'), content=d.get('content',''),
+                created_by=d.get('createdBy',''), approved_by=d.get('approvedBy',''),
+                created_date=d.get('createdDate',''), approved_date=d.get('approvedDate',''),
+                extra=json.dumps(d.get('extra',{}))
+            ), d.get('id'), taken)
+            doc_count += 1
+
+    # Module records
+    skip_keys = {'exportedAt','exportedBy','appVersion','backupFormat','company','documents',
+                 'versions','audit','users','customDocTypes','settings','records','backupErrors','rm_lots'}
+    modules_in = {k: v for k, v in data.items()
+                  if k not in skip_keys and isinstance(v, list) and (v or full)}
+    if 'versions' in data and isinstance(data['versions'], list) and (data['versions'] or full):
+        modules_in['versions'] = data['versions']   # document versions are module records too
+    settings_in = data.get('settings') or {}
+    if data.get('customDocTypes') and 'customDocTypes' not in settings_in:
+        settings_in = {**settings_in, 'customDocTypes': data['customDocTypes']}
+
+    kept_settings = {}
+    if full:
+        # Snapshot: clear every module. Settings aren't referenced by id, so
+        # they're taken out and re-added afterwards with fresh ids — that way
+        # they can never sit on an id a restored record needs.
+        for r in GenericRecord.query.filter(GenericRecord.module.startswith('setting_', autoescape=True)).all():
+            key = r.module[len('setting_'):]
+            if key not in settings_in:
+                kept_settings[key] = r.data
+        GenericRecord.query.delete()
+    else:
+        for key in modules_in:
+            GenericRecord.query.filter_by(module=key).delete()
     db.session.flush()
-    for old_id, doc in new_docs:
-        if old_id is not None:
-            doc_id_map[old_id] = doc.id
+    taken = {rid for (rid,) in db.session.query(GenericRecord.id).all()}
 
-    # Settings
-    for key, value in data.get('settings',{}).items():
-        if not GenericRecord.query.filter_by(module='setting_'+key).first():
-            db.session.add(GenericRecord(module='setting_'+key, data=json.dumps(value)))
-
-    # All array-type module data
-    # 'rm_lots' is restored into its own table below — it must not also be
-    # copied into GenericRecord, or later backups pick up that stale copy.
-    skip_keys = {'exportedAt','exportedBy','appVersion','company','documents',
-                 'audit','users','customDocTypes','settings','records','backupErrors','rm_lots'}
     module_count = 0
-    for key, value in data.items():
-        if key in skip_keys: continue
-        if not isinstance(value, list): continue
-        if not value: continue
-        # Clear existing records for this module and restore fresh
-        GenericRecord.query.filter_by(module=key).delete()
-        db.session.flush()
-        for rec in value:
+    for key, rows in modules_in.items():
+        for rec in rows:
             nr = {k:v for k,v in rec.items() if k not in ('id','_rid')}
-            if key == 'versions' and nr.get('docId') in doc_id_map:
-                nr['docId'] = doc_id_map[nr['docId']]
-            db.session.add(GenericRecord(module=key, data=json.dumps(nr)))
+            place(GenericRecord(module=key, data=json.dumps(nr)), rec.get('id'), taken)
             module_count += 1
 
-    # Audit log — same rule as the other modules: only replaced if the file
-    # actually contains entries, so a backup without any can't wipe the trail.
+    # Audit log — only replaced if the file actually contains entries, so a
+    # backup without any can't wipe the trail. Document ids are kept on
+    # restore, so each entry still points at its document.
     audit_in = data.get('audit')
     audit_count = 0
     if isinstance(audit_in, list) and audit_in:
@@ -709,35 +771,50 @@ def restore():
                 ts = datetime.fromisoformat(str(a.get('timestamp')))
             except (TypeError, ValueError):
                 ts = datetime.utcnow()
-            doc_id = a.get('docId')
             db.session.add(AuditLog(
-                action=a.get('action',''), module='documents',
-                doc_id=doc_id_map.get(doc_id, doc_id),
+                action=a.get('action',''), module='documents', doc_id=a.get('docId'),
                 user=a.get('user',''), notes=a.get('notes'),
                 detail=a.get('notes'), timestamp=ts))
             audit_count += 1
 
-    # customDocTypes as setting
-    if data.get('customDocTypes'):
-        if not GenericRecord.query.filter_by(module='setting_customDocTypes').first():
-            db.session.add(GenericRecord(module='setting_customDocTypes',
-                data=json.dumps(data['customDocTypes'])))
-
-    # RM Lots
-    if data.get('rm_lots'):
+    # RM lots — replaced only if the file holds them (a complete backup always
+    # does, even when empty).
+    rm_in = data.get('rm_lots')
+    rm_count = 0
+    if isinstance(rm_in, list) and (rm_in or full):
         RMLot.query.delete()
-        for l in data.get('rm_lots',[]):
-            lot = RMLot(
+        taken_lots = set()
+        for l in rm_in:
+            place(RMLot(
                 lot_number=l.get('lotNumber'), date=l.get('date',''),
                 grade=l.get('grade',''), supplier=l.get('supplier',''),
                 invoice=l.get('invoice',''), approved_by=l.get('approvedBy',''),
                 spectro=l.get('spectro',''), bundles=l.get('bundles',1),
                 weight_kg=_to_float(l.get('weightKg'))
-            )
-            db.session.add(lot)
+            ), l.get('id'), taken_lots)
+            rm_count += 1
+
+    # Rows with their original id go in first; then the id counters are moved
+    # past them, and only then do rows needing a new id (and settings) get one.
+    db.session.add_all(keep_ids)
+    db.session.flush()
+    _reset_id_sequences(Document, GenericRecord, RMLot)
+    db.session.add_all(renumber)
+
+    for key, value in settings_in.items():
+        # Older files only fill in settings that don't exist yet (unchanged behaviour)
+        if full or not GenericRecord.query.filter_by(module='setting_'+key).first():
+            db.session.add(GenericRecord(module='setting_'+key, data=json.dumps(value)))
+    for key, raw in kept_settings.items():
+        db.session.add(GenericRecord(module='setting_'+key, data=raw))
 
     db.session.commit()
-    return jsonify({'ok':True,'documents':doc_count,'records':module_count,'audit':audit_count})
+    result = {'ok': True, 'complete': full, 'documents': doc_count,
+              'records': module_count, 'rmLots': rm_count, 'audit': audit_count,
+              'renumbered': len(renumber)}
+    if data.get('backupErrors'):
+        result['backupErrors'] = len(data['backupErrors'])
+    return result
 
 
 # ══════════════════════════════════════════════════════
@@ -1088,6 +1165,8 @@ def list_generic(module):
 def save_generic(module):
     d = json_object_body()
     if d is None: return jsonify(BAD_BODY[0]), 400
+    err = busy_guard(module)
+    if err: return err
     # If record has an id, update instead of insert
     existing_id = d.get('id') or d.get('_rid')
     if existing_id:
@@ -1120,6 +1199,8 @@ def get_generic_one(module, rid):
 def update_generic_one(module, rid):
     d = json_object_body()
     if d is None: return jsonify(BAD_BODY[0]), 400
+    err = busy_guard(module)
+    if err: return err
     r = GenericRecord.query.get(rid)
     if r:
         # Record ids are shared across every module, so make sure this id
@@ -1142,6 +1223,8 @@ def update_generic_one(module, rid):
 
 @app.route('/api/<module>/<int:rid>', methods=['DELETE'])
 def delete_generic_one(module, rid):
+    err = busy_guard(module, rid, deleting=True)
+    if err: return err
     r = GenericRecord.query.get(rid)
     if r and r.module == module:
         if r.module == TASK_MODULE:
@@ -1150,6 +1233,506 @@ def delete_generic_one(module, rid):
         db.session.delete(r)
         db.session.commit()
     return jsonify({'ok': True})
+
+# ══════════════════════════════════════════════════════
+#  BUSY LINK — purchase and sales invoices imported from BUSY exports
+#  The browser reads the Excel/CSV file and groups its rows into invoices;
+#  everything that decides what gets saved happens here, in one transaction
+#  per import:
+#    • purchases → busyPurchases (one per supplier bill), suppliers that
+#      don't exist yet are created in purVendors as "Registered"
+#    • sales     → prodDispatch lines (part stock goes down)
+#  Each import is a busyBatches record listing exactly what it created, so
+#  it can be undone on its own. An invoice is identified by party + bill /
+#  voucher number + financial year; importing it again is refused, and a
+#  copy that differs from what was imported is reported, never overwritten.
+#  QC inspection of a purchase creates the supplier-rating entry
+#  (purVendorLots) and, for raw material lines, the RM lots.
+# ══════════════════════════════════════════════════════
+BUSY_KINDS = ('purchase', 'sale')
+BUSY_ITEM_MAP = 'busyItemMap'                     # setting: item key -> what the item is
+BUSY_MANAGED = ('busyPurchases', 'busyBatches')   # only written through /api/busy/*
+BUSY_PURCHASE_TYPES = ('rm', 'inspect', 'none')   # raw material / needs QC / no inspection
+BUSY_SALE_TYPES = ('part', 'skip')                # a part (dispatch) / not a part (freight etc.)
+BUSY_TIMINGS = ('OnTime', 'Within5', 'After5')
+_KG_PER_UNIT = {'KG': 1, 'KGS': 1, 'KILOGRAM': 1, 'KILOGRAMS': 1, 'MT': 1000, 'TON': 1000, 'TONS': 1000,
+                'TONNE': 1000, 'TONNES': 1000, 'QTL': 100, 'QUINTAL': 100, 'QUINTALS': 100}
+
+def _bnorm(v):
+    return re.sub(r'[^A-Z0-9]', '', str(v or '').upper())
+
+def _bparty_name_key(name):
+    n = str(name or '').upper().strip()
+    n = re.sub(r'^M\s*/\s*S\.?\s+|^MESSRS\.?\s+', '', n)
+    return _bnorm(n)
+
+def _bgstin(v):
+    g = _bnorm(v)
+    return g if len(g) == 15 else ''
+
+def _bparty_key(inv):
+    return _bgstin(inv.get('gstin')) or _bparty_name_key(inv.get('party'))
+
+def _bfy(date_str):
+    y, m = int(date_str[:4]), int(date_str[5:7])
+    return f'{y}-{y+1}' if m >= 4 else f'{y-1}-{y}'
+
+def _bitem_key(kind, item):
+    return ('P|' if kind == 'purchase' else 'S|') + _bnorm(item)
+
+def _bnum(v):
+    try:
+        f = float(v)
+        return f if math.isfinite(f) else None
+    except (TypeError, ValueError):
+        return None
+
+def _bclean_invoice(kind, inv):
+    """Validate one invoice sent by the browser. Returns (clean, error)."""
+    if not isinstance(inv, dict):
+        return None, 'not an invoice'
+    date = str(inv.get('date') or '')
+    try:
+        datetime.strptime(date, '%Y-%m-%d')
+    except ValueError:
+        return None, 'date missing or not understood'
+    party = str(inv.get('party') or '').strip()
+    vch, bill = str(inv.get('vchNo') or '').strip(), str(inv.get('billNo') or '').strip()
+    if not party:
+        return None, 'party (supplier / customer) name missing'
+    number = bill or vch if kind == 'purchase' else vch
+    if not number:
+        return None, 'bill / voucher number missing'
+    lines = []
+    for ln in inv.get('lines') or []:
+        if not isinstance(ln, dict):
+            continue
+        item = str(ln.get('item') or '').strip()
+        qty, amount, rate = _bnum(ln.get('qty')), _bnum(ln.get('amount')), _bnum(ln.get('rate'))
+        if not item:
+            continue
+        if qty is None or qty < 0:
+            return None, f'quantity for "{item}" missing or not a number'
+        lines.append({'item': item, 'qty': qty, 'unit': str(ln.get('unit') or '').strip(),
+                      'rate': rate, 'amount': amount})
+    if not lines:
+        return None, 'no item lines'
+    clean = {'date': date, 'party': party, 'gstin': _bgstin(inv.get('gstin')), 'vchNo': vch,
+             'billNo': bill, 'lines': lines}
+    clean['key'] = ('P|' + _bparty_key(clean) if kind == 'purchase' else 'S') + '|' + _bnorm(number) + '|' + _bfy(date)
+    sig = [clean['date'], _bparty_name_key(party), clean['gstin']] + sorted(
+        [_bnorm(l['item']), round(l['qty'], 3), round(l['amount'] or 0, 2)] for l in lines)
+    clean['hash'] = hashlib.sha1(json.dumps(sig).encode()).hexdigest()
+    return clean, None
+
+def _brows(module):
+    return [(r, safe_json_loads(r.data, {})) for r in GenericRecord.query.filter_by(module=module).all()]
+
+def _bvendor_approved(v):
+    return ((v.get('sample1') or {}).get('decision') == 'ACCEPT' and
+            (v.get('sample2') or {}).get('decision') == 'ACCEPT' and v.get('includeInApprovedList') == 'Y')
+
+class _BusyIndex:
+    """What already exists, loaded once per request."""
+    def __init__(self, kind):
+        self.kind = kind
+        self.vendors = _brows('purVendors')
+        self.by_gstin, self.by_name = {}, {}
+        for r, v in self.vendors:
+            g = _bgstin(v.get('gstNo'))
+            if g: self.by_gstin.setdefault(g, (r, v))
+            for n in (v.get('name'), v.get('busyName')):
+                k = _bparty_name_key(n)
+                if k: self.by_name.setdefault(k, (r, v))
+        if kind == 'purchase':
+            self.imported = {d.get('key'): d.get('hash') for _, d in _brows('busyPurchases')}
+            self.manual = {(d.get('vendorId'), _bnorm(d.get('refNo'))) for _, d in _brows('purVendorLots')
+                           if not d.get('busyPurchaseId') and d.get('refNo')}
+        else:
+            self.imported = {}
+            for _, d in _brows('prodDispatch'):
+                if d.get('busyKey'):
+                    self.imported.setdefault(d['busyKey'], d.get('busyHash'))
+            self.manual = {_bnorm(d.get('invoice')) for _, d in _brows('prodDispatch')
+                           if not d.get('busyKey') and d.get('invoice')}
+        self.parts = {r.id: d for r, d in _brows('prodParts')}
+        self.item_map = _bitem_map()
+
+    def vendor_for(self, inv):
+        g = inv.get('gstin')
+        hit = (g and self.by_gstin.get(g)) or self.by_name.get(_bparty_name_key(inv['party']))
+        return hit
+
+    def status(self, inv):
+        """new / imported / changed / manual (looks like an entry made by hand)."""
+        if inv['key'] in self.imported:
+            return 'imported' if self.imported[inv['key']] == inv['hash'] else 'changed'
+        if self.kind == 'purchase':
+            hit = self.vendor_for(inv)
+            if hit and (hit[0].id, _bnorm(inv['billNo'] or inv['vchNo'])) in self.manual:
+                return 'manual'
+        elif _bnorm(inv['vchNo']) in self.manual:
+            return 'manual'
+        return 'new'
+
+    def line_map(self, item):
+        m = self.item_map.get(_bitem_key(self.kind, item))
+        if not isinstance(m, dict):
+            return None
+        if self.kind == 'purchase':
+            if m.get('type') not in BUSY_PURCHASE_TYPES: return None
+            if m['type'] == 'rm' and not _master_grade(m.get('grade')): return None
+        else:
+            if m.get('type') not in BUSY_SALE_TYPES: return None
+            if m['type'] == 'part' and m.get('partId') not in self.parts: return None
+        return m
+
+def _bitem_map():
+    r = GenericRecord.query.filter_by(module='setting_' + BUSY_ITEM_MAP).first()
+    return safe_json_loads(r.data, {}) if r else {}
+
+def _bsave_item_map(updates, kind):
+    """Merge the item matches chosen in the preview into the saved map (validated)."""
+    if not isinstance(updates, dict) or not updates:
+        return None
+    parts = {r.id for r in GenericRecord.query.filter_by(module='prodParts').all()}
+    clean = {}
+    for k, m in updates.items():
+        if not isinstance(m, dict) or not isinstance(k, str):
+            return f'item match for "{k}" is not valid'
+        t = m.get('type')
+        if kind == 'purchase' and k.startswith('P|') and t in BUSY_PURCHASE_TYPES:
+            if t == 'rm':
+                g = _master_grade(m.get('grade'))
+                if not g: return f'grade for "{m.get("item") or k}" is not in the Grade Master'
+                clean[k] = {'type': 'rm', 'grade': g, 'item': m.get('item')}
+            else:
+                clean[k] = {'type': t, 'item': m.get('item')}
+        elif kind == 'sale' and k.startswith('S|') and t in BUSY_SALE_TYPES:
+            if t == 'part':
+                if m.get('partId') not in parts: return f'part for "{m.get("item") or k}" not found'
+                clean[k] = {'type': 'part', 'partId': m['partId'], 'item': m.get('item')}
+            else:
+                clean[k] = {'type': 'skip', 'item': m.get('item')}
+        else:
+            return f'item match for "{m.get("item") or k}" is not valid'
+    r = GenericRecord.query.filter_by(module='setting_' + BUSY_ITEM_MAP).first()
+    cur = safe_json_loads(r.data, {}) if r else {}
+    cur.update(clean)
+    if r:
+        r.data = json.dumps(cur); r.updated_at = datetime.utcnow()
+    else:
+        db.session.add(GenericRecord(module='setting_' + BUSY_ITEM_MAP, data=json.dumps(cur)))
+    db.session.flush()
+    return None
+
+def _bparse_request():
+    d = json_object_body()
+    if d is None:
+        return None, None, (jsonify(BAD_BODY[0]), 400)
+    kind = d.get('kind')
+    if kind not in BUSY_KINDS:
+        return None, None, (jsonify({'error': 'kind must be purchase or sale'}), 400)
+    if not isinstance(d.get('invoices'), list) or not d['invoices']:
+        return None, None, (jsonify({'error': 'No invoices found in the file'}), 400)
+    return d, kind, None
+
+def _bpreview(kind, invoices):
+    idx = _BusyIndex(kind)
+    out, unknown, seen = [], {}, set()
+    for i, raw in enumerate(invoices):
+        inv, err = _bclean_invoice(kind, raw)
+        row = {'index': i, 'ref': (raw or {}).get('ref') if isinstance(raw, dict) else None}
+        if err:
+            row.update(status='error', error=err); out.append(row); continue
+        row.update(key=inv['key'], date=inv['date'], party=inv['party'], number=inv['billNo'] or inv['vchNo'],
+                   lines=len(inv['lines']), qty=sum(l['qty'] for l in inv['lines']),
+                   amount=sum(l['amount'] or 0 for l in inv['lines']))
+        if inv['key'] in seen:
+            row.update(status='error', error='appears twice in this file'); out.append(row); continue
+        seen.add(inv['key'])
+        row['status'] = idx.status(inv)
+        if kind == 'purchase':
+            hit = idx.vendor_for(inv)
+            row['vendor'] = ({'id': hit[0].id, 'name': hit[1].get('name'), 'approved': _bvendor_approved(hit[1])}
+                             if hit else {'id': None, 'name': inv['party'], 'create': True})
+        for l in inv['lines']:
+            if not idx.line_map(l['item']):
+                k = _bitem_key(kind, l['item'])
+                u = unknown.setdefault(k, {'key': k, 'item': l['item'], 'unit': l['unit'], 'invoices': 0})
+                u['invoices'] += 1
+        out.append(row)
+    return out, list(unknown.values()), idx
+
+@app.route('/api/busy/preview', methods=['POST'])
+def busy_preview():
+    d, kind, err = _bparse_request()
+    if err: return err
+    rows, unknown, _ = _bpreview(kind, d['invoices'])
+    counts = {}
+    for r in rows: counts[r['status']] = counts.get(r['status'], 0) + 1
+    return jsonify({'invoices': rows, 'unknownItems': unknown, 'counts': counts})
+
+def _bnext_sup_number(vendors):
+    n = 0
+    for _, v in vendors:
+        m = re.search(r'(\d+)\s*$', str(v.get('supNumber') or ''))
+        if m: n = max(n, int(m.group(1)))
+    return f'VRA-SUP-{n+1:03d}'
+
+@app.route('/api/busy/import', methods=['POST'])
+def busy_import():
+    d, kind, err = _bparse_request()
+    if err: return err
+    force = set(k for k in (d.get('includeManual') or []) if isinstance(k, str))
+    user = _current_user_name() or ''
+    now = datetime.utcnow().isoformat()
+    try:
+        e = _bsave_item_map(d.get('itemMap'), kind)
+        if e:
+            db.session.rollback()
+            return jsonify({'error': e}), 400
+        rows, unknown, idx = _bpreview(kind, d['invoices'])
+        take = [r for r in rows if r['status'] == 'new' or (r['status'] == 'manual' and r['key'] in force)]
+        need = {u['item'] for u in unknown}
+        blocked = [r for r in take if any(not idx.line_map(l['item'])
+                   for l in _bclean_invoice(kind, d['invoices'][r['index']])[0]['lines'])]
+        if blocked:
+            db.session.rollback()
+            return jsonify({'error': 'Some items are not matched yet: ' + ', '.join(sorted(need)[:10]),
+                            'unknownItems': unknown}), 400
+        if not take:
+            db.session.rollback()
+            return jsonify({'error': 'Nothing new to import — every invoice in the file is already in, changed, or has an error.'}), 400
+
+        batch = GenericRecord(module='busyBatches', data='{}')
+        db.session.add(batch); db.session.flush()
+        created = {'busyPurchases': [], 'prodDispatch': [], 'purVendors': []}
+        new_vendors = {}
+        for r in take:
+            inv = _bclean_invoice(kind, d['invoices'][r['index']])[0]
+            if kind == 'purchase':
+                hit = idx.vendor_for(inv)
+                if hit:
+                    vid = hit[0].id
+                else:
+                    pk = _bparty_key(inv)
+                    if pk not in new_vendors:
+                        rec = {'supNumber': _bnext_sup_number(idx.vendors), 'date': inv['date'], 'name': inv['party'],
+                               'busyName': inv['party'], 'gstNo': inv['gstin'], 'source': 'BUSY',
+                               'createdAt': now, 'createdBy': user, 'busyBatchId': batch.id}
+                        vr = GenericRecord(module='purVendors', data=json.dumps(rec))
+                        db.session.add(vr); db.session.flush()
+                        idx.vendors.append((vr, rec))
+                        if rec['gstNo']: idx.by_gstin[rec['gstNo']] = (vr, rec)
+                        idx.by_name[_bparty_name_key(rec['name'])] = (vr, rec)
+                        new_vendors[pk] = vr.id
+                        created['purVendors'].append(vr.id)
+                    vid = new_vendors[pk]
+                lines = []
+                for l in inv['lines']:
+                    m = idx.line_map(l['item'])
+                    lines.append({**l, 'type': m['type'], **({'grade': _master_grade(m['grade'])} if m['type'] == 'rm' else {})})
+                needs = any(l['type'] in ('rm', 'inspect') for l in lines)
+                rec = {'key': inv['key'], 'hash': inv['hash'], 'batchId': batch.id, 'vendorId': vid,
+                       'party': inv['party'], 'gstin': inv['gstin'], 'billNo': inv['billNo'], 'vchNo': inv['vchNo'],
+                       'date': inv['date'], 'lines': lines, 'total': sum(l['amount'] or 0 for l in lines),
+                       'status': 'awaiting' if needs else 'not-required', 'importedAt': now, 'importedBy': user}
+                pr = GenericRecord(module='busyPurchases', data=json.dumps(rec))
+                db.session.add(pr); db.session.flush()
+                created['busyPurchases'].append(pr.id)
+            else:
+                for l in inv['lines']:
+                    m = idx.line_map(l['item'])
+                    if m['type'] != 'part' or l['qty'] <= 0:
+                        continue
+                    rec = {'date': inv['date'], 'partId': m['partId'], 'qty': l['qty'], 'customer': inv['party'],
+                           'invoice': inv['vchNo'], 'remark': 'From BUSY', 'source': 'BUSY', 'busyKey': inv['key'],
+                           'busyHash': inv['hash'], 'busyItem': l['item'], 'rate': l['rate'], 'amount': l['amount'],
+                           'batchId': batch.id, 'createdBy': user}
+                    dr = GenericRecord(module='prodDispatch', data=json.dumps(rec))
+                    db.session.add(dr); db.session.flush()
+                    created['prodDispatch'].append(dr.id)
+        counts = {}
+        for r in rows: counts[r['status']] = counts.get(r['status'], 0) + 1
+        info = {'kind': kind, 'fileName': str(d.get('fileName') or '')[:200], 'importedAt': now, 'importedBy': user,
+                'invoices': len(take), 'created': created, 'fileCounts': counts, 'status': 'active'}
+        batch.data = json.dumps(info)
+        db.session.commit()
+    except Exception as ex:
+        db.session.rollback()
+        return jsonify({'error': f'Import failed — nothing was saved. ({ex})'}), 500
+    return jsonify({'ok': True, 'batchId': batch.id, 'invoices': len(take), 'created': {k: len(v) for k, v in created.items()},
+                    'skipped': {k: v for k, v in counts.items() if k != 'new'}})
+
+@app.route('/api/busy/batches/<int:bid>/undo', methods=['POST'])
+def busy_undo(bid):
+    err = require_admin()
+    if err: return err
+    b = GenericRecord.query.get(bid)
+    info = safe_json_loads(b.data, {}) if b and b.module == 'busyBatches' else None
+    if not info:
+        return jsonify({'error': 'Import not found'}), 404
+    if info.get('status') != 'active':
+        return jsonify({'error': 'This import was already undone'}), 400
+    created = info.get('created') or {}
+    pids = set(created.get('busyPurchases') or [])
+    rows = {r.id: (r, safe_json_loads(r.data, {})) for r in GenericRecord.query.filter(GenericRecord.id.in_(pids)).all()} if pids else {}
+    inspected = [d.get('billNo') or d.get('vchNo') for r, d in rows.values() if d.get('status') == 'inspected']
+    if inspected:
+        return jsonify({'error': 'Undo the QC inspection of these bills first: ' + ', '.join(inspected[:15])}), 409
+    try:
+        removed = 0
+        for module in ('busyPurchases', 'prodDispatch'):
+            for rid in created.get(module) or []:
+                r = GenericRecord.query.get(rid)
+                if r and r.module == module and safe_json_loads(r.data, {}).get('batchId') == bid:
+                    db.session.delete(r); removed += 1
+        db.session.flush()
+        kept = []
+        for vid in created.get('purVendors') or []:
+            r = GenericRecord.query.get(vid)
+            if not r or r.module != 'purVendors':
+                continue
+            v = safe_json_loads(r.data, {})
+            used = any(dd.get('vendorId') == vid for m in ('busyPurchases', 'purVendorLots') for _, dd in _brows(m))
+            touched = (v.get('sample1') or v.get('sample2') or v.get('includeInApprovedList') or v.get('updatedAt'))
+            if used or touched:
+                kept.append(v.get('name'))
+            else:
+                db.session.delete(r); removed += 1
+        info.update(status='undone', undoneAt=datetime.utcnow().isoformat(), undoneBy=_current_user_name() or '',
+                    keptSuppliers=kept)
+        b.data = json.dumps(info)
+        db.session.commit()
+    except Exception as ex:
+        db.session.rollback()
+        return jsonify({'error': f'Undo failed — nothing was changed. ({ex})'}), 500
+    return jsonify({'ok': True, 'removed': removed, 'keptSuppliers': kept})
+
+def _bnext_lot_number(date_str, taken):
+    ds = date_str[8:10] + date_str[5:7] + date_str[2:4]
+    prefix = f'VRA-RM-{ds}-'
+    used = {l.lot_number for l in RMLot.query.filter(RMLot.lot_number.like(prefix + '%')).all()} | taken
+    n = 1
+    while f'{prefix}{n:02d}' in used: n += 1
+    num = f'{prefix}{n:02d}'
+    taken.add(num)
+    return num
+
+@app.route('/api/busy/purchases/<int:pid>/inspect', methods=['POST'])
+def busy_inspect(pid):
+    d = json_object_body()
+    if d is None: return jsonify(BAD_BODY[0]), 400
+    r = GenericRecord.query.get(pid)
+    p = safe_json_loads(r.data, {}) if r and r.module == 'busyPurchases' else None
+    if not p:
+        return jsonify({'error': 'Purchase not found'}), 404
+    if p.get('status') != 'awaiting':
+        return jsonify({'error': 'This purchase is not awaiting inspection'}), 409
+    recv = str(d.get('receivedDate') or p['date'])
+    try: datetime.strptime(recv, '%Y-%m-%d')
+    except ValueError: return jsonify({'error': 'Received date is not valid'}), 400
+    timing = d.get('timing')
+    if timing not in BUSY_TIMINGS:
+        return jsonify({'error': 'Choose the delivery timing'}), 400
+    given = {x.get('idx'): x for x in d.get('lines') or [] if isinstance(x, dict)}
+    vendor = GenericRecord.query.get(p['vendorId'])
+    vname = safe_json_loads(vendor.data, {}).get('name') if vendor else p.get('party')
+    user = _current_user_name() or ''
+    try:
+        lots, taken, tot_q, tot_rej, units, insp_lines = [], set(), 0.0, 0.0, set(), []
+        for i, l in enumerate(p['lines']):
+            if l.get('type') not in ('rm', 'inspect'):
+                continue
+            x = given.get(i) or {}
+            rej = _bnum(x.get('rejected')) or 0
+            if rej < 0 or rej > l['qty']:
+                return jsonify({'error': f'Rejected qty for "{l["item"]}" must be between 0 and {l["qty"]}'}), 400
+            acc = l['qty'] - rej
+            tot_q += l['qty']; tot_rej += rej; units.add(l.get('unit') or '')
+            entry = {'idx': i, 'item': l['item'], 'qty': l['qty'], 'rejected': rej, 'accepted': acc}
+            if l['type'] == 'rm':
+                grade = _master_grade(l.get('grade'))
+                if not grade:
+                    return jsonify({'error': f'Grade "{l.get("grade")}" for "{l["item"]}" is no longer in the Grade Master'}), 400
+                factor = _KG_PER_UNIT.get(_bnorm(l.get('unit')))
+                if factor is None:
+                    return jsonify({'error': f'"{l["item"]}" is in "{l.get("unit") or "no unit"}" — raw material must be in kg, MT or quintal to become a lot'}), 400
+                spectro = x.get('spectro') if x.get('spectro') in ('Done', 'Pending', 'Not Required') else 'Pending'
+                approver = str(x.get('approvedBy') or '').strip()
+                if not approver:
+                    return jsonify({'error': f'"Approved by" is required for raw material "{l["item"]}"'}), 400
+                try: bundles = max(1, int(x.get('bundles') or 1))
+                except (TypeError, ValueError): bundles = 1
+                lot = RMLot(lot_number=_bnext_lot_number(recv, taken), date=recv, grade=grade, supplier=vname,
+                            invoice=p.get('billNo') or p.get('vchNo'), approved_by=approver, spectro=spectro,
+                            bundles=bundles, weight_kg=round(acc * factor, 3))
+                db.session.add(lot); db.session.flush()
+                lots.append(lot.id)
+                entry.update(lotId=lot.id, lotNumber=lot.lot_number, spectro=spectro, approvedBy=approver, bundles=bundles)
+            insp_lines.append(entry)
+        lot_rec = {'vendorId': p['vendorId'], 'refNo': p.get('billNo') or p.get('vchNo'), 'date': recv,
+                   'qtyReceived': tot_q, 'qtyRejected': tot_rej, 'qtyAccepted': tot_q - tot_rej, 'timing': timing,
+                   'remarks': str(d.get('remarks') or '').strip(), 'source': 'BUSY', 'busyPurchaseId': pid,
+                   'unit': units.pop() if len(units) == 1 else 'mixed', 'createdAt': datetime.utcnow().isoformat()}
+        vl = GenericRecord(module='purVendorLots', data=json.dumps(lot_rec))
+        db.session.add(vl); db.session.flush()
+        p.update(status='inspected', inspection={'receivedDate': recv, 'timing': timing, 'remarks': lot_rec['remarks'],
+                 'lines': insp_lines, 'vendorLotId': vl.id, 'rmLotIds': lots, 'by': user, 'at': datetime.utcnow().isoformat()})
+        r.data = json.dumps(p); r.updated_at = datetime.utcnow()
+        db.session.commit()
+    except Exception as ex:
+        db.session.rollback()
+        return jsonify({'error': f'Save failed — nothing was changed. ({ex})'}), 500
+    return jsonify({'ok': True, 'vendorLotId': vl.id, 'rmLots': [RMLot.query.get(i).to_dict() for i in lots]})
+
+@app.route('/api/busy/purchases/<int:pid>/inspect', methods=['DELETE'])
+def busy_undo_inspect(pid):
+    r = GenericRecord.query.get(pid)
+    p = safe_json_loads(r.data, {}) if r and r.module == 'busyPurchases' else None
+    if not p:
+        return jsonify({'error': 'Purchase not found'}), 404
+    if p.get('status') != 'inspected':
+        return jsonify({'error': 'This purchase has not been inspected'}), 409
+    insp = p.get('inspection') or {}
+    try:
+        vl = GenericRecord.query.get(insp.get('vendorLotId'))
+        if vl and vl.module == 'purVendorLots':
+            db.session.delete(vl)
+        for lid in insp.get('rmLotIds') or []:
+            lot = RMLot.query.get(lid)
+            if lot: db.session.delete(lot)
+        p['status'] = 'awaiting'
+        p.setdefault('history', []).append({'undoneInspection': insp, 'by': _current_user_name() or '',
+                                            'at': datetime.utcnow().isoformat()})
+        p.pop('inspection', None)
+        r.data = json.dumps(p); r.updated_at = datetime.utcnow()
+        db.session.commit()
+    except Exception as ex:
+        db.session.rollback()
+        return jsonify({'error': f'Undo failed — nothing was changed. ({ex})'}), 500
+    return jsonify({'ok': True})
+
+def busy_guard(module, rid=None, deleting=False):
+    """Records the BUSY link depends on can't be changed around it."""
+    if module in BUSY_MANAGED:
+        return jsonify({'error': 'Change BUSY imports from the BUSY pages (undo the import or inspection).'}), 409
+    if rid is None or not deleting:
+        return None
+    r = GenericRecord.query.get(rid)
+    d = safe_json_loads(r.data, {}) if r and r.module == module else {}
+    if module == 'purVendorLots' and d.get('busyPurchaseId'):
+        return jsonify({'error': 'This entry comes from a BUSY purchase inspection — undo the inspection on the BUSY Purchases page instead.'}), 409
+    if module == 'purVendors' and any(x.get('vendorId') == rid for _, x in _brows('busyPurchases')):
+        return jsonify({'error': 'This supplier has purchases imported from BUSY, so it cannot be deleted.'}), 409
+    return None
+
+def busy_lot_guard(lid):
+    for _, p in _brows('busyPurchases'):
+        if lid in ((p.get('inspection') or {}).get('rmLotIds') or []):
+            return jsonify({'error': f'This lot was created by the QC inspection of BUSY bill {p.get("billNo") or p.get("vchNo")} — undo that inspection on the BUSY Purchases page instead.'}), 409
+    return None
 
 # ══════════════════════════════════════════════════════
 #  BACKUP & RESTORE
