@@ -334,7 +334,12 @@ async function rmSaveMerge(){
   }catch(e){toast('Merge failed','d');}
 }
 
-async function rmDelLot(id){if(!confirm('Delete this lot?'))return;await fetch(window.location.origin+'/api/rm/lots/'+id,{method:'DELETE'});toast('Lot deleted','s');rmRenderRegister();}
+async function rmDelLot(id){
+  if(!confirm('Delete this lot?'))return;
+  const r=await fetch(window.location.origin+'/api/rm/lots/'+id,{method:'DELETE'}).catch(()=>null);
+  if(!r||!r.ok){const e=r?await r.json().catch(()=>({})):{};alert('❌ '+(e.error||'Delete failed'));return;}
+  toast('Lot deleted','s');rmRenderRegister();
+}
 
 function rmPrintReg(id){rmGetLots().then(lots=>{
   const l=lots.find(x=>x.id===id);if(!l)return;
