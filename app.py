@@ -2258,6 +2258,24 @@ def busy_matching_save():
         return jsonify({'error': f'Save failed — nothing was changed. ({ex})'}), 500
     return jsonify({'ok': True, 'sameSuppliers': n_same, 'newSuppliers': n_new, 'customers': n_cust, 'items': len(im)})
 
+@app.route('/api/purchasing/suppliers/approval-needed', methods=['POST'])
+def set_suppliers_approval_needed():
+    """Mark several suppliers at once as needing approval ('Y') or not ('N')."""
+    d = json_object_body()
+    if d is None: return jsonify(BAD_BODY[0]), 400
+    ids = [i for i in d.get('ids') or [] if isinstance(i, int) and not isinstance(i, bool)]
+    val = d.get('value')
+    if val not in ('Y', 'N') or not ids:
+        return jsonify({'error': 'Tick suppliers and choose needs approval or not'}), 400
+    n = 0
+    for r in GenericRecord.query.filter(GenericRecord.id.in_(ids)).all():
+        if r.module != 'purVendors': continue
+        v = safe_json_loads(r.data, {})
+        v['approvalNeeded'] = val; v['updatedAt'] = datetime.utcnow().isoformat()
+        r.data = json.dumps(v); r.updated_at = datetime.utcnow(); n += 1
+    db.session.commit()
+    return jsonify({'ok': True, 'changed': n})
+
 # ── Invoice / Delivery Register: one bill entered as several rows ──
 _TIMING_RANK = {'OnTime': 0, 'Within5': 1, 'After5': 2}
 

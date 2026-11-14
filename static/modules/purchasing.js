@@ -203,14 +203,21 @@ async function purRenderSuppliers(f){
     <div class="ch"><h5>${_purShowServices?'All Suppliers':'Suppliers needing approval'} — ${vendors.length} records</h5>
       <span class="muted" style="font-size:11px">${services.length?`<a href="#" onclick="event.preventDefault();purRenderSuppliers({services:${!_purShowServices}})">${_purShowServices?'Hide':'Show'} ${services.length} supplier(s) that need no approval (rent, electricity…)</a> · `:''}VRA-PUR-F-01 · Supplier Approval Form</span>
     </div>
+    ${vendors.length?`<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 14px;border-bottom:1px solid var(--border)">
+      <button class="btn btn-o btn-xs" onclick="purTickServices()" title="Ticks suppliers whose name or scope looks like rent, electricity, transport, services…">☑️ Tick likely services</button>
+      <span class="muted" style="font-size:12px" id="pur-sel-n">0 ticked</span>
+      <button class="btn btn-o btn-xs" onclick="purSetApprovalNeeded('N')">🚫 Mark ticked: no approval needed</button>
+      <button class="btn btn-o btn-xs" onclick="purSetApprovalNeeded('Y')">↩ Mark ticked: needs approval</button></div>`:''}
     <div class="tw"><table>
       <thead><tr>
+        <th><input type="checkbox" title="Tick all" onchange="document.querySelectorAll('.pur-sel').forEach(c=>c.checked=this.checked);purSelCount()"></th>
         <th>Sup No.</th><th>Supplier Name</th><th>Scope of Supply</th>
         <th>Contact Person</th><th>Stage</th><th></th>
       </tr></thead>
       <tbody>${vendors.length===0
-        ?`<tr><td colspan="6" style="text-align:center;padding:30px;color:#9ca3af">No suppliers yet. Click + Add Supplier to register one.</td></tr>`
+        ?`<tr><td colspan="7" style="text-align:center;padding:30px;color:#9ca3af">No suppliers yet. Click + Add Supplier to register one.</td></tr>`
         :vendors.map(v=>`<tr>
+          <td><input type="checkbox" class="pur-sel" value="${v.id}" data-text="${esc(((v.name||'')+' '+(v.scopeOfSupply||'')).toUpperCase())}" onchange="purSelCount()"></td>
           <td class="mono" style="color:var(--navy);font-weight:700">${esc(v.supNumber)}</td>
           <td><strong>${esc(v.name)}</strong>${v.source==='BUSY'?' <span class="badge bd" title="Added automatically by a BUSY import">BUSY</span>':''}</td>
           <td>${esc(v.scopeOfSupply||'—')}</td>
@@ -228,6 +235,25 @@ async function purRenderSuppliers(f){
   </div>`);
 }
 
+// Bulk: mark many existing suppliers at once
+const PUR_SERVICE_WORDS=/\b(RENT|RENTAL|LEASE|ELECTRIC|ELECTRICITY|MSEDCL|MSEB|POWER|WATER|TELEPHONE|PHONE|MOBILE|INTERNET|BROADBAND|AIRTEL|JIO|BSNL|VODAFONE|TRANSPORT|TRANSPORTS|LOGISTICS|COURIER|CARGO|ROADLINES|TRAVELS|CANTEEN|CATERER|CATERERS|HOTEL|STATIONERY|STATIONERS|PRINTERS|PRINTING|BANK|INSURANCE|AUDIT|AUDITOR|CHARTERED|ACCOUNTANT|CONSULTANT|CONSULTANCY|ADVOCATE|LEGAL|SECURITY|HOUSEKEEPING|CLEANING|SOFTWARE|BUSY|PETROL|DIESEL|FUEL|MEDICAL|HOSPITAL|GOVERNMENT|MUNICIPAL|CORPORATION|GRAMPANCHAYAT|TAX)\b/;
+function purSelCount(){const n=document.querySelectorAll('.pur-sel:checked').length;const e=document.getElementById('pur-sel-n');if(e)e.textContent=n+' ticked';}
+function purTickServices(){
+  let n=0;document.querySelectorAll('.pur-sel').forEach(c=>{const hit=PUR_SERVICE_WORDS.test(c.dataset.text||'');c.checked=hit;if(hit)n++;});
+  purSelCount();toast(n?`${n} likely service supplier(s) ticked — check the ticks, then mark them`:'No likely service suppliers found by name — tick them by hand',n?'s':'d');
+}
+async function purSetApprovalNeeded(val){
+  const ids=[...document.querySelectorAll('.pur-sel:checked')].map(c=>+c.value);
+  if(!ids.length){toast('Tick the suppliers first','d');return;}
+  if(!confirm(val==='N'?`Mark ${ids.length} supplier(s) as "no approval needed"?\n\nThey will be hidden from the Supplier Register, the Approved list and the scorecard; their BUSY purchases are still imported.`
+    :`Put ${ids.length} supplier(s) back on the approval list and scorecard?`)) return;
+  const r=await fetch(window.location.origin+'/api/purchasing/suppliers/approval-needed',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids,value:val})}).catch(()=>null);
+  const j=r?await r.json().catch(()=>({})):{};
+  if(!r||!r.ok){alert('❌ '+(j.error||'Save failed'));return;}
+  toast(`✅ ${j.changed} supplier(s) updated`);
+  await new Promise(res=>setTimeout(res,5100));          // let the shared supplier cache expire before redrawing
+  purRenderSuppliers();
+}
 async function purToggleApprovalNeeded(id){
   const v=await db.purVendors.get(id);if(!v) return;
   const to=purNeedsApproval(v)?'N':'Y';
