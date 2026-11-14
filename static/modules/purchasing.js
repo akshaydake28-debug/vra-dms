@@ -544,6 +544,7 @@ async function purRenderInvoices(){
   <div class="ph">
     <h2>🧾 Invoice / Delivery Register</h2>
     <div style="display:flex;gap:8px">
+      <button class="btn btn-o" onclick="nav('pur-duplicates')">🔍 Find duplicates</button>
       <button class="btn btn-p" onclick="purOpenLotForm(null,null,'register')">+ Add Invoice</button>
     </div>
   </div>
@@ -665,8 +666,14 @@ async function purSaveLot(editId,returnTo){
     remarks:document.getElementById('lot-remarks').value.trim(),
     updatedAt:new Date().toISOString()
   };
-  if(editId) await db.purVendorLots.update(editId,rec);
-  else { rec.createdAt=new Date().toISOString(); await db.purVendorLots.add(rec); }
+  if(!editId&&rec.refNo){
+    const norm=x=>String(x||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+    const all=await fetch(window.location.origin+'/api/purVendorLots').then(r=>r.ok?r.json():[]).catch(()=>[]);
+    const same=all.filter(l=>l.data?.vendorId===vendorId&&norm(l.data.refNo)===norm(rec.refNo));
+    if(same.length&&!confirm(`Invoice ${rec.refNo} already has ${same.length} entr${same.length===1?'y':'ies'} for this supplier (${same.map(l=>`${l.data.date}: ${l.data.qtyReceived}`).join(', ')}).\n\nOne invoice should be ONE delivery entry — edit the existing one to change the quantity.\n\nAdd another entry anyway?`)) return;
+  }
+  const ok=editId? await db.purVendorLots.update(editId,rec) : await db.purVendorLots.add({...rec,createdAt:new Date().toISOString()});
+  if(!ok){ toast('Save failed','d'); return; }
   document.getElementById('pur-lot-ov').remove();
   toast('✅ Entry saved');
   if(returnTo==='register') purRenderInvoices();
@@ -675,7 +682,8 @@ async function purSaveLot(editId,returnTo){
 async function purDeleteLot(id,returnTo){
   if(!confirm('Delete this delivery/invoice entry? This will affect the scorecard.')) return;
   const l=await db.purVendorLots.get(id);
-  await db.purVendorLots.delete(id);
+  const r=await fetch(window.location.origin+'/api/purVendorLots/'+id,{method:'DELETE'}).catch(()=>null);
+  if(!r||!r.ok){ const e=r?await r.json().catch(()=>({})):{}; alert('❌ '+(e.error||'Delete failed')); return; }
   toast('Deleted','d');
   if(returnTo==='register') purRenderInvoices();
   else purViewVendor(l?.vendorId);
@@ -897,4 +905,70 @@ async function purPrintVendorScorecard(id){
   <div style="margin-top:6px;font-size:7.5pt;color:#555">VRA-PUR-F-04 · V R Alucast</div>
   <script>window.onload=()=>window.print()<\/script></body></html>`);
   w.document.close();
+}
+
+// ══════════════════════════════════════════════════════
+//  INVOICE / DELIVERY REGISTER — find duplicates
+//  One supplier invoice should be ONE delivery entry. Shows every invoice
+//  with more than one row and lets you combine or delete them.
+// ══════════════════════════════════════════════════════
+let _purDup=null;
+async function purRenderLotDuplicates(){
+  const api=p=>fetch(window.location.origin+p).then(r=>r.ok?r.json():[]).catch(()=>[]);
+  const [lots,vend]=await Promise.all([api('/api/purVendorLots'),api('/api/purVendors')]);
+  const vById=Object.fromEntries(vend.map(v=>[v.id,{...v.data,id:v.id}]));
+  const norm=x=>String(x||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  const loose=n=>norm(String(n||'').toUpperCase().replace(/&/g,' ').replace(/\b(M\s*\/\s*S|MESSRS|THE|PVT|PRIVATE|LTD|LIMITED|LLP|CO|COMPANY|AND)\b\.?/g,' '));
+  const byKey={};
+  for(const l of lots){const d=l.data||{};if(!norm(d.refNo)) continue;
+    const k=loose(vById[d.vendorId]?.name||d.vendorId)+'|'+norm(d.refNo);(byKey[k]=byKey[k]||[]).push({...d,id:l.id});}
+  const groups=Object.values(byKey).filter(g=>g.length>1).map(g=>g.sort((a,b)=>String(a.date).localeCompare(String(b.date))||a.id-b.id))
+    .sort((a,b)=>String(b[0].date).localeCompare(String(a[0].date)));
+  _purDup=groups;
+  const sig=x=>[x.date,+x.qtyReceived||0,+x.qtyRejected||0,x.timing].join('|');
+  const total=groups.reduce((s,g)=>s+g.length-1,0);
+  setC(`
+  <div class="ph"><h2>🔍 Duplicate Invoice / Delivery Entries</h2><button class="btn btn-o" onclick="nav('pur-invoices')">← Invoice / Delivery Register</button></div>
+  <div style="font-size:12px;color:#374151;margin-bottom:10px;line-height:1.6">One supplier invoice = <b>one</b> delivery entry. Extra rows count as extra lots and spoil the delivery rating.
+    <br>• <b>Rows of one bill</b> (different items or part deliveries) → <b>Combine</b>: quantities are added, the earliest date and the latest timing are kept.
+    <br>• <b>Exact copies</b> (same date, qty and timing) → <b>Delete</b> the extra ones.
+    <br>• <b>From BUSY + entered at the gate</b> → fix on BUSY Check ("Entered twice").</div>
+  ${groups.length?`<div class="alert al-w" style="margin-bottom:12px">${groups.length} invoice(s) have more than one entry — ${total} extra row(s).</div>`:'<div class="alert al-s">✅ No invoice has more than one entry.</div>'}
+  ${groups.map((g,gi)=>{
+    const sups=[...new Set(g.map(x=>x.vendorId))],busy=g.some(x=>x.busyPurchaseId);
+    const dupSig={};g.forEach(x=>{dupSig[sig(x)]=(dupSig[sig(x)]||0)+1;});
+    const note=sups.length>1?`<span class="badge br">under ${sups.length} supplier records</span> <a href="#" onclick="event.preventDefault();nav('busy-merge')">merge the suppliers first</a>`
+      :busy?`<span class="badge br">entered at the gate and from BUSY</span> <a href="#" onclick="event.preventDefault();nav('busy-check')">fix on BUSY Check</a>`:'';
+    return `<div class="card" style="margin-bottom:10px"><div class="ch"><h5>${esc(vById[g[0].vendorId]?.name||'Unknown supplier')} — invoice <span class="mono">${esc(g[0].refNo)}</span> — ${g.length} rows</h5><div>${note}</div></div>
+    <div class="tw"><table><thead><tr><th></th><th>Date</th><th style="text-align:right">Received</th><th style="text-align:right">Rejected</th><th>Timing</th><th>Source</th><th>Remarks</th></tr></thead><tbody>
+    ${g.map(x=>`<tr><td>${x.busyPurchaseId?'':`<input type="checkbox" class="pd-${gi}" value="${x.id}" checked>`}</td><td class="mono">${esc(x.date||'')}</td>
+      <td class="mono" style="text-align:right">${esc(x.qtyReceived??'')}</td><td class="mono" style="text-align:right">${esc(x.qtyRejected??'')}</td>
+      <td>${esc((typeof PUR_TIMING_LABELS!=='undefined'&&PUR_TIMING_LABELS[x.timing])||x.timing||'')}</td>
+      <td>${x.busyPurchaseId?'<span class="badge bd">From BUSY</span>':'Entered by hand'}${dupSig[sig(x)]>1?' <span class="badge bp">exact copy</span>':''}</td>
+      <td style="font-size:12px">${esc(x.remarks||'')}</td></tr>`).join('')}</tbody></table></div>
+    ${sups.length>1||busy?'':`<div style="display:flex;gap:8px;padding:8px 14px">
+      <button class="btn btn-p btn-xs" onclick="purDupCombine(${gi})">Combine ticked into one delivery</button>
+      <button class="btn btn-r btn-xs" onclick="purDupDelete(${gi})">Delete ticked</button></div>`}</div>`;}).join('')}`);
+}
+function purDupTicked(gi){return [...document.querySelectorAll('.pd-'+gi+':checked')].map(x=>+x.value);}
+async function purDupCombine(gi){
+  const ids=purDupTicked(gi),g=_purDup[gi];
+  if(ids.length<2){toast('Tick at least two rows','d');return;}
+  const rows=g.filter(x=>ids.includes(x.id)),sum=k=>rows.reduce((s,x)=>s+(+x[k]||0),0);
+  if(!confirm(`Combine ${ids.length} rows of invoice ${g[0].refNo} into one delivery?\n\nReceived ${sum('qtyReceived')}, rejected ${sum('qtyRejected')}, date ${rows[0].date}.`)) return;
+  const r=await fetch(window.location.origin+'/api/purchasing/lots/combine',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids,keepId:rows[0].id})}).catch(()=>null);
+  const j=r?await r.json().catch(()=>({})):{};
+  if(!r||!r.ok){alert('❌ '+(j.error||'Combine failed'));return;}
+  toast('✅ Combined');purRenderLotDuplicates();
+}
+async function purDupDelete(gi){
+  const ids=purDupTicked(gi),g=_purDup[gi];
+  if(!ids.length){toast('Tick the rows to delete','d');return;}
+  if(ids.length===g.length&&!confirm('All rows of this invoice are ticked — the invoice will have no entry left. Continue?')) return;
+  if(!confirm(`Delete ${ids.length} row(s) of invoice ${g[0].refNo}?`)) return;
+  const errs=[];
+  for(const id of ids){const r=await fetch(window.location.origin+'/api/purVendorLots/'+id,{method:'DELETE'}).catch(()=>null);
+    if(!r||!r.ok){const e=r?await r.json().catch(()=>({})):{};errs.push(e.error||'failed');}}
+  errs.length?alert('❌ Some rows were not deleted: '+[...new Set(errs)].join('; ')):toast('Deleted','d');
+  purRenderLotDuplicates();
 }
