@@ -268,7 +268,27 @@ function busySuggest(kind,item){
   const g=_busy.grades.filter(g=>n.includes(busyNorm(g))).sort((a,b)=>busyNorm(b).length-busyNorm(a).length)[0];
   return g?{type:'rm',grade:g,item}:{item};
 }
-function busyChoiceComplete(c){return c&&(c.type==='rm'?!!c.grade:c.type==='part'?!!c.partId:!!c.type);}
+function busyChoiceComplete(c){return c&&(c.type==='rm'?!!c.grade:c.type==='part'?!!c.partId:c.type==='newpart'?!!String(c.partNumber||'').trim():!!c.type);}
+// A part BUSY sells that isn't in the Part Master: guess its number from the item name (e.g. "HOUSING VRA-1234 A" → "VRA-1234")
+function busyGuessPartNo(item){
+  const t=(String(item||'').toUpperCase().match(/[A-Z0-9][A-Z0-9\-\/.]*\d[A-Z0-9\-\/.]*/g)||[])
+    .filter(x=>/[A-Z]/.test(x)||x.replace(/\D/g,'').length>=3);          // a code, not a size like "2.5"
+  return (t.sort((a,b)=>b.length-a.length)[0]||String(item||'')).trim();
+}
+function busyNewPartChoice(where,key){
+  const list=where==='imp'?_busy.preview.unknownItems:_bm.saleItems,invs=where==='imp'?_busy.invoices:_bm.files.sale.flat();
+  const item=(list.find(x=>x.key===key)||{}).item||'';
+  return {type:'newpart',partNumber:busyGuessPartNo(item),partName:item,customer:busyCustomerOf(invs,item)};
+}
+function busyCustomerOf(invoices,item){const n=busyNorm(item);const i=(invoices||[]).find(v=>v.lines.some(l=>busyNorm(l.item)===n));return i?i.party:'';}
+// the "new part" fields under a sales item's part choice; onSet(key, choice) stores it
+function busyNewPartHtml(key,c,setter){
+  if(c.type!=='newpart') return '';
+  return `<div style="display:grid;grid-template-columns:1fr 1.4fr;gap:6px;margin-top:6px">
+    <input class="fc" placeholder="Part number *" value="${esc(c.partNumber||'')}" onchange="${setter}('${key}',{...(${setter==='busySetChoice'?'_busy.choices':'_bm.items'}['${key}']||{}),partNumber:this.value})">
+    <input class="fc" placeholder="Part name" value="${esc(c.partName||'')}" onchange="${setter}('${key}',{...(${setter==='busySetChoice'?'_busy.choices':'_bm.items'}['${key}']||{}),partName:this.value})"></div>
+    <div class="muted" style="font-size:11px">Added to the Part Master on save — fill in weight, cavities and cycle time there later.</div>`;
+}
 
 const BUSY_STATUS={new:['New — will be imported','ba'],imported:['Already imported','bd'],changed:['Changed in BUSY since import — not imported','br'],
   manual:['Possible duplicate of an entry made by hand','bp'],error:['Problem in the file','br']};
@@ -292,9 +312,10 @@ function busyRenderPreview(){
   const fmt=n=>Number(n||0).toLocaleString('en-IN',{maximumFractionDigits:2});
   const itemCtl=u=>{
     const c=_busy.choices[u.key]||{};
-    if(kind==='sale') return `<select class="fc" onchange="busySetChoice('${u.key}',this.value?(this.value==='skip'?{type:'skip'}:{type:'part',partId:+this.value}):{})">
+    if(kind==='sale') return `<select class="fc" onchange="busySetChoice('${u.key}',this.value?(this.value==='skip'?{type:'skip'}:this.value==='new'?busyNewPartChoice('imp','${u.key}'):{type:'part',partId:+this.value}):{})">
       <option value="">— choose the part —</option>${_busy.parts.map(p=>`<option value="${p.id}" ${c.partId===p.id?'selected':''}>${esc(p.partNumber)} — ${esc(p.partName||'')}</option>`).join('')}
-      <option value="skip" ${c.type==='skip'?'selected':''}>Not a part (freight, packing, tooling…) — skip</option></select>`;
+      <option value="new" ${c.type==='newpart'?'selected':''}>➕ New part — add to Part Master</option>
+      <option value="skip" ${c.type==='skip'?'selected':''}>Not a part (freight, packing, tooling…) — skip</option></select>${busyNewPartHtml(u.key,c,'busySetChoice')}`;
     return `<div style="display:flex;gap:6px"><select class="fc" onchange="busySetChoice('${u.key}',this.value?{type:this.value,grade:(_busy.choices['${u.key}']||{}).grade}:{})">
       <option value="">— what is this? —</option>
       <option value="rm" ${c.type==='rm'?'selected':''}>Raw material (alloy ingot) — becomes an RM lot</option>
@@ -811,9 +832,10 @@ function busyMatchRender(){
       <option value="keep" ${cur===x.name?'selected':''}>Different — use the BUSY name "${esc(x.name)}"</option>
       <optgroup label="Same as another customer">${_bm.dmsCustomers.filter(n=>!sg.includes(n)).map((n,k)=>`<option value="o${k}" ${cur===n?'selected':''}>${esc(n)}</option>`).join('')}</optgroup></select>`;};
   const itemSel=(x,kind)=>{const c=_bm.items[x.key]||{};
-    if(kind==='sale') return `<select class="fc" onchange="busyMatchItem('${x.key}',this.value?(this.value==='skip'?{type:'skip'}:{type:'part',partId:+this.value}):{})">
+    if(kind==='sale') return `<select class="fc" onchange="busyMatchItem('${x.key}',this.value?(this.value==='skip'?{type:'skip'}:this.value==='new'?busyNewPartChoice('bm','${x.key}'):{type:'part',partId:+this.value}):{})">
       <option value="">— which part? —</option>${_bm.parts.map(p=>`<option value="${p.id}" ${c.partId===p.id?'selected':''}>${esc(p.partNumber)} — ${esc(p.partName||'')}</option>`).join('')}
-      <option value="skip" ${c.type==='skip'?'selected':''}>Not a part (freight, packing, tooling…)</option></select>`;
+      <option value="new" ${c.type==='newpart'?'selected':''}>➕ New part — add to Part Master</option>
+      <option value="skip" ${c.type==='skip'?'selected':''}>Not a part (freight, packing, tooling…)</option></select>${busyNewPartHtml(x.key,c,'busyMatchItem')}`;
     return `<div style="display:flex;gap:6px"><select class="fc" onchange="busyMatchItem('${x.key}',this.value?{type:this.value,grade:(_bm.items['${x.key}']||{}).grade}:{})">
       <option value="">— what is it? —</option><option value="rm" ${c.type==='rm'?'selected':''}>Raw material (alloy)</option>
       <option value="inspect" ${c.type==='inspect'?'selected':''}>Needs QC inspection</option><option value="none" ${c.type==='none'?'selected':''}>No inspection</option></select>
