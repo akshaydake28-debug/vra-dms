@@ -1544,6 +1544,23 @@ def _bsave_item_map(updates, kind):
                 clean[k] = {'type': 'rm', 'grade': g, 'item': m.get('item')}
             else:
                 clean[k] = {'type': t, 'item': m.get('item')}
+        elif kind == 'sale' and k.startswith('S|') and t == 'newpart':
+            # a part BUSY sells that the Part Master doesn't have yet: add it (or reuse one with the same number)
+            pn = str(m.get('partNumber') or '').strip()
+            if not pn: return f'part number for "{m.get("item") or k}" is missing'
+            same = [r for r in GenericRecord.query.filter_by(module='prodParts').all()
+                    if _bnorm(safe_json_loads(r.data, {}).get('partNumber')) == _bnorm(pn)]
+            if same:
+                pid = same[0].id
+            else:
+                pr = GenericRecord(module='prodParts', data=json.dumps({
+                    'partNumber': pn, 'partName': str(m.get('partName') or m.get('item') or '').strip(),
+                    'customer': str(m.get('customer') or '').strip(), 'active': True, 'source': 'BUSY',
+                    'busyItem': m.get('item'), 'createdAt': datetime.utcnow().isoformat(), 'createdBy': _current_user_name() or ''}))
+                db.session.add(pr); db.session.flush()
+                pid = pr.id
+            parts.add(pid)
+            clean[k] = {'type': 'part', 'partId': pid, 'item': m.get('item')}
         elif kind == 'sale' and k.startswith('S|') and t in BUSY_SALE_TYPES:
             if t == 'part':
                 if m.get('partId') not in parts: return f'part for "{m.get("item") or k}" not found'
