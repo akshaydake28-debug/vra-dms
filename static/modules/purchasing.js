@@ -12,6 +12,9 @@ async function nextSupNumber(){
 //  RATING ENGINE
 //  Quality Rating   = Qty Accepted / Qty Received * 100
 //  Delivery Rating  = (On-time + within-5-days lots) / Total Lots * 100
+//  A lot = one delivery = one invoice / DC no. (per financial year): several
+//  rows with the same number (items of one delivery) count as ONE lot, late
+//  if any of its rows was late. Rows without a number count one each.
 //  Supplier Rating  = (Quality Rating + Delivery Rating) / 2
 // ══════════════════════════════════════════════════════
 const PUR_TIMING_LABELS={OnTime:'On Time',Within5:'Within 5 Days',After5:'After 5 Days'};
@@ -40,13 +43,27 @@ function purVendorRows(vendor,lots){
   return rows;
 }
 
+function purDeliveryKey(r,i){
+  const n=String(r.refNo||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if(!n) return 'row'+i;
+  const d=String(r.date||''),y=+d.slice(0,4),m=+d.slice(5,7);
+  return n+'|'+(y?(m>=4?y:y-1):'');                       // financial year Apr–Mar
+}
+function purDeliveries(rows){
+  const rank={OnTime:0,Within5:1,After5:2},by={};
+  rows.forEach((r,i)=>{const k=purDeliveryKey(r,i);const t=r.timing||'OnTime';
+    if(!by[k]) by[k]={key:k,rows:[],timing:t};
+    by[k].rows.push(r); if((rank[t]||0)>(rank[by[k].timing]||0)) by[k].timing=t;});
+  return Object.values(by);
+}
 function purCalcRating(rows){
   const totalReceived=rows.reduce((s,r)=>s+r.qtyReceived,0);
   const totalRejected=rows.reduce((s,r)=>s+r.qtyRejected,0);
   const totalAccepted=rows.reduce((s,r)=>s+r.qtyAccepted,0);
-  const totalLots=rows.length;
-  const onTimeCount=rows.filter(r=>r.timing==='OnTime'||r.timing==='Within5').length;
-  const after5Count=rows.filter(r=>r.timing==='After5').length;
+  const deliveries=purDeliveries(rows);
+  const totalLots=deliveries.length;
+  const onTimeCount=deliveries.filter(d=>d.timing==='OnTime'||d.timing==='Within5').length;
+  const after5Count=deliveries.filter(d=>d.timing==='After5').length;
   const qualityRating=totalReceived>0?Math.round((totalAccepted/totalReceived)*100):null;
   const deliveryRating=totalLots>0?Math.round((onTimeCount/totalLots)*100):null;
   const supplierRating=(qualityRating!=null&&deliveryRating!=null)?Math.round((qualityRating+deliveryRating)/2):null;
@@ -476,7 +493,8 @@ async function purViewVendor(id){
   </div>
 
   <div class="card">
-    <div class="ch"><h5>Delivery / Invoice Log (${rows.length})</h5></div>
+    <div class="ch"><h5>Delivery / Invoice Log — ${rows.length} row${rows.length===1?'':'s'}, ${sc.totalLots} deliver${sc.totalLots===1?'y':'ies'}</h5>
+      <span class="muted" style="font-size:11px">Rows with the same invoice / DC no. are one delivery</span></div>
     <div class="tw"><table>
       <thead><tr>
         <th>Source</th><th>Ref / Invoice No.</th><th>Date</th><th>Qty Received</th><th>Qty Rejected</th><th>Qty Accepted</th><th>Lot Timing</th><th></th>
@@ -741,6 +759,7 @@ async function purRenderScorecard(){
         </tr>`).join('')}
       </tbody>
     </table></div>
+    <div style="font-size:11px;color:#6b7280;padding:6px 12px">Lots = deliveries: rows with the same invoice / DC no. (items of one delivery) count as one lot, late if any of them was late.</div>
   </div>`);
 }
 function purScorecardPeriodChange(){
