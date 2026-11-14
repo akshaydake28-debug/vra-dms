@@ -5,6 +5,19 @@
 // BUSY LINK section in app.py).
 
 // ══════════════════════════════════════════════════════
+//  ONE MENU ENTRY — the BUSY pages are tabs of a single "BUSY Link" page
+// ══════════════════════════════════════════════════════
+const BUSY_TABS=[['busy-import','📥 Import'],['busy-check','✔️ BUSY Check'],['busy-purchases','🧾 Purchases'],['busy-history','🕘 History'],
+  ['busy-matching','🧭 First-time Matching'],['busy-merge','🧹 Merge Duplicates'],['busy-items','🏷️ Item Matching']];
+function busyTabsHtml(view){
+  const n=document.getElementById('busycount')?.textContent;
+  return `<div style="display:flex;gap:4px;flex-wrap:wrap;border-bottom:2px solid var(--border,#e5e7eb);margin:-4px 0 14px">
+    ${BUSY_TABS.map(([v,l])=>`<a href="#" onclick="event.preventDefault();nav('${v}')" style="padding:8px 14px;font-size:13px;font-weight:600;text-decoration:none;border-radius:7px 7px 0 0;margin-bottom:-2px;
+      ${v===view?'color:var(--navy,#0d2f6e);background:#fff;border:2px solid var(--border,#e5e7eb);border-bottom-color:#fff':'color:#6b7280;border:2px solid transparent'}">${l}${v==='busy-purchases'&&+n?` <span class="badge bp">${n}</span>`:''}</a>`).join('')}
+  </div>`;
+}
+
+// ══════════════════════════════════════════════════════
 //  COLUMN MATCHING
 // ══════════════════════════════════════════════════════
 const BUSY_FIELDS={
@@ -152,8 +165,7 @@ function busyRenderImport(){
   _busy={kind:_busy.kind||'purchase'};
   const k=_busy.kind;
   setC(`
-  <div class="ph"><h2>🔗 Import from BUSY</h2>
-    <div style="display:flex;gap:8px"><button class="btn btn-o" onclick="nav('busy-history')">🕘 Import History</button><button class="btn btn-o" onclick="nav('busy-items')">🏷️ Item Matching</button></div></div>
+  <div class="ph"><h2>🔗 Import from BUSY</h2></div>
   <div class="card" style="margin-bottom:12px"><div class="ch"><h5>1. Choose the BUSY export</h5></div><div class="cb">
     <div style="display:flex;gap:18px;margin-bottom:12px;font-size:13px">
       <label style="cursor:pointer"><input type="radio" name="busy-kind" value="purchase" ${k==='purchase'?'checked':''} onchange="_busy.kind=this.value;busyRenderImport()"> <b>Purchase register</b> — supplier bills</label>
