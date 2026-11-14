@@ -712,4 +712,153 @@ async function busyMergeGroup(gi,ids){
   catch(e){alert('❌ '+e.message);busyRenderMerge();}
 }
 
+// ══════════════════════════════════════════════════════
+//  FIRST-TIME MATCHING — every BUSY supplier, customer and item, answered once
+//  Upload a year of BUSY purchase / sales registers; each name is listed next
+//  to its closest DMS match with "same" or "different". Imports use the answers.
+// ══════════════════════════════════════════════════════
+let _bm={files:{purchase:[],sale:[]}};
+function busyRenderMatching(){
+  _bm={files:{purchase:[],sale:[]}};
+  setC(`
+  <div class="ph"><h2>🧭 First-time Matching</h2><button class="btn btn-o" onclick="nav('busy-merge')">🧹 Merge Duplicates</button></div>
+  <div class="alert al-w" style="margin-bottom:12px">Do this once, after merging duplicates in the DMS. It lists every supplier, customer and item that BUSY uses next to the closest DMS name, so you can say <b>same</b> or <b>different</b> for each. Imports then follow your answers — new suppliers after this come only through BUSY imports.</div>
+  <div class="card" style="margin-bottom:12px"><div class="ch"><h5>1. Upload BUSY registers (a full year is best)</h5></div><div class="cb">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+      <div class="fg"><label class="lbl">Purchase register — item-wise (Excel / CSV)</label><input class="fc" type="file" multiple accept=".xlsx,.xls,.csv" onchange="busyMatchRead('purchase',this.files)"><div id="bm-msg-purchase" style="font-size:12px;margin-top:4px"></div></div>
+      <div class="fg"><label class="lbl">Sales register — item-wise (Excel / CSV)</label><input class="fc" type="file" multiple accept=".xlsx,.xls,.csv" onchange="busyMatchRead('sale',this.files)"><div id="bm-msg-sale" style="font-size:12px;margin-top:4px"></div></div>
+    </div>
+    <div style="display:flex;justify-content:flex-end"><button class="btn btn-p" onclick="busyMatchBuild()">Build the list →</button></div>
+  </div></div>
+  <div id="bm-list"></div>`);
+}
+async function busyMatchRead(kind,files){
+  const msg=document.getElementById('bm-msg-'+kind);_bm.files[kind]=[];
+  try{await busyLoadXlsx();}catch(e){msg.innerHTML=`<span style="color:#dc2626">${esc(e.message)}</span>`;return;}
+  const saved=(await DB.getSetting('busyColumns_'+kind).catch(()=>null))||null;
+  const out=[];
+  for(const file of files){
+    try{
+      const wb=XLSX.read(await file.arrayBuffer(),{type:'array',raw:true});
+      const aoa=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,raw:true,defval:''});
+      const det=busyDetect(kind,aoa);
+      if(!det){out.push(`<span style="color:#dc2626">⚠️ ${esc(file.name)}: column headings not found</span>`);continue;}
+      let map=det.map;
+      if(saved?.map){const have=new Set(det.headers.map(busyHdr));
+        if(Object.values(saved.map).every(h=>!h||have.has(busyHdr(h)))){map={};for(const [f,h] of Object.entries(saved.map)) if(h) map[f]=det.headers.find(x=>busyHdr(x)===busyHdr(h));}}
+      if(!map.party||!map.item){out.push(`<span style="color:#dc2626">⚠️ ${esc(file.name)}: party or item column not found — import it once on Import from BUSY to set the columns</span>`);continue;}
+      const {invoices}=busyGroup(kind,aoa,det,map);
+      _bm.files[kind].push(invoices);
+      out.push(`✓ ${esc(file.name)} — ${invoices.length} invoices`);
+    }catch(e){out.push(`<span style="color:#dc2626">⚠️ ${esc(file.name)}: ${esc(e.message)}</span>`);}
+  }
+  msg.innerHTML=out.join('<br>');
+}
+async function busyMatchBuild(){
+  const pur=_bm.files.purchase.flat(),sal=_bm.files.sale.flat();
+  if(!pur.length&&!sal.length){toast('Upload at least one register first','d');return;}
+  const items=invs=>{const m={};for(const i of invs) for(const l of i.lines) m[busyNorm(l.item)]=m[busyNorm(l.item)]||{item:l.item,unit:l.unit};return Object.values(m);};
+  const body={suppliers:pur.map(i=>({party:i.party,gstin:i.gstin})),customers:sal.map(i=>i.party),purchaseItems:items(pur),saleItems:items(sal)};
+  const el=document.getElementById('bm-list');el.innerHTML='<div class="card"><div class="cb muted">Comparing with the DMS…</div></div>';
+  try{
+    const [r,vendors,parts,grades]=await Promise.all([busyApi('POST','/api/busy/matching/preview',body),busyVendors(),
+      busyApi('GET','/api/prodParts').then(x=>x.map(p=>({...p.data,id:p.id}))).catch(()=>[]),typeof rmGetGrades==='function'?rmGetGrades():[]]);
+    Object.assign(_bm,r,{vendors:vendors.sort((a,b)=>String(a.name).localeCompare(String(b.name))),
+      parts:parts.sort((a,b)=>String(a.partNumber).localeCompare(String(b.partNumber))),grades,sup:{},cust:{},items:{}});
+    for(const x of r.suppliers) if(x.status==='new'||x.status==='decided-new') _bm.sup[x.partyKey]='new';
+    for(const x of r.customers) if(x.status==='new') _bm.cust[x.name]=x.name;
+    _busy.parts=_bm.parts;_busy.grades=grades;                       // reuse the import's item suggestions
+    for(const x of [...r.purchaseItems.map(i=>({...i,kind:'purchase'})),...r.saleItems.map(i=>({...i,kind:'sale'}))])
+      if(x.status==='ask'){const g=busySuggest(x.kind,x.item);if(busyChoiceComplete(g)) _bm.items[x.key]=g;}
+    busyMatchRender();
+  }catch(e){el.innerHTML=`<div class="alert al-d">⚠️ ${esc(e.message)}</div>`;}
+}
+function busyMatchPending(){
+  return {sup:_bm.suppliers.filter(x=>x.status!=='known'&&!_bm.sup[x.partyKey]).length,
+    cust:_bm.customers.filter(x=>x.status!=='known'&&!_bm.cust[x.name]).length,
+    items:[..._bm.purchaseItems,..._bm.saleItems].filter(x=>x.status!=='known'&&!busyChoiceComplete(_bm.items[x.key])).length};
+}
+function busyMatchRender(){
+  const isAdmin=Auth.user?.role==='APPROVER',pend=busyMatchPending(),left=pend.sup+pend.cust+pend.items;
+  const sup=_bm.suppliers.filter(x=>x.status!=='known'),supK=_bm.suppliers.filter(x=>x.status==='known');
+  const cus=_bm.customers.filter(x=>x.status!=='known'),cusK=_bm.customers.filter(x=>x.status==='known');
+  const pit=_bm.purchaseItems.filter(x=>x.status!=='known'),sit=_bm.saleItems.filter(x=>x.status!=='known');
+  const supSel=(x,i)=>{const cur=_bm.sup[x.partyKey],sg=x.suggestions||[];
+    return `<select class="fc" onchange="busyMatchSet('sup',${i},this.value)">
+      <option value="">— choose —</option>
+      ${sg.map(v=>`<option value="${v.id}" ${cur===v.id?'selected':''}>Same as: ${esc(v.name)} (${esc(v.supNumber||'')})</option>`).join('')}
+      <option value="new" ${cur==='new'?'selected':''}>Different — a new supplier</option>
+      <optgroup label="Same as another supplier">${_bm.vendors.filter(v=>!sg.some(g=>g.id===v.id)).map(v=>`<option value="${v.id}" ${cur===v.id?'selected':''}>${esc(v.name)} (${esc(v.supNumber||'')})</option>`).join('')}</optgroup></select>`;};
+  const cusSel=(x,i)=>{const cur=_bm.cust[x.name],sg=x.suggestions||[];
+    return `<select class="fc" onchange="busyMatchSet('cust',${i},this.value)">
+      <option value="">— choose —</option>
+      ${sg.map((n,k)=>`<option value="s${k}" ${cur===n?'selected':''}>Same as: ${esc(n)}</option>`).join('')}
+      <option value="keep" ${cur===x.name?'selected':''}>Different — use the BUSY name "${esc(x.name)}"</option>
+      <optgroup label="Same as another customer">${_bm.dmsCustomers.filter(n=>!sg.includes(n)).map((n,k)=>`<option value="o${k}" ${cur===n?'selected':''}>${esc(n)}</option>`).join('')}</optgroup></select>`;};
+  const itemSel=(x,kind)=>{const c=_bm.items[x.key]||{};
+    if(kind==='sale') return `<select class="fc" onchange="busyMatchItem('${x.key}',this.value?(this.value==='skip'?{type:'skip'}:{type:'part',partId:+this.value}):{})">
+      <option value="">— which part? —</option>${_bm.parts.map(p=>`<option value="${p.id}" ${c.partId===p.id?'selected':''}>${esc(p.partNumber)} — ${esc(p.partName||'')}</option>`).join('')}
+      <option value="skip" ${c.type==='skip'?'selected':''}>Not a part (freight, packing, tooling…)</option></select>`;
+    return `<div style="display:flex;gap:6px"><select class="fc" onchange="busyMatchItem('${x.key}',this.value?{type:this.value,grade:(_bm.items['${x.key}']||{}).grade}:{})">
+      <option value="">— what is it? —</option><option value="rm" ${c.type==='rm'?'selected':''}>Raw material (alloy)</option>
+      <option value="inspect" ${c.type==='inspect'?'selected':''}>Needs QC inspection</option><option value="none" ${c.type==='none'?'selected':''}>No inspection</option></select>
+      ${c.type==='rm'?`<select class="fc" style="max-width:130px" onchange="busyMatchItem('${x.key}',{type:'rm',grade:this.value})"><option value="">grade</option>${_bm.grades.map(g=>`<option ${c.grade===g?'selected':''}>${esc(g)}</option>`).join('')}</select>`:''}</div>`;};
+  const card=(title,n,body,known)=>`<div class="card" style="margin-bottom:12px"><div class="ch"><h5>${title}</h5><span class="badge ${n?'bp':'ba'}">${n?n+' to answer':'done'}</span></div>
+    <div class="tw">${body}</div>${known&&known.length?`<details style="padding:8px 14px;font-size:12px"><summary class="muted" style="cursor:pointer">${known.length} already matched</summary>${known.map(k=>`<div>${k}</div>`).join('')}</details>`:''}</div>`;
+  document.getElementById('bm-list').innerHTML=`
+  ${card('Suppliers (from purchases)',pend.sup,`<table><thead><tr><th>Name in BUSY</th><th>GSTIN</th><th style="width:55%">In the DMS</th></tr></thead><tbody>
+    ${sup.map(x=>`<tr><td><b>${esc(x.party)}</b></td><td class="mono" style="font-size:12px">${esc(x.gstin)}</td><td>${supSel(x,_bm.suppliers.indexOf(x))}</td></tr>`).join('')||'<tr><td colspan="3" class="muted" style="padding:10px">Nothing to answer.</td></tr>'}</tbody></table>`,
+    supK.map(x=>`${esc(x.party)} → <b>${esc(x.vendor?.name||'')}</b>`))}
+  ${card('Customers (from sales)',pend.cust,`<table><thead><tr><th>Name in BUSY</th><th style="width:60%">In the DMS</th></tr></thead><tbody>
+    ${cus.map(x=>`<tr><td><b>${esc(x.name)}</b></td><td>${cusSel(x,_bm.customers.indexOf(x))}</td></tr>`).join('')||'<tr><td colspan="2" class="muted" style="padding:10px">Nothing to answer.</td></tr>'}</tbody></table>`,
+    cusK.map(x=>`${esc(x.name)} → <b>${esc(x.dmsName||'')}</b>`))}
+  ${card('Purchase items',pit.filter(x=>!busyChoiceComplete(_bm.items[x.key])).length,`<table><thead><tr><th>Item in BUSY</th><th>Unit</th><th style="width:55%">What is it?</th></tr></thead><tbody>
+    ${pit.map(x=>`<tr><td><b>${esc(x.item)}</b></td><td>${esc(x.unit||'')}</td><td>${itemSel(x,'purchase')}</td></tr>`).join('')||'<tr><td colspan="3" class="muted" style="padding:10px">Nothing to answer.</td></tr>'}</tbody></table>`,
+    _bm.purchaseItems.filter(x=>x.status==='known').map(x=>esc(x.item)))}
+  ${card('Sales items',sit.filter(x=>!busyChoiceComplete(_bm.items[x.key])).length,`<table><thead><tr><th>Item in BUSY</th><th>Unit</th><th style="width:55%">Which part?</th></tr></thead><tbody>
+    ${sit.map(x=>`<tr><td><b>${esc(x.item)}</b></td><td>${esc(x.unit||'')}</td><td>${itemSel(x,'sale')}</td></tr>`).join('')||'<tr><td colspan="3" class="muted" style="padding:10px">Nothing to answer.</td></tr>'}</tbody></table>`,
+    _bm.saleItems.filter(x=>x.status==='known').map(x=>esc(x.item)))}
+  <div style="display:flex;justify-content:flex-end;gap:8px;align-items:center">
+    ${left?`<span style="font-size:12px;color:#d97706">${left} answer(s) left</span>`:''}
+    <button class="btn btn-o" onclick="busyMatchDownload()">⬇️ Download list (Excel)</button>
+    ${isAdmin?`<button class="btn btn-p" id="bm-save" ${left?'disabled':''} onclick="busyMatchSave()">💾 Save answers</button>`:'<span class="muted" style="font-size:12px">Only an admin can save.</span>'}
+  </div>`;
+}
+function busyMatchSet(kind,i,val){
+  if(kind==='sup'){const x=_bm.suppliers[i];if(!val) delete _bm.sup[x.partyKey];else _bm.sup[x.partyKey]=val==='new'?'new':+val;}
+  else{const x=_bm.customers[i],sg=x.suggestions||[],others=_bm.dmsCustomers.filter(n=>!sg.includes(n));
+    if(!val) delete _bm.cust[x.name];else _bm.cust[x.name]=val==='keep'?x.name:val[0]==='s'?sg[+val.slice(1)]:others[+val.slice(1)];}
+  busyMatchRender();
+}
+function busyMatchItem(key,c){const x=[..._bm.purchaseItems,..._bm.saleItems].find(i=>i.key===key);_bm.items[key]={...c,item:x?.item};busyMatchRender();}
+function busyMatchRows(){
+  const vname=id=>(_bm.vendors.find(v=>v.id===id)||{}).name||'';
+  const pname=id=>{const p=_bm.parts.find(p=>p.id===id);return p?`${p.partNumber} — ${p.partName||''}`:'';};
+  const what=m=>!m?'':m.type==='rm'?'Raw material '+(m.grade||''):m.type==='inspect'?'Needs QC inspection':m.type==='none'?'No inspection':m.type==='part'?'Part '+pname(m.partId):m.type==='skip'?'Not a part':'';
+  const rows=[['Type','Name in BUSY','GSTIN','Answer','DMS name / meaning']];
+  for(const x of _bm.suppliers){const c=x.status==='known'?x.vendor?.id:_bm.sup[x.partyKey];
+    rows.push(['Supplier',x.party,x.gstin,x.status==='known'?'Already matched':c==='new'?'Different (new)':c?'Same':'Not answered',c==='new'?'':vname(c)]);}
+  for(const x of _bm.customers){const c=x.status==='known'?x.dmsName:_bm.cust[x.name];
+    rows.push(['Customer',x.name,'',x.status==='known'?'Already matched':!c?'Not answered':c===x.name?'Different (keep BUSY name)':'Same',c||'']);}
+  for(const [t,list] of [['Purchase item',_bm.purchaseItems],['Sales item',_bm.saleItems]])
+    for(const x of list) rows.push([t,x.item,'',x.status==='known'?'Already matched':busyChoiceComplete(_bm.items[x.key])?'Answered':'Not answered',what(x.status==='known'?x.match:_bm.items[x.key])]);
+  return rows;
+}
+async function busyMatchDownload(){
+  try{await busyLoadXlsx();}catch(e){toast(e.message,'d');return;}
+  const ws=XLSX.utils.aoa_to_sheet(busyMatchRows());ws['!cols']=[{wch:14},{wch:40},{wch:18},{wch:24},{wch:40}];
+  const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'BUSY-DMS matching');
+  XLSX.writeFile(wb,`BUSY_DMS_Matching_${new Date().toISOString().slice(0,10)}.xlsx`);
+}
+async function busyMatchSave(){
+  const body={suppliers:_bm.suppliers.filter(x=>x.status!=='known').map(x=>({party:x.party,gstin:x.gstin,choice:_bm.sup[x.partyKey]})),
+    customers:_bm.customers.filter(x=>x.status!=='known').map(x=>({name:x.name,dmsName:_bm.cust[x.name]})),itemMap:_bm.items};
+  if(!confirm('Save these answers? BUSY imports will follow them from now on.')) return;
+  const btn=document.getElementById('bm-save');if(btn) btn.disabled=true;
+  try{const r=await busyApi('POST','/api/busy/matching/save',body);
+    alert(`✅ Saved — ${r.sameSuppliers} supplier(s) matched to existing ones, ${r.newSuppliers} marked new (created on their first import), ${r.customers} customer name(s), ${r.items} item(s).`);
+    busyMatchBuild();}
+  catch(e){if(btn) btn.disabled=false;alert('❌ '+e.message);}
+}
+
 // ══ END BUSY LINK ══

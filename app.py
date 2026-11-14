@@ -1254,6 +1254,8 @@ def delete_generic_one(module, rid):
 # ══════════════════════════════════════════════════════
 BUSY_KINDS = ('purchase', 'sale')
 BUSY_ITEM_MAP = 'busyItemMap'                     # setting: item key -> what the item is
+BUSY_SUPPLIER_CHOICES = 'busySupplierChoices'     # setting: BUSY party key -> 'new' (decided: not an existing supplier)
+BUSY_CUSTOMER_MAP = 'busyCustomerMap'             # setting: BUSY customer name key -> customer name used in the DMS
 BUSY_MANAGED = ('busyPurchases', 'busyBatches')   # only written through /api/busy/*
 BUSY_PURCHASE_TYPES = ('rm', 'inspect', 'none')   # raw material / needs QC / no inspection
 BUSY_SALE_TYPES = ('part', 'skip')                # a part (dispatch) / not a part (freight etc.)
@@ -1379,9 +1381,10 @@ class _BusyIndex:
         self.kind = kind
         self.vendors = _brows('purVendors')
         self.vendor_by_id = {r.id: v for r, v in self.vendors}
-        self.by_gstin, self.by_name = {}, {}
+        self.by_gstin, self.by_name, self.by_alias = {}, {}, {}
         for r, v in self.vendors:
             self._index_vendor(r, v)
+        self.saved_choices = _bsetting(BUSY_SUPPLIER_CHOICES)
         self.parts = {r.id: d for r, d in _brows('prodParts')}
         self.item_map = _bitem_map()
         if kind == 'purchase':
@@ -1400,6 +1403,7 @@ class _BusyIndex:
             self.rm_lots = [l.to_dict() for l in RMLot.query.all()]
         else:
             self.imported = {}
+            self.customer_map = _bsetting(BUSY_CUSTOMER_MAP)
             self.manual, self.manual_sig = set(), set()
             for _, d in _brows('prodDispatch'):
                 if d.get('busyKey'):
@@ -1414,13 +1418,16 @@ class _BusyIndex:
         for n in _bvendor_names(v):
             k = _bparty_name_key(n)
             if k: self.by_name.setdefault(k, (r, v))
+        for n in [v.get('busyName')] + list(v.get('busyNames') or []):   # names BUSY uses for it (decided)
+            k = _bparty_name_key(n)
+            if k: self.by_alias[k] = (r, v)
 
     def resolve(self, inv, supplier_map=None):
         """(vendor id or None, row info). A GSTIN match is certain. A name-only match
         is used unless other suppliers look alike (likely duplicates) — then the user
         is asked, as for a name the DMS doesn't know."""
         g = inv.get('gstin')
-        hit = g and self.by_gstin.get(g)
+        hit = (g and self.by_gstin.get(g)) or self.by_alias.get(_bparty_name_key(inv['party']))
         sug = []
         if not hit:
             hit = self.by_name.get(_bparty_name_key(inv['party']))
@@ -1505,9 +1512,19 @@ class _BusyIndex:
             if m['type'] == 'part' and m.get('partId') not in self.parts: return None
         return m
 
-def _bitem_map():
-    r = GenericRecord.query.filter_by(module='setting_' + BUSY_ITEM_MAP).first()
+def _bsetting(key):
+    r = GenericRecord.query.filter_by(module='setting_' + key).first()
     return safe_json_loads(r.data, {}) if r else {}
+
+def _bput_setting(key, value):
+    r = GenericRecord.query.filter_by(module='setting_' + key).first()
+    if r:
+        r.data = json.dumps(value); r.updated_at = datetime.utcnow()
+    else:
+        db.session.add(GenericRecord(module='setting_' + key, data=json.dumps(value)))
+
+def _bitem_map():
+    return _bsetting(BUSY_ITEM_MAP)
 
 def _bsave_item_map(updates, kind):
     """Merge the item matches chosen in the preview into the saved map (validated)."""
@@ -1557,7 +1574,8 @@ def _bparse_request():
 
 def _bsupplier_choice(supplier_map, inv, idx):
     """The supplier the user picked for an unknown BUSY party: a vendor id, 'new', or None (not chosen)."""
-    c = (supplier_map or {}).get(_bparty_key(inv))
+    pk = _bparty_key(inv)
+    c = (supplier_map or {}).get(pk) or idx.saved_choices.get(pk)
     if c == 'new':
         return 'new'
     if isinstance(c, int) and not isinstance(c, bool) and c in idx.vendor_by_id:
@@ -1622,7 +1640,7 @@ def _block_imports():
 def _bremember_alias(vr, v, inv):
     """BUSY calls this supplier something else — remember it (and its GSTIN) for next time."""
     names = list(v.get('busyNames') or [])
-    if _bparty_name_key(inv['party']) not in {_bparty_name_key(n) for n in _bvendor_names(v)}:
+    if _bparty_name_key(inv['party']) not in {_bparty_name_key(n) for n in [v.get('busyName')] + names}:
         names.append(inv['party'])
     v['busyNames'] = names
     if inv['gstin'] and not _bgstin(v.get('gstNo')):
@@ -1717,7 +1735,8 @@ def busy_import():
                     m = idx.line_map(l['item'])
                     if m['type'] != 'part' or l['qty'] <= 0:
                         continue
-                    rec = {'date': inv['date'], 'partId': m['partId'], 'qty': l['qty'], 'customer': inv['party'],
+                    rec = {'date': inv['date'], 'partId': m['partId'], 'qty': l['qty'],
+                           'customer': idx.customer_map.get(_bparty_name_key(inv['party'])) or inv['party'], 'busyParty': inv['party'],
                            'invoice': inv['vchNo'], 'remark': 'From BUSY', 'source': 'BUSY', 'busyKey': inv['key'],
                            'busyHash': inv['hash'], 'busyItem': l['item'], 'rate': l['rate'], 'amount': l['amount'],
                            'batchId': batch.id, 'createdBy': user}
@@ -2133,6 +2152,107 @@ def busy_lot_guard(lid):
     if lid in lots:
         return jsonify({'error': f'This lot is linked to BUSY bill {refs[("lot", lid)]} — unlink it (or undo its receipt) on the BUSY Purchases page first.'}), 409
     return None
+
+# ── First-time matching: every BUSY party / item against the DMS, answered once ──
+def _dms_customer_names():
+    names = {}
+    for module, field in (('prodDispatch', 'customer'), ('prodParts', 'customer')):
+        for _, x in _brows(module):
+            n = str(x.get(field) or '').strip()
+            if n: names[n] = names.get(n, 0) + 1
+    return names
+
+@app.route('/api/busy/matching/preview', methods=['POST'])
+def busy_matching_preview():
+    d = json_object_body()
+    if d is None: return jsonify(BAD_BODY[0]), 400
+    pidx, sidx = _BusyIndex('purchase'), _BusyIndex('sale')
+    sups, seen = [], set()
+    for x in d.get('suppliers') or []:
+        if not isinstance(x, dict) or not str(x.get('party') or '').strip(): continue
+        inv = {'party': str(x['party']).strip(), 'gstin': _bgstin(x.get('gstin'))}
+        pk = _bparty_key(inv)
+        if pk in seen: continue
+        seen.add(pk)
+        vid, info = pidx.resolve(inv)
+        status = 'known' if not info.get('unknown') else ('decided-new' if info.get('choice') == 'new'
+                 else 'ask' if info['suggestions'] else 'new')
+        sups.append({'party': inv['party'], 'gstin': inv['gstin'], 'partyKey': pk, 'status': status,
+                     'vendor': {'id': vid, 'name': info.get('name')} if status == 'known' else None,
+                     'suggestions': info.get('suggestions') or []})
+    dms_names = _dms_customer_names()
+    cmap = sidx.customer_map
+    custs, seen = [], set()
+    for n in d.get('customers') or []:
+        n = str(n or '').strip(); k = _bparty_name_key(n)
+        if not n or k in seen: continue
+        seen.add(k)
+        if k in cmap:
+            custs.append({'name': n, 'status': 'known', 'dmsName': cmap[k]}); continue
+        exact = [m for m in dms_names if _bparty_name_key(m) == k]
+        lk = _bloose(n)
+        like = [m for m in dms_names if m not in exact and _bloose(m) and (_bloose(m) == lk or (min(len(lk), len(_bloose(m))) >= 4 and (lk in _bloose(m) or _bloose(m) in lk)))]
+        custs.append({'name': n, 'status': 'known' if exact and not like else ('ask' if exact or like else 'new'),
+                      'dmsName': exact[0] if exact and not like else None, 'suggestions': exact + like})
+    items = {}
+    for kind, key, idx in (('purchase', 'purchaseItems', pidx), ('sale', 'saleItems', sidx)):
+        out, seen = [], set()
+        for x in d.get(key) or []:
+            item = str((x or {}).get('item') if isinstance(x, dict) else x or '').strip()
+            k = _bitem_key(kind, item)
+            if not item or k in seen: continue
+            seen.add(k)
+            m = idx.line_map(item)
+            out.append({'key': k, 'item': item, 'unit': (x or {}).get('unit', '') if isinstance(x, dict) else '',
+                        'status': 'known' if m else 'ask', 'match': m})
+        items[kind] = out
+    return jsonify({'suppliers': sups, 'customers': custs, 'dmsCustomers': sorted(dms_names, key=str.upper),
+                    'purchaseItems': items['purchase'], 'saleItems': items['sale']})
+
+@app.route('/api/busy/matching/save', methods=['POST'])
+def busy_matching_save():
+    err = require_admin()
+    if err: return err
+    d = json_object_body()
+    if d is None: return jsonify(BAD_BODY[0]), 400
+    try:
+        idx = _BusyIndex('purchase')
+        choices = _bsetting(BUSY_SUPPLIER_CHOICES)
+        n_same = n_new = 0
+        for x in d.get('suppliers') or []:
+            if not isinstance(x, dict): continue
+            inv = {'party': str(x.get('party') or '').strip(), 'gstin': _bgstin(x.get('gstin'))}
+            if not inv['party']: continue
+            pk, c = _bparty_key(inv), x.get('choice')
+            if c == 'new':
+                choices[pk] = 'new'; n_new += 1
+            elif isinstance(c, int) and not isinstance(c, bool) and c in idx.vendor_by_id:
+                vr = GenericRecord.query.get(c)
+                _bremember_alias(vr, idx.vendor_by_id[c], inv)
+                choices.pop(pk, None); n_same += 1
+            else:
+                db.session.rollback()
+                return jsonify({'error': f'Choose same or different for supplier "{inv["party"]}"'}), 400
+        _bput_setting(BUSY_SUPPLIER_CHOICES, choices)
+        cmap = _bsetting(BUSY_CUSTOMER_MAP)
+        n_cust = 0
+        for x in d.get('customers') or []:
+            if not isinstance(x, dict): continue
+            n, to = str(x.get('name') or '').strip(), str(x.get('dmsName') or '').strip()
+            if n and to:
+                cmap[_bparty_name_key(n)] = to; n_cust += 1
+        _bput_setting(BUSY_CUSTOMER_MAP, cmap)
+        im = d.get('itemMap') if isinstance(d.get('itemMap'), dict) else {}
+        for kind, pfx in (('purchase', 'P|'), ('sale', 'S|')):
+            e = _bsave_item_map({k: v for k, v in im.items() if isinstance(k, str) and k.startswith(pfx)}, kind)
+            if e:
+                db.session.rollback()
+                return jsonify({'error': e}), 400
+        db.session.commit()
+    except Exception as ex:
+        db.session.rollback()
+        return jsonify({'error': f'Save failed — nothing was changed. ({ex})'}), 500
+    return jsonify({'ok': True, 'sameSuppliers': n_same, 'newSuppliers': n_new, 'customers': n_cust, 'items': len(im)})
 
 # ══════════════════════════════════════════════════════
 #  MERGE DUPLICATES — parts and customer names (suppliers: above)
