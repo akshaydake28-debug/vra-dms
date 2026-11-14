@@ -12,6 +12,9 @@ async function nextSupNumber(){
 //  RATING ENGINE
 //  Quality Rating   = Qty Accepted / Qty Received * 100
 //  Delivery Rating  = (On-time + within-5-days lots) / Total Lots * 100
+//  A lot = one delivery = one invoice / DC no. (per financial year): several
+//  rows with the same number (items of one delivery) count as ONE lot, late
+//  if any of its rows was late. Rows without a number count one each.
 //  Supplier Rating  = (Quality Rating + Delivery Rating) / 2
 // ══════════════════════════════════════════════════════
 const PUR_TIMING_LABELS={OnTime:'On Time',Within5:'Within 5 Days',After5:'After 5 Days'};
@@ -40,13 +43,27 @@ function purVendorRows(vendor,lots){
   return rows;
 }
 
+function purDeliveryKey(r,i){
+  const n=String(r.refNo||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if(!n) return 'row'+i;
+  const d=String(r.date||''),y=+d.slice(0,4),m=+d.slice(5,7);
+  return n+'|'+(y?(m>=4?y:y-1):'');                       // financial year Apr–Mar
+}
+function purDeliveries(rows){
+  const rank={OnTime:0,Within5:1,After5:2},by={};
+  rows.forEach((r,i)=>{const k=purDeliveryKey(r,i);const t=r.timing||'OnTime';
+    if(!by[k]) by[k]={key:k,rows:[],timing:t};
+    by[k].rows.push(r); if((rank[t]||0)>(rank[by[k].timing]||0)) by[k].timing=t;});
+  return Object.values(by);
+}
 function purCalcRating(rows){
   const totalReceived=rows.reduce((s,r)=>s+r.qtyReceived,0);
   const totalRejected=rows.reduce((s,r)=>s+r.qtyRejected,0);
   const totalAccepted=rows.reduce((s,r)=>s+r.qtyAccepted,0);
-  const totalLots=rows.length;
-  const onTimeCount=rows.filter(r=>r.timing==='OnTime'||r.timing==='Within5').length;
-  const after5Count=rows.filter(r=>r.timing==='After5').length;
+  const deliveries=purDeliveries(rows);
+  const totalLots=deliveries.length;
+  const onTimeCount=deliveries.filter(d=>d.timing==='OnTime'||d.timing==='Within5').length;
+  const after5Count=deliveries.filter(d=>d.timing==='After5').length;
   const qualityRating=totalReceived>0?Math.round((totalAccepted/totalReceived)*100):null;
   const deliveryRating=totalLots>0?Math.round((onTimeCount/totalLots)*100):null;
   const supplierRating=(qualityRating!=null&&deliveryRating!=null)?Math.round((qualityRating+deliveryRating)/2):null;
@@ -60,7 +77,11 @@ function purCalcRating(rows){
 function purIsApproved(v){
   return v.sample1?.decision==='ACCEPT' && v.sample2?.decision==='ACCEPT' && v.includeInApprovedList==='Y';
 }
+// Services and overheads (rent, electricity, transport…) are purchased from but
+// need no approval, samples or scorecard: approvalNeeded === 'N'.
+function purNeedsApproval(v){ return !v || v.approvalNeeded!=='N'; }
 function purStage(v){
+  if(!purNeedsApproval(v)) return'No approval needed';
   const s1=v.sample1?.decision,s2=v.sample2?.decision;
   if(purIsApproved(v)) return'Approved';
   if(s1==='REJECT'||s2==='REJECT') return'Rejected';
@@ -69,7 +90,7 @@ function purStage(v){
   return'Registered';
 }
 function purStageBadge(stage){
-  const m={Registered:'bd','Sample Evaluation':'bp','Samples Accepted — Pending Sign-off':'bp',Approved:'ba',Rejected:'br'};
+  const m={Registered:'bd','Sample Evaluation':'bp','Samples Accepted — Pending Sign-off':'bp',Approved:'ba',Rejected:'br','No approval needed':'bd'};
   return`<span class="badge ${m[stage]||'bd'}">${stage}</span>`;
 }
 function purPctBadge(pct){
@@ -153,9 +174,13 @@ table.dt tr:nth-child(even) td{background:#f7f7f7}
 // ══════════════════════════════════════════════════════
 //  SUPPLIER REGISTER — LIST
 // ══════════════════════════════════════════════════════
-async function purRenderSuppliers(){
-  const vendors=await db.purVendors.toArray().catch(()=>[]);
-  vendors.sort((a,b)=>b.id-a.id);
+let _purShowServices=false;
+async function purRenderSuppliers(f){
+  if(f&&'services' in f) _purShowServices=f.services;
+  const all=await db.purVendors.toArray().catch(()=>[]);
+  all.sort((a,b)=>b.id-a.id);
+  const services=all.filter(v=>!purNeedsApproval(v));
+  const vendors=_purShowServices?all:all.filter(purNeedsApproval);
   const counts={Registered:0,'Sample Evaluation':0,'Samples Accepted — Pending Sign-off':0,Approved:0,Rejected:0};
   vendors.forEach(v=>{const st=purStage(v); if(counts[st]!==undefined) counts[st]++;});
 
@@ -175,17 +200,24 @@ async function purRenderSuppliers(){
     </div>`).join('')}
   </div>
   <div class="card">
-    <div class="ch"><h5>All Suppliers — ${vendors.length} records</h5>
-      <span class="muted" style="font-size:11px">VRA-PUR-F-01 · Supplier Approval Form</span>
+    <div class="ch"><h5>${_purShowServices?'All Suppliers':'Suppliers needing approval'} — ${vendors.length} records</h5>
+      <span class="muted" style="font-size:11px">${services.length?`<a href="#" onclick="event.preventDefault();purRenderSuppliers({services:${!_purShowServices}})">${_purShowServices?'Hide':'Show'} ${services.length} supplier(s) that need no approval (rent, electricity…)</a> · `:''}VRA-PUR-F-01 · Supplier Approval Form</span>
     </div>
+    ${vendors.length?`<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 14px;border-bottom:1px solid var(--border)">
+      <button class="btn btn-o btn-xs" onclick="purTickServices()" title="Ticks suppliers whose name or scope looks like rent, electricity, transport, services…">☑️ Tick likely services</button>
+      <span class="muted" style="font-size:12px" id="pur-sel-n">0 ticked</span>
+      <button class="btn btn-o btn-xs" onclick="purSetApprovalNeeded('N')">🚫 Mark ticked: no approval needed</button>
+      <button class="btn btn-o btn-xs" onclick="purSetApprovalNeeded('Y')">↩ Mark ticked: needs approval</button></div>`:''}
     <div class="tw"><table>
       <thead><tr>
+        <th><input type="checkbox" title="Tick all" onchange="document.querySelectorAll('.pur-sel').forEach(c=>c.checked=this.checked);purSelCount()"></th>
         <th>Sup No.</th><th>Supplier Name</th><th>Scope of Supply</th>
         <th>Contact Person</th><th>Stage</th><th></th>
       </tr></thead>
       <tbody>${vendors.length===0
-        ?`<tr><td colspan="6" style="text-align:center;padding:30px;color:#9ca3af">No suppliers yet. Click + Add Supplier to register one.</td></tr>`
+        ?`<tr><td colspan="7" style="text-align:center;padding:30px;color:#9ca3af">No suppliers yet. Click + Add Supplier to register one.</td></tr>`
         :vendors.map(v=>`<tr>
+          <td><input type="checkbox" class="pur-sel" value="${v.id}" data-text="${esc(((v.name||'')+' '+(v.scopeOfSupply||'')).toUpperCase())}" onchange="purSelCount()"></td>
           <td class="mono" style="color:var(--navy);font-weight:700">${esc(v.supNumber)}</td>
           <td><strong>${esc(v.name)}</strong>${v.source==='BUSY'?' <span class="badge bd" title="Added automatically by a BUSY import">BUSY</span>':''}</td>
           <td>${esc(v.scopeOfSupply||'—')}</td>
@@ -193,7 +225,8 @@ async function purRenderSuppliers(){
           <td>${purStageBadge(purStage(v))}</td>
           <td style="white-space:nowrap">
             <button class="btn btn-o btn-xs" onclick="purRenderSupplierForm(${v.id})">✏️ Open</button>
-            ${purIsApproved(v)?`<button class="btn btn-o btn-xs" onclick="purViewVendor(${v.id})">📊 Scorecard</button>`:''}
+            ${purIsApproved(v)&&purNeedsApproval(v)?`<button class="btn btn-o btn-xs" onclick="purViewVendor(${v.id})">📊 Scorecard</button>`:''}
+            <button class="btn btn-o btn-xs" title="${purNeedsApproval(v)?'Rent, electricity, services… — no approval, samples or scorecard':'Put back on the approval list and scorecard'}" onclick="purToggleApprovalNeeded(${v.id})">${purNeedsApproval(v)?'🚫 No approval needed':'↩ Needs approval'}</button>
             <button class="btn btn-r btn-xs" onclick="purDeleteVendor(${v.id})">🗑️</button>
           </td>
         </tr>`).join('')}
@@ -202,6 +235,34 @@ async function purRenderSuppliers(){
   </div>`);
 }
 
+// Bulk: mark many existing suppliers at once
+const PUR_SERVICE_WORDS=/\b(RENT|RENTAL|LEASE|ELECTRIC|ELECTRICITY|MSEDCL|MSEB|POWER|WATER|TELEPHONE|PHONE|MOBILE|INTERNET|BROADBAND|AIRTEL|JIO|BSNL|VODAFONE|TRANSPORT|TRANSPORTS|LOGISTICS|COURIER|CARGO|ROADLINES|TRAVELS|CANTEEN|CATERER|CATERERS|HOTEL|STATIONERY|STATIONERS|PRINTERS|PRINTING|BANK|INSURANCE|AUDIT|AUDITOR|CHARTERED|ACCOUNTANT|CONSULTANT|CONSULTANCY|ADVOCATE|LEGAL|SECURITY|HOUSEKEEPING|CLEANING|SOFTWARE|BUSY|PETROL|DIESEL|FUEL|MEDICAL|HOSPITAL|GOVERNMENT|MUNICIPAL|CORPORATION|GRAMPANCHAYAT|TAX)\b/;
+function purSelCount(){const n=document.querySelectorAll('.pur-sel:checked').length;const e=document.getElementById('pur-sel-n');if(e)e.textContent=n+' ticked';}
+function purTickServices(){
+  let n=0;document.querySelectorAll('.pur-sel').forEach(c=>{const hit=PUR_SERVICE_WORDS.test(c.dataset.text||'');c.checked=hit;if(hit)n++;});
+  purSelCount();toast(n?`${n} likely service supplier(s) ticked — check the ticks, then mark them`:'No likely service suppliers found by name — tick them by hand',n?'s':'d');
+}
+async function purSetApprovalNeeded(val){
+  const ids=[...document.querySelectorAll('.pur-sel:checked')].map(c=>+c.value);
+  if(!ids.length){toast('Tick the suppliers first','d');return;}
+  if(!confirm(val==='N'?`Mark ${ids.length} supplier(s) as "no approval needed"?\n\nThey will be hidden from the Supplier Register, the Approved list and the scorecard; their BUSY purchases are still imported.`
+    :`Put ${ids.length} supplier(s) back on the approval list and scorecard?`)) return;
+  const r=await fetch(window.location.origin+'/api/purchasing/suppliers/approval-needed',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids,value:val})}).catch(()=>null);
+  const j=r?await r.json().catch(()=>({})):{};
+  if(!r||!r.ok){alert('❌ '+(j.error||'Save failed'));return;}
+  toast(`✅ ${j.changed} supplier(s) updated`);
+  await new Promise(res=>setTimeout(res,5100));          // let the shared supplier cache expire before redrawing
+  purRenderSuppliers();
+}
+async function purToggleApprovalNeeded(id){
+  const v=await db.purVendors.get(id);if(!v) return;
+  const to=purNeedsApproval(v)?'N':'Y';
+  if(!confirm(to==='N'
+    ?`${v.name}: no approval needed?\n\nUse this for rent, electricity, services and similar. It will be hidden from the Supplier Register, the Approved list and the scorecard, and its BUSY bills will not wait for a gate receipt. Its purchases are still imported.`
+    :`${v.name}: put back on the approval list and scorecard?`)) return;
+  if(!await db.purVendors.update(id,{approvalNeeded:to,updatedAt:new Date().toISOString()})){toast('Save failed','d');return;}
+  toast(to==='N'?'Marked: no approval needed':'Back on the approval list');purRenderSuppliers();
+}
 async function purDeleteVendor(id){
   const v=await db.purVendors.get(id);
   // Suppliers with BUSY purchases can't be deleted (the server refuses) — say so before anything is removed
@@ -334,7 +395,11 @@ async function purRenderSupplierForm(id=null){
 
   <div class="card" style="margin-bottom:12px">
     <div class="cb"><div class="fg"><label class="lbl">Remarks</label>
-      <input class="fc" id="ps-remarks" value="${esc(v?.remarks||'')}"></div></div>
+      <input class="fc" id="ps-remarks" value="${esc(v?.remarks||'')}"></div>
+      <div class="fg" style="margin-top:10px"><label class="lbl">Needs supplier approval &amp; scorecard?</label>
+      <select class="fc" id="ps-approval-needed" style="max-width:520px">
+        <option value="Y" ${purNeedsApproval(v)?'selected':''}>Yes — material / process supplier (samples, approval, rating)</option>
+        <option value="N" ${!purNeedsApproval(v)?'selected':''}>No — rent, electricity, services, overheads (no approval, not on scorecard)</option></select></div></div>
   </div>
 
   <div style="display:flex;gap:8px;justify-content:flex-end">
@@ -381,6 +446,7 @@ async function purSaveSupplier(id){
     ceoName:document.getElementById('ps-ceo').value.trim(),
     poDateNo:document.getElementById('ps-po-datno').value.trim(),
     remarks:document.getElementById('ps-remarks').value.trim(),
+    approvalNeeded:document.getElementById('ps-approval-needed').value,
     updatedAt:new Date().toISOString()
   };
   const wasApproved=id?purIsApproved(await db.purVendors.get(id)):false;
@@ -397,7 +463,7 @@ async function purSaveSupplier(id){
 //  APPROVED SUPPLIERS
 // ══════════════════════════════════════════════════════
 async function purRenderApproved(){
-  const vendors=(await db.purVendors.toArray().catch(()=>[])).filter(purIsApproved);
+  const vendors=(await db.purVendors.toArray().catch(()=>[])).filter(v=>purIsApproved(v)&&purNeedsApproval(v));
   vendors.sort((a,b)=>a.supNumber>b.supNumber?1:-1);
   setC(`
   <div class="ph"><h2>✅ Approved Supplier List</h2></div>
@@ -476,7 +542,8 @@ async function purViewVendor(id){
   </div>
 
   <div class="card">
-    <div class="ch"><h5>Delivery / Invoice Log (${rows.length})</h5></div>
+    <div class="ch"><h5>Delivery / Invoice Log — ${rows.length} row${rows.length===1?'':'s'}, ${sc.totalLots} deliver${sc.totalLots===1?'y':'ies'}</h5>
+      <span class="muted" style="font-size:11px">Rows with the same invoice / DC no. are one delivery</span></div>
     <div class="tw"><table>
       <thead><tr>
         <th>Source</th><th>Ref / Invoice No.</th><th>Date</th><th>Qty Received</th><th>Qty Rejected</th><th>Qty Accepted</th><th>Lot Timing</th><th></th>
@@ -522,7 +589,7 @@ function purVendorPeriodChange(){
 // ══════════════════════════════════════════════════════
 async function purRenderInvoices(){
   const allVendors=await db.purVendors.toArray().catch(()=>[]);
-  const approvedVendors=allVendors.filter(purIsApproved);
+  const approvedVendors=allVendors.filter(v=>purIsApproved(v)&&purNeedsApproval(v));
   const allLots=await db.purVendorLots.toArray().catch(()=>[]);
 
   // Combine each vendor's registration samples with their invoice lots so
@@ -596,7 +663,7 @@ async function purOpenLotForm(vendorId=null,editId=null,returnTo=null){
       <input class="fc" value="${esc(fixedVendor.name)} (${esc(fixedVendor.supNumber)})" readonly style="background:#f5f7fd;font-weight:700">
       <input type="hidden" id="lot-vendor-id" value="${fixedVendor.id}"></div>`;
   } else {
-    const approvedVendors=(await db.purVendors.toArray().catch(()=>[])).filter(purIsApproved);
+    const approvedVendors=(await db.purVendors.toArray().catch(()=>[])).filter(v=>purIsApproved(v)&&purNeedsApproval(v));
     _purVendorNameMap={};
     approvedVendors.forEach(v=>{ _purVendorNameMap[v.name.trim().toLowerCase()]=v; });
     vendorFieldHtml=`<div class="fg" style="margin-bottom:10px"><label class="lbl">Supplier * <span class="muted" style="font-weight:400">(type to search approved suppliers)</span></label>
@@ -696,7 +763,7 @@ async function purDeleteLot(id,returnTo){
 let _purScorecardPeriod={period:'all',from:'',to:''};
 
 async function purRenderScorecard(){
-  const vendors=(await db.purVendors.toArray().catch(()=>[])).filter(purIsApproved);
+  const vendors=(await db.purVendors.toArray().catch(()=>[])).filter(v=>purIsApproved(v)&&purNeedsApproval(v));
   vendors.sort((a,b)=>a.supNumber>b.supNumber?1:-1);
   const range=purPeriodRange(_purScorecardPeriod.period,_purScorecardPeriod.from,_purScorecardPeriod.to);
 
@@ -741,6 +808,7 @@ async function purRenderScorecard(){
         </tr>`).join('')}
       </tbody>
     </table></div>
+    <div style="font-size:11px;color:#6b7280;padding:6px 12px">Lots = deliveries: rows with the same invoice / DC no. (items of one delivery) count as one lot, late if any of them was late.</div>
   </div>`);
 }
 function purScorecardPeriodChange(){
@@ -827,7 +895,7 @@ async function purPrintSupplierForm(id){
 //  PRINT — Vendor Rating scorecard, all suppliers (VRA-PUR-F-04)
 // ══════════════════════════════════════════════════════
 async function purPrintScorecardAll(){
-  const vendors=(await db.purVendors.toArray().catch(()=>[])).filter(purIsApproved);
+  const vendors=(await db.purVendors.toArray().catch(()=>[])).filter(v=>purIsApproved(v)&&purNeedsApproval(v));
   vendors.sort((a,b)=>a.supNumber>b.supNumber?1:-1);
   const range=purPeriodRange(_purScorecardPeriod.period,_purScorecardPeriod.from,_purScorecardPeriod.to);
   const today=new Date().toLocaleDateString('en-IN');

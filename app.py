@@ -1435,7 +1435,8 @@ class _BusyIndex:
             if hit and len({x['id'] for x in sug} | {hit[0].id}) > 1:
                 hit = None
         if hit:
-            return hit[0].id, {'id': hit[0].id, 'name': hit[1].get('name'), 'approved': _bvendor_approved(hit[1])}
+            return hit[0].id, {'id': hit[0].id, 'name': hit[1].get('name'), 'approved': _bvendor_approved(hit[1]),
+                               'needsApproval': hit[1].get('approvalNeeded') != 'N'}
         choice = _bsupplier_choice(supplier_map, inv, self)
         vid = choice if isinstance(choice, int) else None
         return vid, {'id': vid, 'name': inv['party'], 'unknown': True, 'choice': choice, 'suggestions': sug}
@@ -1712,7 +1713,8 @@ def busy_import():
                 for l in inv['lines']:
                     m = idx.line_map(l['item'])
                     lines.append({**l, 'type': m['type'], **({'grade': _master_grade(m['grade'])} if m['type'] == 'rm' else {})})
-                needs = any(l['type'] in ('rm', 'inspect') for l in lines)
+                # rent, electricity … suppliers (no approval needed) never wait for a gate receipt
+                needs = any(l['type'] in ('rm', 'inspect') for l in lines) and idx.vendor_by_id.get(vid, {}).get('approvalNeeded') != 'N'
                 rec = {'key': inv['key'], 'hash': inv['hash'], 'batchId': batch.id, 'vendorId': vid,
                        'party': inv['party'], 'gstin': inv['gstin'], 'billNo': inv['billNo'], 'vchNo': inv['vchNo'],
                        'date': inv['date'], 'lines': lines, 'total': sum(l['amount'] or 0 for l in lines),
@@ -2035,6 +2037,8 @@ def busy_check():
         base = {'id': r.id, 'date': p['date'], 'billNo': p.get('billNo') or p.get('vchNo'), 'supplier': vname(p['vendorId']) or p.get('party'),
                 'lines': [{'item': l['item'], 'qty': l['qty'], 'unit': l.get('unit'), 'type': l.get('type'), 'grade': l.get('grade')} for l in p['lines']]}
         st = p.get('status')
+        if st == 'awaiting' and (idx.vendor_by_id.get(p['vendorId']) or {}).get('approvalNeeded') == 'N':
+            st = 'not-required'                       # supplier marked "no approval needed" after import
         if st == 'not-required':
             out['counts']['noInspection'] += 1
         elif st == 'awaiting':
@@ -2253,6 +2257,24 @@ def busy_matching_save():
         db.session.rollback()
         return jsonify({'error': f'Save failed — nothing was changed. ({ex})'}), 500
     return jsonify({'ok': True, 'sameSuppliers': n_same, 'newSuppliers': n_new, 'customers': n_cust, 'items': len(im)})
+
+@app.route('/api/purchasing/suppliers/approval-needed', methods=['POST'])
+def set_suppliers_approval_needed():
+    """Mark several suppliers at once as needing approval ('Y') or not ('N')."""
+    d = json_object_body()
+    if d is None: return jsonify(BAD_BODY[0]), 400
+    ids = [i for i in d.get('ids') or [] if isinstance(i, int) and not isinstance(i, bool)]
+    val = d.get('value')
+    if val not in ('Y', 'N') or not ids:
+        return jsonify({'error': 'Tick suppliers and choose needs approval or not'}), 400
+    n = 0
+    for r in GenericRecord.query.filter(GenericRecord.id.in_(ids)).all():
+        if r.module != 'purVendors': continue
+        v = safe_json_loads(r.data, {})
+        v['approvalNeeded'] = val; v['updatedAt'] = datetime.utcnow().isoformat()
+        r.data = json.dumps(v); r.updated_at = datetime.utcnow(); n += 1
+    db.session.commit()
+    return jsonify({'ok': True, 'changed': n})
 
 # ── Invoice / Delivery Register: one bill entered as several rows ──
 _TIMING_RANK = {'OnTime': 0, 'Within5': 1, 'After5': 2}
