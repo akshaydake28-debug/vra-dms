@@ -2254,6 +2254,58 @@ def busy_matching_save():
         return jsonify({'error': f'Save failed — nothing was changed. ({ex})'}), 500
     return jsonify({'ok': True, 'sameSuppliers': n_same, 'newSuppliers': n_new, 'customers': n_cust, 'items': len(im)})
 
+# ── Invoice / Delivery Register: one bill entered as several rows ──
+_TIMING_RANK = {'OnTime': 0, 'Within5': 1, 'After5': 2}
+
+@app.route('/api/purchasing/lots/combine', methods=['POST'])
+def combine_vendor_lots():
+    """Combine several Invoice / Delivery entries of one bill into one delivery:
+    quantities are added, the earliest date and the latest timing are kept.
+    BUSY links that pointed at a removed row now point at the kept one."""
+    d = json_object_body()
+    if d is None: return jsonify(BAD_BODY[0]), 400
+    ids = [i for i in d.get('ids') or [] if isinstance(i, int) and not isinstance(i, bool)]
+    keep = d.get('keepId')
+    if len(set(ids)) < 2 or keep not in ids:
+        return jsonify({'error': 'Tick at least two entries of the same bill'}), 400
+    rows = {r.id: (r, safe_json_loads(r.data, {})) for r in GenericRecord.query.filter(GenericRecord.id.in_(ids)).all()
+            if r.module == 'purVendorLots'}
+    if len(rows) != len(set(ids)):
+        return jsonify({'error': 'Some of these entries no longer exist — reload the page'}), 400
+    if len({x.get('vendorId') for _, x in rows.values()}) != 1:
+        return jsonify({'error': 'These entries are under different supplier records — merge the suppliers first (Merge Duplicates)'}), 400
+    if any(x.get('busyPurchaseId') for _, x in rows.values()):
+        return jsonify({'error': 'One of these was made from a BUSY bill — fix it on BUSY Check ("Entered twice") instead'}), 409
+    try:
+        num = lambda v: _bnum(v) or 0
+        recv = sum(num(x.get('qtyReceived')) for _, x in rows.values())
+        rej = sum(num(x.get('qtyRejected')) for _, x in rows.values())
+        acc = sum(num(x.get('qtyAccepted')) if x.get('qtyAccepted') not in ('', None)
+                  else max(num(x.get('qtyReceived')) - num(x.get('qtyRejected')), 0) for _, x in rows.values())
+        kr, kx = rows[keep]
+        kx.update(qtyReceived=recv, qtyRejected=rej, qtyAccepted=acc,
+                  date=min(str(x.get('date') or '9999') for _, x in rows.values()),
+                  timing=max((x.get('timing') or 'OnTime' for _, x in rows.values()), key=lambda t: _TIMING_RANK.get(t, 0)),
+                  remarks='; '.join(dict.fromkeys(str(x.get('remarks') or '').strip() for _, x in rows.values() if str(x.get('remarks') or '').strip())),
+                  combinedFrom=kx.get('combinedFrom', []) + [{'id': i, 'qtyReceived': x.get('qtyReceived'), 'qtyRejected': x.get('qtyRejected'),
+                                                             'date': x.get('date'), 'timing': x.get('timing')} for i, (_, x) in rows.items()],
+                  updatedAt=datetime.utcnow().isoformat())
+        kr.data = json.dumps(kx); kr.updated_at = datetime.utcnow()
+        gone = set(rows) - {keep}
+        for i in gone:
+            db.session.delete(rows[i][0])
+        for r, p in _brows('busyPurchases'):          # keep BUSY links pointing at a row that still exists
+            link = p.get('link') or {}
+            ids_l = link.get('vendorLotIds') or []
+            if gone & set(ids_l):
+                link['vendorLotIds'] = list(dict.fromkeys(keep if i in gone else i for i in ids_l))
+                r.data = json.dumps(p); r.updated_at = datetime.utcnow()
+        db.session.commit()
+    except Exception as ex:
+        db.session.rollback()
+        return jsonify({'error': f'Combine failed — nothing was changed. ({ex})'}), 500
+    return jsonify({'ok': True, 'combined': len(rows), 'qtyReceived': recv})
+
 # ══════════════════════════════════════════════════════
 #  MERGE DUPLICATES — parts and customer names (suppliers: above)
 #  Admin only, one transaction each. Every record that points at the
