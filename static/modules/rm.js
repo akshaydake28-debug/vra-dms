@@ -7,6 +7,8 @@
 const RM_DEFAULTS={grades:['ADC12','ADC10','A380','LM24'],approvers:['Manish Yadav','Sagar Shirgure','Akshay Dake']};
 function rmGetList(k){try{return JSON.parse(localStorage.getItem('vra_rm_'+k))||RM_DEFAULTS[k];}catch(e){return RM_DEFAULTS[k];}}
 function rmSaveList(k,a){try{localStorage.setItem('vra_rm_'+k,JSON.stringify(a));}catch(e){}}
+// Alloy grades come only from the shared Grade Master, so everyone picks the same spelling
+async function rmGetGrades(){try{const r=await fetch(window.location.origin+'/api/qms2/pq_grades');const g=(await r.json()).sort((a,b)=>(a.order??a.id)-(b.order??b.id)).map(x=>x.grade).filter(Boolean);return g;}catch(e){return[];}}
 async function rmGetLots(){try{const r=await fetch(window.location.origin+'/api/rm/lots');const lots=await r.json();return lots;}catch(e){return[];}}
 function rmDateStr(d){if(!d)return'';const dt=new Date(d+'T00:00:00');return String(dt.getDate()).padStart(2,'0')+String(dt.getMonth()+1).padStart(2,'0')+String(dt.getFullYear()).slice(-2);}
 function rmFmtDate(d){if(!d)return'—';const dt=new Date(d+'T00:00:00');return dt.toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'});}
@@ -15,8 +17,8 @@ async function rmNextLotNum(ds){const lots=await rmGetLots();const seq=lots.filt
 function rmRenderLabels(){
   const today=new Date().toISOString().split('T')[0];
   const ds=rmDateStr(today);
-  rmNextLotNum(ds).then(lotNum=>{
-    const grades=rmGetList('grades'),approvers=rmGetList('approvers');
+  Promise.all([rmNextLotNum(ds),rmGetGrades()]).then(([lotNum,grades])=>{
+    const approvers=rmGetList('approvers');
     setC(`<style>
       .rm-card{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:18px 22px;margin-bottom:14px}
       .rm-ct{font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.8px;margin-bottom:14px;display:flex;align-items:center;gap:7px}
@@ -82,7 +84,7 @@ function rmRenderLabels(){
       <div class="rm-fg3">
         <div class="rm-fg-item"><label>Lot Number (auto)</label><input type="text" id="rm-lot" style="background:#EAF3DE;color:#27500A;font-weight:700;border-color:#97C459" readonly value="${lotNum}"></div>
         <div class="rm-fg-item"><label>Received Date</label><input type="date" id="rm-date" value="${today}" onchange="rmRefLot()"></div>
-        <div class="rm-fg-item"><label>Alloy Grade</label><div class="rm-ew"><select id="rm-grade">${grades.map(g=>`<option>${g}</option>`).join('')}</select><button class="rm-ab" onclick="rmOpenAdd('grades')">＋</button></div></div>
+        <div class="rm-fg-item"><label>Alloy Grade</label><div class="rm-ew"><select id="rm-grade">${grades.length?grades.map(g=>`<option>${esc(g)}</option>`).join(''):'<option value="">No grades — add in Grade Master</option>'}</select><button class="rm-ab" title="Add or edit grades in the Grade Master" onclick="nav('pq-grades')">⚙</button></div></div>
       </div>
     </div>
     <div class="rm-card">
@@ -144,7 +146,7 @@ function rmRefLot(){const d=document.getElementById('rm-date')?.value;if(!d)retu
 function rmChgQty(d){window._rmQty=Math.max(1,Math.min(20,(window._rmQty||4)+d));const e=document.getElementById('rm-qty');if(e)e.textContent=window._rmQty;}
 
 function rmVal(){
-  const fields=[{id:'rm-sup',label:'Supplier Name'},{id:'rm-inv',label:'Invoice Number'},{id:'rm-wt',label:'Net Weight Received (kg)'},{id:'rm-appr',label:'Approved By'},{id:'rm-date',label:'Received Date'}];
+  const fields=[{id:'rm-sup',label:'Supplier Name'},{id:'rm-inv',label:'Invoice Number'},{id:'rm-wt',label:'Net Weight Received (kg)'},{id:'rm-appr',label:'Approved By'},{id:'rm-date',label:'Received Date'},{id:'rm-grade',label:'Alloy Grade (add it in Grade Master)'}];
   for(const f of fields){if(!document.getElementById(f.id)?.value?.trim()){const m=document.getElementById('rm-msg');if(m){m.textContent='⚠ Please fill in: '+f.label;m.style.display='block';m.style.color='#dc2626';}return false;}}
   const m=document.getElementById('rm-msg');if(m)m.style.display='none';return true;
 }
@@ -154,7 +156,8 @@ function rmCollect(){return{lotNumber:document.getElementById('rm-lot').value,da
 async function rmSave(){
   if(!rmVal())return;
   const lot=rmCollect();
-  try{await fetch(window.location.origin+'/api/rm/lots',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(lot)});
+  try{const r=await fetch(window.location.origin+'/api/rm/lots',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(lot)});
+  if(!r.ok){const e=await r.json().catch(()=>({}));toast(e.error||'Save failed','d');return;}
   const m=document.getElementById('rm-msg');if(m){m.textContent='✓ Saved.';m.style.display='block';m.style.color='#15803d';}setTimeout(()=>{const m=document.getElementById('rm-msg');if(m)m.style.display='none';rmRefLot();},2000);}catch(e){toast('Save failed','d');}
 }
 
@@ -224,7 +227,7 @@ async function rmRenderRegister(){
   const lots=await rmGetLots();
   const now=new Date(),tm=lots.filter(l=>{const d=new Date(l.date);return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear();}),pend=lots.filter(l=>l.spectro==='Pending');
   const tmKg=tm.reduce((s,l)=>s+(+l.weightKg||0),0),noWt=lots.filter(l=>!(+l.weightKg)).length;
-  setC(`<div class="ph"><h2>Raw Material — Lot Register</h2><button class="btn btn-p" onclick="nav('rm-labels')">➕ New Lot</button></div>
+  setC(`<div class="ph"><h2>Raw Material — Lot Register</h2><div style="display:flex;gap:8px"><button class="btn btn-o" onclick="rmOpenMerge()" title="Fix a misspelled or duplicate grade on all lots">🔀 Merge Grades</button><button class="btn btn-p" onclick="nav('rm-labels')">➕ New Lot</button></div></div>
   <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
     <div class="kpi-card"><div class="kpi-n">${lots.length}</div><div class="kpi-l">Total Lots</div></div>
     <div class="kpi-card"><div class="kpi-n">${tm.length}</div><div class="kpi-l">This Month</div></div>
@@ -237,13 +240,14 @@ async function rmRenderRegister(){
     <tbody>${lots.map(l=>`<tr>
       <td style="font-family:monospace;font-weight:700;color:#27500A">${l.lotNumber}</td>
       <td>${rmFmtDate(l.date)}</td>
-      <td><span class="badge" style="background:#FAEEDA;color:#BA7517">${l.grade}</span></td>
+      <td><span class="badge" style="background:#FAEEDA;color:#BA7517">${esc(l.grade)}</span></td>
       <td>${esc(l.supplier)}</td><td style="font-family:monospace;font-size:12px">${esc(l.invoice)}</td>
       <td style="text-align:right;white-space:nowrap;font-family:monospace">${+l.weightKg?(+l.weightKg).toLocaleString('en-IN',{maximumFractionDigits:1}):'<span style="color:#d97706">—</span>'}
         <button class="btn btn-o btn-xs" title="Edit weight" onclick="rmEditWeight(${l.id},${+l.weightKg||0})">✏️</button></td>
       <td><span class="badge ${l.spectro==='Done'?'ba':'bp'}">${l.spectro}</span></td>
-      <td>${l.approvedBy}</td><td style="text-align:center">${l.bundles}</td>
+      <td>${esc(l.approvedBy)}</td><td style="text-align:center">${l.bundles}</td>
       <td><div style="display:flex;gap:5px">
+        <button class="btn btn-o btn-sm" title="Edit lot" onclick="rmOpenEdit(${l.id})">✏️</button>
         <button class="btn btn-sm" style="background:#FAEEDA;color:#BA7517" onclick="rmPrintReg(${l.id})">🖨</button>
         <button class="btn btn-r btn-sm" onclick="rmDelLot(${l.id})">✕</button>
       </div></td>
@@ -264,6 +268,70 @@ async function rmEditWeight(id,cur){
     toast('✅ Weight saved');
   }catch(e){toast('Save failed','d');}
   rmRenderRegister();
+}
+
+function rmClose(id){document.getElementById(id)?.remove();}
+
+async function rmOpenEdit(id){
+  const [lots,master]=await Promise.all([rmGetLots(),rmGetGrades()]),l=lots.find(x=>x.id===id);if(!l)return;
+  const appr=[...new Set([...rmGetList('approvers'),l.approvedBy].filter(Boolean))];
+  const opt=(arr,cur)=>arr.map(o=>`<option${o===cur?' selected':''}>${esc(o)}</option>`).join('');
+  const ov=document.createElement('div');ov.className='overlay';ov.id='rme-ov';
+  ov.innerHTML=`<div class="modal" style="width:520px">
+    <h3>Edit Lot — <span style="font-family:monospace;color:#27500A">${esc(l.lotNumber)}</span></h3>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="fg"><label class="lbl">Received Date</label><input class="fc" type="date" id="rme-date" value="${esc(l.date)}"></div>
+      <div class="fg"><label class="lbl">Alloy Grade</label><select class="fc" id="rme-grade">${opt(master,l.grade)}${l.grade&&!master.includes(l.grade)?`<option selected>${esc(l.grade)}</option>`:''}</select>${l.grade&&!master.includes(l.grade)?`<div style="font-size:11px;color:#d97706;margin-top:3px">"${esc(l.grade)}" is not in the Grade Master — pick the correct grade.</div>`:''}</div>
+      <div class="fg"><label class="lbl">Supplier</label><input class="fc" id="rme-sup" value="${esc(l.supplier)}"></div>
+      <div class="fg"><label class="lbl">Invoice No.</label><input class="fc" id="rme-inv" value="${esc(l.invoice)}"></div>
+      <div class="fg"><label class="lbl">Net Weight (kg)</label><input class="fc" type="number" min="0" step="0.1" id="rme-wt" value="${+l.weightKg||''}"></div>
+      <div class="fg"><label class="lbl">Bundles</label><input class="fc" type="number" min="1" step="1" id="rme-bun" value="${+l.bundles||1}"></div>
+      <div class="fg"><label class="lbl">Approved By</label><select class="fc" id="rme-appr"><option value="">— Select —</option>${opt(appr,l.approvedBy)}</select></div>
+      <div class="fg"><label class="lbl">Spectro Status</label><select class="fc" id="rme-spec">${opt(['Done','Pending','Not Required'],l.spectro)}</select></div>
+    </div>
+    <div style="font-size:11px;color:#6b7280;margin-bottom:10px">The lot number stays as printed on the labels. Re-print labels if you change details shown on them.</div>
+    <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-o" onclick="rmClose('rme-ov')">Cancel</button><button class="btn btn-p" onclick="rmSaveEdit(${l.id})">💾 Save</button></div>
+  </div>`;
+  document.body.appendChild(ov);
+}
+async function rmSaveEdit(id){
+  const v=k=>document.getElementById(k).value;
+  const wt=v('rme-wt').trim(),body={date:v('rme-date'),grade:v('rme-grade'),supplier:v('rme-sup').trim(),invoice:v('rme-inv').trim(),
+    approvedBy:v('rme-appr'),spectro:v('rme-spec'),bundles:parseInt(v('rme-bun'))||1,weightKg:wt===''?null:parseFloat(wt)};
+  if(!body.date||!body.grade){toast('Date and grade are required','d');return;}
+  if(wt!==''&&!(body.weightKg>=0)){toast('Enter a valid weight','d');return;}
+  try{
+    const r=await fetch(window.location.origin+'/api/rm/lots/'+id,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!r.ok){const e=await r.json().catch(()=>({}));toast(e.error||'Save failed','d');return;}
+    rmClose('rme-ov');toast('✅ Lot updated');rmRenderRegister();
+  }catch(e){toast('Save failed','d');}
+}
+
+// Merge a misspelled / duplicate grade into the correct one on every lot
+async function rmOpenMerge(){
+  const [lots,master]=await Promise.all([rmGetLots(),rmGetGrades()]),cnt={};lots.forEach(l=>{const g=l.grade||'';cnt[g]=(cnt[g]||0)+1;});
+  const used=Object.keys(cnt).sort();
+  if(!used.length){toast('No lots yet','d');return;}
+  const ov=document.createElement('div');ov.className='overlay';ov.id='rmm-ov';
+  ov.innerHTML=`<div class="modal" style="width:440px">
+    <h3>🔀 Merge Grades</h3>
+    <div style="font-size:12px;color:#6b7280;margin-bottom:10px">Moves every lot with the wrong grade to the correct grade, so stock shows as one entry.</div>
+    <div class="fg"><label class="lbl">Wrong / duplicate grade</label><select class="fc" id="rmm-from">${used.map(g=>`<option value="${esc(g)}">${esc(g||'(blank)')} — ${cnt[g]} lot${cnt[g]>1?'s':''}</option>`).join('')}</select></div>
+    <div class="fg"><label class="lbl">Correct grade</label><select class="fc" id="rmm-to">${master.map(g=>`<option>${esc(g)}</option>`).join('')}</select><div style="font-size:11px;color:#6b7280;margin-top:4px">Grade missing? Add it in the <a href="#" onclick="event.preventDefault();rmClose('rmm-ov');nav('pq-grades')">Grade Master</a> first.</div></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-o" onclick="rmClose('rmm-ov')">Cancel</button><button class="btn btn-p" onclick="rmSaveMerge()">Merge</button></div>
+  </div>`;
+  document.body.appendChild(ov);
+}
+async function rmSaveMerge(){
+  const from=document.getElementById('rmm-from').value,to=document.getElementById('rmm-to').value.trim();
+  if(!to){toast('Enter the correct grade','d');return;}
+  if(from===to){toast('Both grades are the same','d');return;}
+  if(!confirm(`Change grade "${from||'(blank)'}" to "${to}" on all its lots?`))return;
+  try{
+    const r=await fetch(window.location.origin+'/api/rm/lots/rename-grade',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({from,to})});
+    const d=await r.json().catch(()=>({}));if(!r.ok){toast(d.error||'Merge failed','d');return;}
+    rmClose('rmm-ov');toast(`✅ ${d.updated} lot${d.updated===1?'':'s'} moved to ${to}`);rmRenderRegister();
+  }catch(e){toast('Merge failed','d');}
 }
 
 async function rmDelLot(id){if(!confirm('Delete this lot?'))return;await fetch(window.location.origin+'/api/rm/lots/'+id,{method:'DELETE'});toast('Lot deleted','s');rmRenderRegister();}

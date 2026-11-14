@@ -1,11 +1,13 @@
-from flask import Flask, request, jsonify, send_from_directory, session
+from flask import Flask, request, jsonify, send_from_directory, session, Response
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime, timedelta
 import os
 import json
+import re
 import secrets
+import base64
 
 app = Flask(__name__, static_folder='static')
 CORS(app)
@@ -82,6 +84,23 @@ class RMLot(db.Model):
             'approvedBy':self.approved_by,'spectro':self.spectro,'bundles':self.bundles,
             'weightKg':self.weight_kg}
 
+def _grade_key(g):
+    # "ADC 12", "adc-12" and "ADC12" all compare equal
+    return re.sub(r'[^A-Z0-9]', '', str(g or '').upper())
+
+def _master_grade(g):
+    # Grade Master spelling of g ("adc 12" -> "ADC12"), or None if it is not in the Grade Master
+    k = _grade_key(g)
+    if not k:
+        return None
+    for r in GenericRecord.query.filter_by(module='pq_grades').all():
+        name = safe_json_loads(r.data, {}).get('grade')
+        if name and _grade_key(name) == k:
+            return name
+    return None
+
+GRADE_NOT_IN_MASTER = 'Grade must be selected from the Grade Master'
+
 def _to_float(v):
     try:
         f = float(v)
@@ -124,6 +143,14 @@ def serve_module(filename):
 def serve_core(filename):
     return send_from_directory('static/core', filename)
 
+@app.after_request
+def no_stale_frontend(resp):
+    # Browsers must re-check the app's HTML/JS on every load (a cheap 304 when unchanged),
+    # otherwise after a deploy they can keep running the old screens.
+    if request.path == '/' or request.path.startswith('/static/'):
+        resp.headers['Cache-Control'] = 'no-cache'
+    return resp
+
 @app.route('/feedback/<token>')
 def customer_feedback_page(token):
     # Standalone page, not the logged-in app shell — a customer opening
@@ -140,7 +167,7 @@ PUBLIC_PATHS = {'/api/auth/login'}
 # all — the unguessable token in the URL is what gates access, not a login
 # session. Everything under this prefix must independently validate its
 # own token and never expose data beyond that one record.
-PUBLIC_PREFIXES = ('/api/public/feedback/',)
+PUBLIC_PREFIXES = ('/api/public/feedback/', '/api/public/wi/', '/api/public/wi-photo/')
 BACKUP_API_TOKEN = os.environ.get('BACKUP_API_TOKEN')
 BACKUP_FORMAT = 2   # see backup() / _restore_data()
 HASH_PREFIXES = ('pbkdf2:', 'scrypt:', 'argon2:')
@@ -170,13 +197,35 @@ def safe_json_loads(raw, default):
         return default
     return parsed
 
+def json_object_body():
+    """Return the request body if it is a JSON object, else None. The record
+    write endpoints store whatever they are given, so a body that is `null`,
+    a list or plain text would be saved as-is and then be skipped (and so
+    silently left out) by the nightly backup, which only accepts objects."""
+    body = request.get_json(silent=True)
+    return body if isinstance(body, dict) else None
+
+BAD_BODY = ({'error': 'Request body must be a JSON object'}, 400)
+
+def body_or_empty():
+    """Request body as a dict; {} if missing or not a JSON object, so a
+    malformed request gets a clean 400/'missing fields' instead of a 500."""
+    return json_object_body() or {}
+
 @app.before_request
 def require_login():
     path = request.path
     if not path.startswith('/api/') or path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES):
         return None
     if 'user_id' in session:
-        return None
+        # The session cookie lasts 30 days, so confirm the account still exists
+        # (a deleted user must be locked out at once) and pick up role changes.
+        u = db.session.get(User, session.get('user_id'))
+        if u:
+            session['role'] = u.role
+            return None
+        session.clear()
+        return jsonify({'error': 'Not authenticated'}), 401
     # Dedicated token for the automated backup workflow only — lets the
     # nightly export run unattended without needing a real user's login.
     if path == '/api/backup' and BACKUP_API_TOKEN and request.headers.get('X-Backup-Token') == BACKUP_API_TOKEN:
@@ -190,7 +239,7 @@ def require_admin():
 
 @app.route('/api/auth/login', methods=['POST'])
 def login():
-    d = request.json
+    d = body_or_empty()
     user = User.query.filter_by(username=d.get('username')).first()
     if not user:
         return jsonify({'error': 'Invalid credentials'}), 401
@@ -232,8 +281,13 @@ def get_users_with_passwords():
 def create_user():
     err = require_admin()
     if err: return err
-    d = request.json
-    u = User(username=d['username'], password=generate_password_hash(d['password']), role=d['role'], name=d['name'])
+    d = body_or_empty()
+    username, password, role, name = d.get('username'), d.get('password'), d.get('role'), d.get('name')
+    if not username or not password or not role or not name:
+        return jsonify({'error': 'Missing fields'}), 400
+    if User.query.filter_by(username=username).first():
+        return jsonify({'error': 'Username already exists'}), 400
+    u = User(username=username, password=generate_password_hash(password), role=role, name=name)
     db.session.add(u)
     db.session.commit()
     return jsonify({'id': u.id})
@@ -249,7 +303,7 @@ def delete_user(uid):
 
 @app.route('/api/auth/password', methods=['POST'])
 def change_password():
-    d = request.json
+    d = body_or_empty()
     username = d.get('username','')
     new_password = d.get('newPassword','')
     if not username or not new_password:
@@ -270,8 +324,9 @@ def change_password():
 def reset_user_password(uid):
     err = require_admin()
     if err: return err
-    d = request.json
-    new_password = d.get('newPassword','vra@2025')
+    d = json_object_body()
+    if d is None: return jsonify(BAD_BODY[0]), 400
+    new_password = d.get('newPassword') or 'vra@2025'
     u = User.query.get_or_404(uid)
     u.password = generate_password_hash(new_password)
     db.session.commit()
@@ -294,8 +349,13 @@ def list_documents():
 
 @app.route('/api/documents', methods=['POST'])
 def save_document():
-    d = request.json
+    d = json_object_body()
+    if d is None: return jsonify(BAD_BODY[0]), 400
     existing = Document.query.filter_by(doc_number=d.get('docNumber')).first()
+    if existing and d.get('isNew'):
+        # A brand-new document must never take over an existing number —
+        # this endpoint upserts by number, so it would overwrite that document.
+        return jsonify({'error': 'Document number already in use'}), 409
     if existing:
         existing.title = d.get('title',existing.title)
         existing.doc_type = d.get('docType',existing.doc_type)
@@ -346,7 +406,9 @@ def list_versions():
 
 @app.route('/api/versions', methods=['POST'])
 def save_version():
-    r = GenericRecord(module='versions', data=json.dumps(request.json))
+    body = json_object_body()
+    if body is None: return jsonify(BAD_BODY[0]), 400
+    r = GenericRecord(module='versions', data=json.dumps(body))
     db.session.add(r)
     db.session.commit()
     return jsonify({'id': r.id})
@@ -354,8 +416,14 @@ def save_version():
 @app.route('/api/versions/<int:rid>', methods=['POST'])
 def update_version(rid):
     r = GenericRecord.query.get_or_404(rid)
+    body = json_object_body()
+    if body is None: return jsonify(BAD_BODY[0]), 400
+    # Record ids are shared by every module — without this check, this URL
+    # could rewrite any other record (including a task, bypassing task_guard).
+    if r.module != 'versions':
+        return jsonify({'error': 'Not found'}), 404
     existing = safe_json_loads(r.data, {})
-    existing.update(request.json)
+    existing.update(body)
     r.data = json.dumps(existing)
     r.updated_at = datetime.utcnow()
     db.session.commit()
@@ -376,7 +444,8 @@ def get_audit_log():
 
 @app.route('/api/auditlog', methods=['POST'])
 def post_audit_log():
-    d = request.json
+    d = json_object_body()
+    if d is None: return jsonify(BAD_BODY[0]), 400
     log = AuditLog(
         action=d.get('action',''),
         module='documents',
@@ -401,12 +470,14 @@ def get_setting(key):
 
 @app.route('/api/settings/<key>', methods=['POST'])
 def save_setting(key):
+    body = json_object_body()
+    if body is None: return jsonify(BAD_BODY[0]), 400
     r = GenericRecord.query.filter_by(module='setting_'+key).first()
     if r:
-        r.data = json.dumps(request.json.get('value'))
+        r.data = json.dumps(body.get('value'))
         r.updated_at = datetime.utcnow()
     else:
-        r = GenericRecord(module='setting_'+key, data=json.dumps(request.json.get('value')))
+        r = GenericRecord(module='setting_'+key, data=json.dumps(body.get('value')))
         db.session.add(r)
     db.session.commit()
     return jsonify({'ok': True})
@@ -427,13 +498,16 @@ def list_rm_lots():
 
 @app.route('/api/rm/lots', methods=['POST'])
 def save_rm_lot():
-    d = request.json
+    d = body_or_empty()
     existing = RMLot.query.filter_by(lot_number=d.get('lotNumber','')).first()
     if existing:
         return jsonify({'id': existing.id})
+    grade = _master_grade(d.get('grade'))
+    if not grade:
+        return jsonify({'error': GRADE_NOT_IN_MASTER}), 400
     lot = RMLot(
         lot_number=d.get('lotNumber'), date=d.get('date',''),
-        grade=d.get('grade',''), supplier=d.get('supplier',''),
+        grade=grade, supplier=d.get('supplier',''),
         invoice=d.get('invoice',''), approved_by=d.get('approvedBy',''),
         spectro=d.get('spectro',''), bundles=d.get('bundles',1),
         weight_kg=_to_float(d.get('weightKg'))
@@ -444,14 +518,42 @@ def save_rm_lot():
 
 @app.route('/api/rm/lots/<int:lid>', methods=['POST'])
 def update_rm_lot(lid):
-    # Only the received weight is editable — lot identity fields stay as printed on the labels.
+    # Partial update: only the fields sent are changed. The lot number stays as printed on the labels.
     l = RMLot.query.get(lid)
     if not l:
         return jsonify({'error': 'Not found'}), 404
     d = request.get_json(silent=True) or {}
-    l.weight_kg = _to_float(d.get('weightKg'))
+    if 'grade' in d and d.get('grade') != l.grade:
+        # A changed grade must come from the Grade Master; an old unchanged one is left as is
+        grade = _master_grade(d.get('grade'))
+        if not grade:
+            return jsonify({'error': GRADE_NOT_IN_MASTER}), 400
+        d['grade'] = grade
+    fields = {'date':'date', 'grade':'grade', 'supplier':'supplier', 'invoice':'invoice',
+              'approvedBy':'approved_by', 'spectro':'spectro'}
+    for k, col in fields.items():
+        if k in d:
+            setattr(l, col, str(d.get(k) or '').strip())
+    if 'bundles' in d:
+        try:
+            l.bundles = max(1, int(d.get('bundles')))
+        except (TypeError, ValueError):
+            pass
+    if 'weightKg' in d:
+        l.weight_kg = _to_float(d.get('weightKg'))
     db.session.commit()
     return jsonify(l.to_dict())
+
+@app.route('/api/rm/lots/rename-grade', methods=['POST'])
+def rename_rm_grade():
+    # Merge a misspelled / duplicate grade into the correct one across all lots.
+    d = request.get_json(silent=True) or {}
+    old, new = str(d.get('from') or ''), _master_grade(d.get('to'))
+    if not new:
+        return jsonify({'error': GRADE_NOT_IN_MASTER}), 400
+    n = RMLot.query.filter(RMLot.grade == old).update({'grade': new})
+    db.session.commit()
+    return jsonify({'updated': n})
 
 @app.route('/api/rm/lots/<int:lid>', methods=['DELETE'])
 def delete_rm_lot(lid):
@@ -498,6 +600,10 @@ def backup():
     # All generic modules
     modules = {}
     for r in GenericRecord.query.order_by(GenericRecord.id).all():
+        # Earlier restores left a stale generic 'rm_lots' copy behind; the real
+        # lots are exported above from their own table, so never let it override them.
+        if r.module == 'rm_lots':
+            continue
         try:
             parsed = json.loads(r.data)
         except (TypeError, ValueError):
@@ -536,9 +642,11 @@ def restore():
         return jsonify({'error':'Invalid backup: "documents" must be a list of objects'}), 400
     if data.get('settings') is not None and not isinstance(data['settings'], dict):
         return jsonify({'error':'Invalid backup: "settings" must be an object'}), 400
+    if isinstance(data.get('audit'), list) and not all(isinstance(x, dict) for x in data['audit']):
+        return jsonify({'error':'Invalid backup: "audit" must be a list of objects'}), 400
     for key, value in data.items():
         if key in ('exportedAt','exportedBy','appVersion','company','documents',
-                   'audit','users','customDocTypes','settings','records','backupErrors'):
+                   'users','customDocTypes','settings','records','backupErrors'):
             continue
         if isinstance(value, list) and not all(isinstance(x, dict) for x in value):
             return jsonify({'error':f'Invalid backup: "{key}" must be a list of objects'}), 400
@@ -597,6 +705,8 @@ def _restore_data(data):
     # list; a file without one must not wipe them.
     docs_in = data.get('documents')
     doc_count = 0
+    doc_id_map = {}  # old document id (in the backup) -> new id after restore
+    new_docs = []
     if docs_in is not None:
         Document.query.delete()
         taken = set()
@@ -645,6 +755,24 @@ def _restore_data(data):
             place(GenericRecord(module=key, data=json.dumps(nr)), rec.get('id'), taken)
             module_count += 1
 
+    # Audit log — only replaced if the file actually contains entries, so a
+    # backup without any can't wipe the trail. Document ids are kept on
+    # restore, so each entry still points at its document.
+    audit_in = data.get('audit')
+    audit_count = 0
+    if isinstance(audit_in, list) and audit_in:
+        AuditLog.query.delete()
+        for a in audit_in:
+            try:
+                ts = datetime.fromisoformat(str(a.get('timestamp')))
+            except (TypeError, ValueError):
+                ts = datetime.utcnow()
+            db.session.add(AuditLog(
+                action=a.get('action',''), module='documents', doc_id=a.get('docId'),
+                user=a.get('user',''), notes=a.get('notes'),
+                detail=a.get('notes'), timestamp=ts))
+            audit_count += 1
+
     # RM lots — replaced only if the file holds them (a complete backup always
     # does, even when empty).
     rm_in = data.get('rm_lots')
@@ -678,10 +806,196 @@ def _restore_data(data):
 
     db.session.commit()
     result = {'ok': True, 'complete': full, 'documents': doc_count,
-              'records': module_count, 'rmLots': rm_count, 'renumbered': len(renumber)}
+              'records': module_count, 'rmLots': rm_count, 'audit': audit_count,
+              'renumbered': len(renumber)}
     if data.get('backupErrors'):
         result['backupErrors'] = len(data['backupErrors'])
     return result
+
+
+# ══════════════════════════════════════════════════════
+#  WORK INSTRUCTIONS (step-by-step documents with photos)
+#  A WI/SOP made in the step builder is an ordinary Document (same number
+#  series, revisions and approval) whose extra.format is 'steps'; its steps
+#  live on the version record under 'wi'. Step photos are stored one per
+#  GenericRecord under module 'wiph_<token>' — the indexed module column
+#  makes the token lookup fast, and the normal backup/restore carries them
+#  with no extra code. The token is random and unguessable, so photos can
+#  be served without a login to the phone view opened from the printed QR.
+# ══════════════════════════════════════════════════════
+WI_PHOTO_PREFIX = 'wiph_'
+WI_PHOTO_TYPES = ('image/jpeg', 'image/png', 'image/webp')
+WI_PHOTO_MAX_BYTES = 4 * 1024 * 1024
+_WI_TOKEN_RE = re.compile(r'^[A-Za-z0-9_-]{16,40}$')
+
+def _wi_store_photo(raw_bytes, mime, created_by=''):
+    token = secrets.token_urlsafe(18)
+    db.session.add(GenericRecord(module=WI_PHOTO_PREFIX + token, data=json.dumps({
+        'mime': mime, 'b64': base64.b64encode(raw_bytes).decode('ascii'),
+        'createdBy': created_by, 'createdAt': datetime.utcnow().isoformat()})))
+    return token
+
+@app.route('/api/wi/photos', methods=['POST'])
+def wi_upload_photo():
+    d = body_or_empty()
+    m = re.match(r'^data:(image/[a-z]+);base64,(.+)$', str(d.get('dataUrl', '')), re.S)
+    if not m or m.group(1) not in WI_PHOTO_TYPES:
+        return jsonify({'error': 'Send a JPG, PNG or WEBP image'}), 400
+    try:
+        raw = base64.b64decode(m.group(2), validate=True)
+    except (ValueError, TypeError):
+        return jsonify({'error': 'The image data is damaged'}), 400
+    if not raw or len(raw) > WI_PHOTO_MAX_BYTES:
+        return jsonify({'error': 'Image is empty or larger than 4 MB'}), 400
+    token = _wi_store_photo(raw, m.group(1), _current_user_name() or '')
+    db.session.commit()
+    return jsonify({'token': token})
+
+@app.route('/api/public/wi-photo/<token>', methods=['GET'])
+def wi_get_photo(token):
+    if not _WI_TOKEN_RE.match(token or ''):
+        return jsonify({'error': 'Not found'}), 404
+    r = GenericRecord.query.filter_by(module=WI_PHOTO_PREFIX + token).first()
+    d = safe_json_loads(r.data, {}) if r else {}
+    if not d.get('b64'):
+        return jsonify({'error': 'Not found'}), 404
+    try:
+        raw = base64.b64decode(d['b64'])
+    except (ValueError, TypeError):
+        return jsonify({'error': 'Not found'}), 404
+    resp = Response(raw, mimetype=d.get('mime') if d.get('mime') in WI_PHOTO_TYPES else 'image/jpeg')
+    # A token always points at the same bytes (edits create a new photo).
+    resp.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+    return resp
+
+def _wi_active_version(doc_id):
+    best = None
+    for r in GenericRecord.query.filter_by(module='versions').order_by(GenericRecord.id.asc()).all():
+        v = safe_json_loads(r.data, {})
+        if v.get('docId') == doc_id and v.get('status') == 'ACTIVE':
+            best = v
+    return best
+
+@app.route('/api/public/wi/<doc_number>', methods=['GET'])
+def wi_public_doc(doc_number):
+    # Phone view opened from the QR on a printed WI. Only ever returns the
+    # current APPROVED revision of a step-format document — drafts, pending
+    # and rejected revisions are never shown here.
+    doc = Document.query.filter_by(doc_number=doc_number).first()
+    if not doc or safe_json_loads(doc.extra, {}).get('format') != 'steps':
+        return jsonify({'error': 'Not found'}), 404
+    v = _wi_active_version(doc.id)
+    if not v:
+        return jsonify({'error': 'This document has no approved revision yet'}), 404
+    wi = v.get('wi') or {}
+    return jsonify({
+        'docNumber': doc.doc_number, 'title': doc.title, 'docType': doc.doc_type,
+        'revision': v.get('revision'), 'approvedBy': v.get('approvedBy', ''),
+        'approvalDate': v.get('approvalDate', ''),
+        'revisionInProgress': doc.revision if doc.revision != v.get('revision') else None,
+        'wi': {k: wi.get(k) for k in ('photos', 'machineLabel', 'partLabel', 'area', 'instruments', 'ppe', 'steps')},
+    })
+
+@app.route('/wi/<doc_number>')
+def wi_phone_page(doc_number):
+    return send_from_directory('static', 'wi.html')
+
+# ── Demo work instructions (seeded once, removable from the app) ──
+WI_DEMO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'seed_data', 'wi_demo')
+
+def _wi_demo_html(wi):
+    rows = []
+    n = 0
+    for s in wi['steps']:
+        if s.get('kind') == 'section':
+            rows.append(f"<tr><th colspan=\"3\">{s.get('text','')}</th></tr>")
+            continue
+        n += 1
+        img = f"<img src=\"/api/public/wi-photo/{s['photo']}\" style=\"width:240px\">" if s.get('photo') else ''
+        extra = ''.join(f"<div><b>{lab}:</b> {s[k]}</div>" for k, lab in
+                        (('key', 'Key point'), ('check', 'Check'), ('avoid', 'Avoid')) if s.get(k))
+        rows.append(f"<tr><td>{n}</td><td>{img}</td><td><p>{s.get('text','')}</p>{extra}</td></tr>")
+    return '<table>' + ''.join(rows) + '</table>'
+
+def seed_wi_demo():
+    if GenericRecord.query.filter_by(module='setting_wiDemoSeeded').first():
+        return
+    if not os.path.isdir(WI_DEMO_DIR):
+        return
+    def photo(name):
+        with open(os.path.join(WI_DEMO_DIR, name), 'rb') as f:
+            return _wi_store_photo(f.read(), 'image/jpeg', 'Demo')
+    def recs(module):
+        out = []
+        for r in GenericRecord.query.filter_by(module=module).order_by(GenericRecord.id.asc()).all():
+            d = safe_json_loads(r.data, {}); d['id'] = r.id; out.append(d)
+        return out
+    gauges = [g for g in recs('calGauges') if (g.get('status') or 'Active') == 'Active']
+    vern = next((g for g in gauges if 'vernier' in str(g.get('name', '')).lower()), gauges[0] if gauges else None)
+    parts = recs('prodParts'); part = next((p for p in parts if not p.get('demo')), parts[0] if parts else None)
+    inst = [{'id': vern['id'], 'gaugeId': vern.get('gaugeId', ''), 'name': vern.get('name', '')}] if vern else []
+    tool = vern['id'] if vern else ''
+    def S(text, ph=None, **kw):
+        return {'kind': 'step', 'text': text, 'photo': photo(ph) if ph else '', 'photoBase': '', 'ann': [],
+                'key': kw.get('key', ''), 'check': kw.get('check', ''), 'avoid': kw.get('avoid', ''), 'tool': kw.get('tool', '')}
+    def H(text): return {'kind': 'section', 'text': text}
+    now = datetime.utcnow().isoformat()
+    demos = [
+        ('VRA-WI-DEMO-1', '[DEMO] How to measure with a vernier caliper', 'ACTIVE', {
+            'photos': True, 'area': 'Inspection room / any station', 'machineId': '', 'machineLabel': '',
+            'partId': '', 'partLabel': '', 'instruments': inst, 'ppe': ['Safety shoes', 'Cotton gloves'],
+            'steps': [
+                H('Before you start'),
+                S('Wipe both jaws and the part face with a clean, lint-free cloth.', 'v1_clean.jpg',
+                  check='No dust, oil or burr on the jaws.', avoid='Cleaning the jaws with emery paper or a file.'),
+                S('Check the calibration sticker on the caliper.', 'v2_sticker.jpg',
+                  check='Due date not crossed; gauge ID matches the gauge register.',
+                  avoid='Using a caliper with an expired or missing sticker. Hand it to Quality.', tool=tool),
+                S('Close the jaws fully and confirm the zero.', 'v3_zero.jpg',
+                  check='Digital display reads 0.00.', key='If it does not read 0.00, press ZERO. If it still drifts, report it.'),
+                H('Measuring'),
+                S('Place the part deep inside the outside jaws, square to the face, and close gently with the thumb roller.', 'v4_measure.jpg',
+                  key='Measure at the same marked point every time.', avoid='Forcing the jaws or measuring at the jaw tips.', tool=tool),
+                S('Read the main scale, then find the vernier line that lines up exactly.', 'v5_read.jpg',
+                  check='Reading = main scale + (vernier line x 0.02). Example: 12 + 0.24 = 12.24 mm.'),
+                H('After use'),
+                S('Clean the caliper, leave a small gap between the jaws and keep it in its box.', 'v6_store.jpg',
+                  avoid='Dropping it, keeping it in a pocket or leaving it on the machine.'),
+            ]}),
+        ('VRA-WI-DEMO-2', '[DEMO] How to read a Quality Alert', 'DRAFT', {
+            'photos': True, 'area': 'All production stations', 'machineId': '', 'machineLabel': '',
+            'partId': part['id'] if part else '', 'partLabel': (f"{part.get('partNumber','')} — {part.get('partName','')}" if part else ''),
+            'instruments': [], 'ppe': ['Safety shoes'],
+            'steps': [
+                S('Check the QA number, part number and date at the top of the alert.', 'q1_header.jpg',
+                  check='The part number matches the part you are running.'),
+                S('Look at the GOOD photo first. This is what an OK part looks like.', 'q2_good.jpg'),
+                S('Look at the BAD photo. The red circle shows where the defect is.', 'q3_bad.jpg',
+                  key='Check exactly that area on every part you make.'),
+                S('Read the action box: what to do if you find this defect.', 'q4_action.jpg',
+                  check='Red tag the part, put it in the quarantine bin, inform the supervisor.'),
+                S('Sign the alert at your station to confirm you have read it.', 'q5_sign.jpg',
+                  avoid='Starting work without reading and signing a new alert.'),
+            ]}),
+    ]
+    for number, title, status, wi in demos:
+        if Document.query.filter_by(doc_number=number).first():
+            continue
+        doc = Document(doc_number=number, title=title, doc_type='WI', revision='A', status=status,
+                       content='', created_by='Demo (sample data)', approved_by='Demo (sample data)' if status == 'ACTIVE' else '',
+                       created_date=now, approved_date=now if status == 'ACTIVE' else '',
+                       extra=json.dumps({'format': 'steps', 'demo': True}))
+        db.session.add(doc); db.session.flush()
+        ver = {'docId': doc.id, 'revision': 'A', 'content': _wi_demo_html(wi), 'wi': wi,
+               'changeSummary': 'Initial creation (sample data)', 'preparedBy': 'Demo (sample data)',
+               'preparedDate': now, 'status': status}
+        if status == 'ACTIVE':
+            ver.update({'approvedBy': 'Demo (sample data)', 'approvalDate': now, 'approvalNotes': ''})
+        db.session.add(GenericRecord(module='versions', data=json.dumps(ver)))
+        db.session.add(AuditLog(action='CREATED', module='documents', doc_id=doc.id, doc_number=number,
+                                user='Demo (sample data)', notes=f'"{title}" created as sample data'))
+    db.session.add(GenericRecord(module='setting_wiDemoSeeded', data=json.dumps(True)))
+    db.session.commit()
 
 
 # ══════════════════════════════════════════════════════
@@ -720,8 +1034,9 @@ def public_feedback_submit(token):
     if d.get('status') == 'SUBMITTED':
         return jsonify({'error': 'This feedback link has already been used'}), 410
 
-    body = request.json or {}
-    raw_ratings = body.get('ratings') or {}
+    body = body_or_empty()
+    raw_ratings = body.get('ratings')
+    if not isinstance(raw_ratings, dict): raw_ratings = {}
     ratings = {}
     for key in CF_RATING_KEYS:
         try:
@@ -808,6 +1123,35 @@ def ask_assistant():
         return jsonify({'error': str(e)}), 503
     return jsonify({'reply': reply, 'tools': used})
 
+# ── Task Manager permissions ──
+# Only a task's owner or its creator may change it (status included) or
+# delete it; anyone logged in can view tasks and create new ones. Checked
+# here, not just in the UI, and keyed on the stored record's module so a
+# task can't be changed through some other module's URL.
+TASK_MODULE = 'tasks'
+
+def _current_user_name():
+    u = User.query.get(session.get('user_id')) if session.get('user_id') else None
+    return u.name if u else None
+
+def task_guard(existing, incoming=None):
+    """Return an error response if the current user may not change
+    `existing` (a GenericRecord, or None for a new task). When `incoming`
+    is given, pins createdBy/createdAt so they can't be forged or edited."""
+    me = _current_user_name()
+    if existing is None:
+        if incoming is not None:
+            incoming['createdBy'] = me or incoming.get('createdBy', '')
+        return None
+    old = safe_json_loads(existing.data, {})
+    if not me or me not in (old.get('owner'), old.get('createdBy')):
+        return jsonify({'error': 'Only the task owner or the person who created it can change this task'}), 403
+    if incoming is not None:
+        incoming['createdBy'] = old.get('createdBy', '')
+        if old.get('createdAt'):
+            incoming['createdAt'] = old['createdAt']
+    return None
+
 @app.route('/api/<module>', methods=['GET'])
 def list_generic(module):
     records = GenericRecord.query.filter_by(module=module).order_by(GenericRecord.id.desc()).all()
@@ -815,19 +1159,25 @@ def list_generic(module):
 
 @app.route('/api/<module>', methods=['POST'])
 def save_generic(module):
-    d = request.json
+    d = json_object_body()
+    if d is None: return jsonify(BAD_BODY[0]), 400
     # If record has an id, update instead of insert
     existing_id = d.get('id') or d.get('_rid')
     if existing_id:
         r = GenericRecord.query.get(existing_id)
         if r and r.module == module:
             clean = {k:v for k,v in d.items() if k not in ('id','_rid')}
+            if module == TASK_MODULE:
+                err = task_guard(r, clean)
+                if err: return err
             r.data = json.dumps(clean)
             r.updated_at = datetime.utcnow()
             db.session.commit()
             return jsonify({'id': r.id})
     # New record — insert
     clean = {k:v for k,v in d.items() if k not in ('id','_rid')}
+    if module == TASK_MODULE:
+        task_guard(None, clean)
     r = GenericRecord(module=module, data=json.dumps(clean))
     db.session.add(r)
     db.session.commit()
@@ -841,13 +1191,24 @@ def get_generic_one(module, rid):
 
 @app.route('/api/<module>/<int:rid>', methods=['POST'])
 def update_generic_one(module, rid):
+    d = json_object_body()
+    if d is None: return jsonify(BAD_BODY[0]), 400
     r = GenericRecord.query.get(rid)
     if r:
-        r.data = json.dumps(request.json)
+        # Record ids are shared across every module, so make sure this id
+        # really belongs to the module in the URL before overwriting it.
+        if r.module != module:
+            return jsonify({'error': 'Not found'}), 404
+        if r.module == TASK_MODULE:
+            err = task_guard(r, d)
+            if err: return err
+        r.data = json.dumps(d)
         r.updated_at = datetime.utcnow()
         db.session.commit()
         return jsonify({'id': r.id})
-    r = GenericRecord(module=module, data=json.dumps(request.json))
+    if module == TASK_MODULE:
+        task_guard(None, d)
+    r = GenericRecord(module=module, data=json.dumps(d))
     db.session.add(r)
     db.session.commit()
     return jsonify({'id': r.id})
@@ -855,7 +1216,10 @@ def update_generic_one(module, rid):
 @app.route('/api/<module>/<int:rid>', methods=['DELETE'])
 def delete_generic_one(module, rid):
     r = GenericRecord.query.get(rid)
-    if r:
+    if r and r.module == module:
+        if r.module == TASK_MODULE:
+            err = task_guard(r)
+            if err: return err
         db.session.delete(r)
         db.session.commit()
     return jsonify({'ok': True})
@@ -911,7 +1275,11 @@ def dedup_module(module):
         'qmsCsMaster': ['step','checkItem'],
         'mktFeasQns': ['section','question'],
     }
-    fields = key_fields.get(module, ['id'])
+    fields = key_fields.get(module)
+    if not fields:
+        # No duplicate key defined: every record would look identical and all
+        # but one would be deleted.
+        return jsonify({'error': 'Dedup is not supported for this module'}), 400
     for r in records:
         try:
             d = json.loads(r.data)
@@ -1034,7 +1402,8 @@ def qms2_save(module):
             module = prefixed
         else:
             return jsonify({'error':'Unknown module'}), 400
-    d = request.json
+    d = json_object_body()
+    if d is None: return jsonify(BAD_BODY[0]), 400
     existing_id = d.get('id')
     clean = {k:v for k,v in d.items() if k not in ('id','_createdAt')}
     if existing_id:
@@ -1074,7 +1443,11 @@ def qms2_bulk_delete(module):
             module = prefixed
         else:
             return jsonify({'error':'Unknown module'}), 400
-    ids = request.json.get('ids', [])
+    body = json_object_body()
+    if body is None: return jsonify(BAD_BODY[0]), 400
+    ids = body.get('ids') or []
+    if not isinstance(ids, list):
+        return jsonify({'error': '"ids" must be a list'}), 400
     if ids:
         for rid in ids:
             r = GenericRecord.query.get(rid)
@@ -1680,6 +2053,55 @@ def seed_pq_grades():
     db.session.commit()
     print("Grade Master seeded (8 grades from VRA-SOP-001 / VRA-SOP-017)")
 
+PQ_GRADE_ELEMENTS = ['Si','Fe','Cu','Mg','Mn','Ti','Zn','Ni','Pb','Sn','Sr','Al']
+
+def merge_qms2_grades_into_grade_master():
+    """One-time merge of the old PFMEA grade list (qms2_grades) into the Grade Master (pq_grades).
+    Grade Master values win; grades missing there are copied, blank fields are filled,
+    and every difference is saved as a report shown on the Grade Master page."""
+    if GenericRecord.query.filter_by(module='setting_grades_merged').first():
+        return
+    norm = lambda v: re.sub(r'[\s%]', '', str(v or '')).lower()
+    master = GenericRecord.query.filter_by(module='pq_grades').all()
+    by_key = {_grade_key(safe_json_loads(r.data, {}).get('grade')): r for r in master}
+    order = max([safe_json_loads(r.data, {}).get('order') or 0 for r in master] or [0])
+    added, diffs = [], []
+    for old in GenericRecord.query.filter_by(module='qms2_grades').all():
+        o = safe_json_loads(old.data, {})
+        name, comp = str(o.get('grade') or '').strip(), o.get('composition') or {}
+        if not _grade_key(name):
+            continue
+        r = by_key.get(_grade_key(name))
+        if not r:
+            order += 1
+            other = ', '.join(f'{k} {v}' for k, v in comp.items() if k not in PQ_GRADE_ELEMENTS and v)
+            notes = 'Copied from the old PFMEA Grade Master.' + (f' Other elements: {other}' if other else '')
+            new = {'grade': name, 'colourCode': o.get('colourCode') or '', 'notes': notes, 'order': order,
+                   'elements': {el: comp.get(el, '') for el in PQ_GRADE_ELEMENTS}}
+            r = GenericRecord(module='pq_grades', data=json.dumps(new))
+            db.session.add(r)
+            by_key[_grade_key(name)] = r
+            added.append(name)
+            continue
+        g = safe_json_loads(r.data, {})
+        g.setdefault('elements', {})
+        if o.get('colourCode') and not g.get('colourCode'):
+            g['colourCode'] = o['colourCode']
+        elif o.get('colourCode') and norm(o['colourCode']) != norm(g.get('colourCode')):
+            diffs.append(f"{g['grade']} colour code: Grade Master has {g['colourCode']}, PFMEA list had {o['colourCode']}")
+        for el, v in comp.items():
+            if not v:
+                continue
+            if el in PQ_GRADE_ELEMENTS and not g['elements'].get(el):
+                g['elements'][el] = v
+            elif norm(v) != norm(g['elements'].get(el)):
+                diffs.append(f"{g['grade']} {el}: Grade Master has {g['elements'].get(el) or '(blank)'}, PFMEA list had {v}")
+        r.data = json.dumps(g)
+    db.session.add(GenericRecord(module='setting_grades_merged',
+                                 data=json.dumps({'added': added, 'differences': diffs, 'dismissed': False})))
+    db.session.commit()
+    print(f"Grade lists merged: {len(added)} added, {len(diffs)} differences")
+
 def migrate_columns():
     """create_all() never alters existing tables — add columns introduced after first deploy."""
     insp = db.inspect(db.engine)
@@ -1701,9 +2123,15 @@ with app.app_context():
         seed_pq_pfmea_rows_for_sample_part()
         seed_pq_cp_templates()
         seed_pq_grades()
+        merge_qms2_grades_into_grade_master()
         # Note: seed_defaults() removed — default data comes from backup restore
     except Exception as e:
         print(f"Startup warning: {e}")
+    try:
+        seed_wi_demo()
+    except Exception as e:
+        db.session.rollback()
+        print(f"Startup warning (demo work instructions): {e}")
 
 if __name__ == '__main__':
     # Defaults to off so a stray `python app.py` never exposes the

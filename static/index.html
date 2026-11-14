@@ -225,9 +225,12 @@ select.fc{cursor:pointer}
     <a class="sl-item" data-view="dashboard" onclick="nav('dashboard')"><span class="ic">🏠</span>Dashboard</a>
     <a class="sl-item" data-view="registry" onclick="nav('registry')"><span class="ic">📋</span>Registry</a>
     <a class="sl-item" data-view="create" onclick="nav('create')"><span class="ic">➕</span>New Document</a>
+    <a class="sl-item" data-view="wi" onclick="nav('wi')"><span class="ic">📸</span>Work Instructions</a>
     <div class="sl-sec">Workflow</div>
     <a class="sl-item" id="nav-approvals" data-view="approvals" onclick="nav('approvals')"><span class="ic">✅</span>Approvals<span class="pc" id="pcount" style="display:none">0</span></a>
     <a class="sl-item" data-view="audit" onclick="nav('audit')"><span class="ic">🔍</span>Audit Trail</a>
+    <div class="sl-sec">Tasks</div>
+    <a class="sl-item" data-view="tasks" onclick="nav('tasks')"><span class="ic">📌</span>Task Manager<span class="pc" id="taskcount" style="display:none">0</span></a>
     <div class="sl-sec">Production</div>
     <a class="sl-item" data-view="prod-shifts" onclick="nav('prod-shifts')"><span class="ic">🏭</span>Shift Production</a>
     <a class="sl-item" data-view="prod-fettling" onclick="nav('prod-fettling')"><span class="ic">🔨</span>Fettling</a>
@@ -555,7 +558,10 @@ const documentsTable = {
         docType: d.docType, revision: d.revision, status: d.status,
         content: d.content, createdBy: d.createdBy, approvedBy: d.approvedBy,
         createdDate: d.createdDate, approvedDate: d.approvedDate,
-        ...(d.extra||{})
+        ...(d.extra||{}),
+        // Kept as-is so update() writes it back; without this every status
+        // change (submit, approve…) silently wiped the document's extra data.
+        extra: d.extra||{}
       }));
       this._ts = Date.now();
       return this._cache;
@@ -572,7 +578,7 @@ const documentsTable = {
         revision:obj.revision, status:obj.status, content:obj.content||'',
         createdBy:obj.createdBy||'', approvedBy:obj.approvedBy||'',
         createdDate:obj.createdDate||'', approvedDate:obj.approvedDate||'',
-        extra: obj.extra||{}
+        extra: obj.extra||{}, isNew: true
       });
       this.invalidate();
       return r.id;
@@ -688,6 +694,8 @@ const db = {
   purVendorLots:  makeTable('purVendorLots'),
   // Customer Feedback
   custFeedback:   makeTable('custFeedback'),
+  // Task Manager
+  tasks:          makeTable('tasks'),
   // version() is a no-op — schema managed by server
   version() { return { stores() {} }; },
 };
@@ -699,8 +707,14 @@ const DB = {
   getUsers: () => db.users.toArray(),
   addUser: u => db.users.add(u),
   async nextNum(type) {
-    const count = await db.documents.where('docType').equals(type).count();
-    return `VRA-${type}-${String(count+1).padStart(3,'0')}`;
+    // Highest number already used in this series + 1. Counting documents
+    // instead re-issued an existing number after any deletion, and saving
+    // under an existing number overwrites that document.
+    const docs = await db.documents.toArray();
+    const re = new RegExp('^VRA-' + type.replace(/[^A-Za-z0-9]/g, '\\$&') + '-(\\d+)$');
+    let max = 0;
+    for (const d of docs) { const m = re.exec(d.docNumber || ''); if (m) max = Math.max(max, parseInt(m[1], 10)); }
+    return `VRA-${type}-${String(max+1).padStart(3,'0')}`;
   },
   createDoc: d => db.documents.add(d),
   getDoc: id => db.documents.get(id),
@@ -820,6 +834,8 @@ function showApp(){
     nav('dashboard'); updatePcount(); startAutoBackup();
     if(typeof updateQcount!=='undefined') updateQcount();
     if(typeof updateCalCount!=='undefined') updateCalCount();
+    if(typeof updateTaskCount!=='undefined') updateTaskCount();
+    if(typeof taskMaybeShowDailyDigest!=='undefined') taskMaybeShowDailyDigest();
   });
 }
 
@@ -908,6 +924,8 @@ function nav(view,params=''){
   'prod-dispatch':'Dispatch Register',
   'prod-parts':'Production Part Master',
   'prod-setup':'Production — Machines & Settings',
+  'tasks':'Task Manager',
+  'wi':'Work Instructions & SOPs',
   };
   document.getElementById('topbar-title').textContent=titles[view]||'VRA DMS';
   const p=Object.fromEntries((params||'').split('&').filter(Boolean).map(s=>s.split('=')));
@@ -951,6 +969,8 @@ function nav(view,params=''){
 'prod-dispatch':  prodRenderDispatch,
 'prod-parts':     prodRenderParts,
 'prod-setup':     prodRenderSetup,
+'tasks':          taskRenderList,
+'wi':             wiRenderRegistry,
   };
   if(views[view]) views[view](p);
   if(!['create','edit'].includes(view) && typeof setChatVisible !== 'undefined') setChatVisible(false);
@@ -974,6 +994,8 @@ function sBadge(s){
 function tPill(code){const t=ALL_TYPES[code];return`<span class="tp" style="background:${t?.color||TYPE_COLORS[code]||'#888'}">${code}</span>`}
 function fmtD(iso){return iso?(iso.includes('T')?iso.split('T')[0]:iso):''}
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+// Grade names compared ignoring case, spaces and punctuation: "ADC 12" = "adc-12" = "ADC12"
+function gradeKey(g){return String(g||'').toUpperCase().replace(/[^A-Z0-9]/g,'');}
 
 </script>
 
@@ -1097,6 +1119,8 @@ async function renderDashboard(){
 </script>
 
 <script src="/static/modules/documents.js"></script>
+<script src="/static/core/qrcode.js"></script>
+<script src="/static/modules/wi.js"></script>
 <script src="/static/modules/quality.js"></script>
 <script src="/static/modules/hr.js"></script>
 <script src="/static/modules/purchasing.js"></script>
@@ -1109,6 +1133,7 @@ async function renderDashboard(){
 <script src="/static/modules/qms2.js"></script>
 <script src="/static/modules/pq.js"></script>
 <script src="/static/modules/production.js"></script>
+<script src="/static/modules/tasks.js"></script>
 <script src="/static/modules/assistant.js"></script>
 
 <script>
@@ -1145,6 +1170,7 @@ window.views = {
   'mkt-quotations':typeof mktRenderQuotations !== 'undefined' ? mktRenderQuotations : null,
   'rm-labels':    typeof rmRenderLabels     !== 'undefined' ? rmRenderLabels     : null,
   'rm-register':  typeof rmRenderRegister   !== 'undefined' ? rmRenderRegister   : null,
+  'tasks':        typeof taskRenderList     !== 'undefined' ? taskRenderList     : null,
   'qms2':         typeof QMS2 !== 'undefined' ? ()=>QMS2.renderDashboard() : null,
   'qms2-cp':      typeof QMS2 !== 'undefined' ? ()=>QMS2.renderCpList()    : null,
   'qms2-cs':      typeof QMS2 !== 'undefined' ? ()=>QMS2.renderChecksheets(null) : null,
