@@ -2340,6 +2340,8 @@ async function prodOpenDispatch(id=null){
   const ov=document.createElement('div'); ov.className='overlay'; ov.id='pdx-ov';
   ov.innerHTML=`<div class="modal" style="width:480px">
     <h3>${d?'Edit':'New'} Dispatch</h3>
+    ${d?(d.source==='BUSY'?'<div class="alert al-w" style="margin-bottom:8px">Imported from BUSY — correct the invoice in BUSY too, or the next BUSY Check will not match.</div>':'')
+      :'<div class="alert al-w" style="margin-bottom:8px">Dispatches normally come from the BUSY sales import (BUSY Link → Import from BUSY). Add one here only if it is not invoiced in BUSY, or it will be counted twice.</div>'}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
       <div class="fg"><label class="lbl">Date *</label><input class="fc" type="date" id="pdx-date" value="${esc(d?.date||prodToday())}"></div>
       <div class="fg"><label class="lbl">Qty (pcs) *</label><input class="fc" type="number" min="1" id="pdx-qty" value="${esc(d?.qty??'')}"></div>
