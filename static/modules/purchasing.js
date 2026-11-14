@@ -77,7 +77,11 @@ function purCalcRating(rows){
 function purIsApproved(v){
   return v.sample1?.decision==='ACCEPT' && v.sample2?.decision==='ACCEPT' && v.includeInApprovedList==='Y';
 }
+// Services and overheads (rent, electricity, transport…) are purchased from but
+// need no approval, samples or scorecard: approvalNeeded === 'N'.
+function purNeedsApproval(v){ return !v || v.approvalNeeded!=='N'; }
 function purStage(v){
+  if(!purNeedsApproval(v)) return'No approval needed';
   const s1=v.sample1?.decision,s2=v.sample2?.decision;
   if(purIsApproved(v)) return'Approved';
   if(s1==='REJECT'||s2==='REJECT') return'Rejected';
@@ -86,7 +90,7 @@ function purStage(v){
   return'Registered';
 }
 function purStageBadge(stage){
-  const m={Registered:'bd','Sample Evaluation':'bp','Samples Accepted — Pending Sign-off':'bp',Approved:'ba',Rejected:'br'};
+  const m={Registered:'bd','Sample Evaluation':'bp','Samples Accepted — Pending Sign-off':'bp',Approved:'ba',Rejected:'br','No approval needed':'bd'};
   return`<span class="badge ${m[stage]||'bd'}">${stage}</span>`;
 }
 function purPctBadge(pct){
@@ -170,9 +174,13 @@ table.dt tr:nth-child(even) td{background:#f7f7f7}
 // ══════════════════════════════════════════════════════
 //  SUPPLIER REGISTER — LIST
 // ══════════════════════════════════════════════════════
-async function purRenderSuppliers(){
-  const vendors=await db.purVendors.toArray().catch(()=>[]);
-  vendors.sort((a,b)=>b.id-a.id);
+let _purShowServices=false;
+async function purRenderSuppliers(f){
+  if(f&&'services' in f) _purShowServices=f.services;
+  const all=await db.purVendors.toArray().catch(()=>[]);
+  all.sort((a,b)=>b.id-a.id);
+  const services=all.filter(v=>!purNeedsApproval(v));
+  const vendors=_purShowServices?all:all.filter(purNeedsApproval);
   const counts={Registered:0,'Sample Evaluation':0,'Samples Accepted — Pending Sign-off':0,Approved:0,Rejected:0};
   vendors.forEach(v=>{const st=purStage(v); if(counts[st]!==undefined) counts[st]++;});
 
@@ -192,8 +200,8 @@ async function purRenderSuppliers(){
     </div>`).join('')}
   </div>
   <div class="card">
-    <div class="ch"><h5>All Suppliers — ${vendors.length} records</h5>
-      <span class="muted" style="font-size:11px">VRA-PUR-F-01 · Supplier Approval Form</span>
+    <div class="ch"><h5>${_purShowServices?'All Suppliers':'Suppliers needing approval'} — ${vendors.length} records</h5>
+      <span class="muted" style="font-size:11px">${services.length?`<a href="#" onclick="event.preventDefault();purRenderSuppliers({services:${!_purShowServices}})">${_purShowServices?'Hide':'Show'} ${services.length} supplier(s) that need no approval (rent, electricity…)</a> · `:''}VRA-PUR-F-01 · Supplier Approval Form</span>
     </div>
     <div class="tw"><table>
       <thead><tr>
@@ -210,7 +218,8 @@ async function purRenderSuppliers(){
           <td>${purStageBadge(purStage(v))}</td>
           <td style="white-space:nowrap">
             <button class="btn btn-o btn-xs" onclick="purRenderSupplierForm(${v.id})">✏️ Open</button>
-            ${purIsApproved(v)?`<button class="btn btn-o btn-xs" onclick="purViewVendor(${v.id})">📊 Scorecard</button>`:''}
+            ${purIsApproved(v)&&purNeedsApproval(v)?`<button class="btn btn-o btn-xs" onclick="purViewVendor(${v.id})">📊 Scorecard</button>`:''}
+            <button class="btn btn-o btn-xs" title="${purNeedsApproval(v)?'Rent, electricity, services… — no approval, samples or scorecard':'Put back on the approval list and scorecard'}" onclick="purToggleApprovalNeeded(${v.id})">${purNeedsApproval(v)?'🚫 No approval needed':'↩ Needs approval'}</button>
             <button class="btn btn-r btn-xs" onclick="purDeleteVendor(${v.id})">🗑️</button>
           </td>
         </tr>`).join('')}
@@ -219,6 +228,15 @@ async function purRenderSuppliers(){
   </div>`);
 }
 
+async function purToggleApprovalNeeded(id){
+  const v=await db.purVendors.get(id);if(!v) return;
+  const to=purNeedsApproval(v)?'N':'Y';
+  if(!confirm(to==='N'
+    ?`${v.name}: no approval needed?\n\nUse this for rent, electricity, services and similar. It will be hidden from the Supplier Register, the Approved list and the scorecard, and its BUSY bills will not wait for a gate receipt. Its purchases are still imported.`
+    :`${v.name}: put back on the approval list and scorecard?`)) return;
+  if(!await db.purVendors.update(id,{approvalNeeded:to,updatedAt:new Date().toISOString()})){toast('Save failed','d');return;}
+  toast(to==='N'?'Marked: no approval needed':'Back on the approval list');purRenderSuppliers();
+}
 async function purDeleteVendor(id){
   const v=await db.purVendors.get(id);
   // Suppliers with BUSY purchases can't be deleted (the server refuses) — say so before anything is removed
@@ -351,7 +369,11 @@ async function purRenderSupplierForm(id=null){
 
   <div class="card" style="margin-bottom:12px">
     <div class="cb"><div class="fg"><label class="lbl">Remarks</label>
-      <input class="fc" id="ps-remarks" value="${esc(v?.remarks||'')}"></div></div>
+      <input class="fc" id="ps-remarks" value="${esc(v?.remarks||'')}"></div>
+      <div class="fg" style="margin-top:10px"><label class="lbl">Needs supplier approval &amp; scorecard?</label>
+      <select class="fc" id="ps-approval-needed" style="max-width:520px">
+        <option value="Y" ${purNeedsApproval(v)?'selected':''}>Yes — material / process supplier (samples, approval, rating)</option>
+        <option value="N" ${!purNeedsApproval(v)?'selected':''}>No — rent, electricity, services, overheads (no approval, not on scorecard)</option></select></div></div>
   </div>
 
   <div style="display:flex;gap:8px;justify-content:flex-end">
@@ -398,6 +420,7 @@ async function purSaveSupplier(id){
     ceoName:document.getElementById('ps-ceo').value.trim(),
     poDateNo:document.getElementById('ps-po-datno').value.trim(),
     remarks:document.getElementById('ps-remarks').value.trim(),
+    approvalNeeded:document.getElementById('ps-approval-needed').value,
     updatedAt:new Date().toISOString()
   };
   const wasApproved=id?purIsApproved(await db.purVendors.get(id)):false;
@@ -414,7 +437,7 @@ async function purSaveSupplier(id){
 //  APPROVED SUPPLIERS
 // ══════════════════════════════════════════════════════
 async function purRenderApproved(){
-  const vendors=(await db.purVendors.toArray().catch(()=>[])).filter(purIsApproved);
+  const vendors=(await db.purVendors.toArray().catch(()=>[])).filter(v=>purIsApproved(v)&&purNeedsApproval(v));
   vendors.sort((a,b)=>a.supNumber>b.supNumber?1:-1);
   setC(`
   <div class="ph"><h2>✅ Approved Supplier List</h2></div>
@@ -540,7 +563,7 @@ function purVendorPeriodChange(){
 // ══════════════════════════════════════════════════════
 async function purRenderInvoices(){
   const allVendors=await db.purVendors.toArray().catch(()=>[]);
-  const approvedVendors=allVendors.filter(purIsApproved);
+  const approvedVendors=allVendors.filter(v=>purIsApproved(v)&&purNeedsApproval(v));
   const allLots=await db.purVendorLots.toArray().catch(()=>[]);
 
   // Combine each vendor's registration samples with their invoice lots so
@@ -614,7 +637,7 @@ async function purOpenLotForm(vendorId=null,editId=null,returnTo=null){
       <input class="fc" value="${esc(fixedVendor.name)} (${esc(fixedVendor.supNumber)})" readonly style="background:#f5f7fd;font-weight:700">
       <input type="hidden" id="lot-vendor-id" value="${fixedVendor.id}"></div>`;
   } else {
-    const approvedVendors=(await db.purVendors.toArray().catch(()=>[])).filter(purIsApproved);
+    const approvedVendors=(await db.purVendors.toArray().catch(()=>[])).filter(v=>purIsApproved(v)&&purNeedsApproval(v));
     _purVendorNameMap={};
     approvedVendors.forEach(v=>{ _purVendorNameMap[v.name.trim().toLowerCase()]=v; });
     vendorFieldHtml=`<div class="fg" style="margin-bottom:10px"><label class="lbl">Supplier * <span class="muted" style="font-weight:400">(type to search approved suppliers)</span></label>
@@ -714,7 +737,7 @@ async function purDeleteLot(id,returnTo){
 let _purScorecardPeriod={period:'all',from:'',to:''};
 
 async function purRenderScorecard(){
-  const vendors=(await db.purVendors.toArray().catch(()=>[])).filter(purIsApproved);
+  const vendors=(await db.purVendors.toArray().catch(()=>[])).filter(v=>purIsApproved(v)&&purNeedsApproval(v));
   vendors.sort((a,b)=>a.supNumber>b.supNumber?1:-1);
   const range=purPeriodRange(_purScorecardPeriod.period,_purScorecardPeriod.from,_purScorecardPeriod.to);
 
@@ -846,7 +869,7 @@ async function purPrintSupplierForm(id){
 //  PRINT — Vendor Rating scorecard, all suppliers (VRA-PUR-F-04)
 // ══════════════════════════════════════════════════════
 async function purPrintScorecardAll(){
-  const vendors=(await db.purVendors.toArray().catch(()=>[])).filter(purIsApproved);
+  const vendors=(await db.purVendors.toArray().catch(()=>[])).filter(v=>purIsApproved(v)&&purNeedsApproval(v));
   vendors.sort((a,b)=>a.supNumber>b.supNumber?1:-1);
   const range=purPeriodRange(_purScorecardPeriod.period,_purScorecardPeriod.from,_purScorecardPeriod.to);
   const today=new Date().toLocaleDateString('en-IN');

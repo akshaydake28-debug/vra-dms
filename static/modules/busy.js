@@ -324,7 +324,7 @@ function busyRenderPreview(){
           ?(_busy.supplierMap[r.partyKey]==='new'?' <span class="badge bp" title="Will be added to the Supplier Register as Registered">new supplier</span>'
             :_busy.supplierMap[r.partyKey]?`<div class="muted" style="font-size:11px">→ ${esc((_busy.vendors.find(v=>v.id===_busy.supplierMap[r.partyKey])||{}).name||'')}</div>`
             :' <span class="badge br">choose supplier above</span>')
-          :((!r.vendor.approved?' <span class="badge br" title="Not on the Approved Supplier List">not approved</span>':'')
+          :((!r.vendor.approved&&r.vendor.needsApproval!==false?' <span class="badge br" title="Not on the Approved Supplier List">not approved</span>':'')
             +(busyNorm(r.vendor.name)!==busyNorm(r.party)?`<div class="muted" style="font-size:11px">matched to ${esc(r.vendor.name)}</div>`:''))}</td>
       <td class="mono" style="text-align:right">${r.lines??''}</td><td class="mono" style="text-align:right">${r.qty!=null?fmt(r.qty):''}</td><td class="mono" style="text-align:right">${r.amount?fmt(r.amount):''}</td>
       <td>${r.status==='manual'?`<label style="font-size:12px;cursor:pointer"><input type="checkbox" ${_busy.includeManual.has(r.key)?'checked':''} onchange="busyToggleManual('${r.key}',this.checked)"> <span class="badge bp">${BUSY_STATUS.manual[0]}</span> import anyway</label>`
@@ -387,7 +387,9 @@ async function busyRenderPurchases(f){
   if(f&&f.status) _busyPurFilter=f.status;
   const [rows,vendors,lots]=await Promise.all([busyApi('GET','/api/busyPurchases').catch(()=>[]),busyVendors(),busyApi('GET','/api/rm/lots').catch(()=>[])]);
   const vById=Object.fromEntries(vendors.map(v=>[v.id,v])),lotById=Object.fromEntries(lots.map(l=>[l.id,l]));
-  const all=rows.map(r=>({...r.data,id:r.id})).sort((a,b)=>String(b.date).localeCompare(String(a.date))||b.id-a.id);
+  const all=rows.map(r=>({...r.data,id:r.id}))
+    .map(p=>p.status==='awaiting'&&vById[p.vendorId]?.approvalNeeded==='N'?{...p,status:'not-required'}:p)   // supplier needs no approval
+    .sort((a,b)=>String(b.date).localeCompare(String(a.date))||b.id-a.id);
   const list=all.filter(p=>_busyPurFilter==='all'||p.status===_busyPurFilter);
   const n=s=>all.filter(p=>p.status===s).length;
   const fmt=x=>Number(x||0).toLocaleString('en-IN',{maximumFractionDigits:2});
@@ -401,7 +403,7 @@ async function busyRenderPurchases(f){
   </div>
   <div class="card"><div class="tw"><table>
     <thead><tr><th>Date</th><th>Bill no.</th><th>Supplier</th><th>Items</th><th style="text-align:right">Amount</th><th>Status</th><th></th></tr></thead>
-    <tbody>${list.map(p=>{const v=vById[p.vendorId];const appr=v&&typeof purIsApproved==='function'&&purIsApproved(v);
+    <tbody>${list.map(p=>{const v=vById[p.vendorId];const appr=!v||(typeof purNeedsApproval==='function'&&!purNeedsApproval(v))||(typeof purIsApproved==='function'&&purIsApproved(v));
       const lk=p.link||{},lotNums=(lk.rmLotIds||[]).map(i=>lotById[i]?.lotNumber).filter(Boolean);
       return`<tr>
       <td class="mono">${esc(p.date)}</td><td class="mono">${esc(p.billNo||p.vchNo)}</td>
@@ -474,7 +476,7 @@ async function busyOpenInspect(id){
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
       <h3>Make receipt from BUSY bill ${esc(p.billNo||p.vchNo)}</h3><button class="btn btn-o btn-sm" onclick="document.getElementById('busy-insp-ov').remove()">✕</button></div>
     <div class="alert al-w" style="margin-bottom:8px">Use this only if the material was <b>not</b> entered at the gate. If it was, close this and use <b>Link gate receipt</b> instead — otherwise it is counted twice.</div>
-    <div style="font-size:13px;margin-bottom:10px"><b>${esc(v?.name||p.party)}</b> · bill date ${esc(p.date)}${v&&typeof purIsApproved==='function'&&!purIsApproved(v)?' · <span class="badge br">not on the Approved Supplier List</span>':''}</div>
+    <div style="font-size:13px;margin-bottom:10px"><b>${esc(v?.name||p.party)}</b> · bill date ${esc(p.date)}${v&&typeof purIsApproved==='function'&&!purIsApproved(v)&&!(typeof purNeedsApproval==='function'&&!purNeedsApproval(v))?' · <span class="badge br">not on the Approved Supplier List</span>':''}</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
       <div class="fg"><label class="lbl">Received date *</label><input class="fc" type="date" id="bi-date" value="${esc(p.date)}"></div>
       <div class="fg"><label class="lbl">Delivery timing *</label><select class="fc" id="bi-timing">${Object.entries(timing).map(([k,l])=>`<option value="${k}">${l}</option>`).join('')}</select></div>
@@ -518,8 +520,9 @@ async function busyUndoInspect(id){
 }
 async function busyUpdateCount(){
   const el=document.getElementById('busycount');if(!el) return;
-  const rows=await busyApi('GET','/api/busyPurchases').catch(()=>[]);
-  const n=rows.filter(r=>r.data?.status==='awaiting').length;
+  const [rows,vendors]=await Promise.all([busyApi('GET','/api/busyPurchases').catch(()=>[]),busyVendors()]);
+  const na=new Set(vendors.filter(v=>v.approvalNeeded==='N').map(v=>v.id));   // rent, electricity … never wait for a receipt
+  const n=rows.filter(r=>r.data?.status==='awaiting'&&!na.has(r.data.vendorId)).length;
   el.textContent=n;el.style.display=n?'':'none';
 }
 
